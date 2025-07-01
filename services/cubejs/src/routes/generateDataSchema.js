@@ -110,7 +110,7 @@ export default async (req, res, cubejs) => {
     await createDataSchema(commitObject);
 
     if (cubejs.compilerCache) {
-      cubejs.compilerCache.prune();
+      cubejs.compilerCache.purgeStale();
     }
 
     res.json({ code: "ok", message: "Generation finished" });
