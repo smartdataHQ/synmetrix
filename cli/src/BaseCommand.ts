@@ -1,7 +1,8 @@
 import { $, echo, chalk } from "zx";
 import { Command, Flags } from "@oclif/core";
 import { config } from "dotenv";
-import { pathExists } from "fs-extra";
+import pkg from "fs-extra";
+const { pathExists } = pkg;
 import { PROJECT_DIR, NETWORK_NAME } from "./utils.js";
 
 export interface CustomContext {
