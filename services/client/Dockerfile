@@ -3,7 +3,7 @@ FROM nginx:1.25.3
 
 ARG ENABLE_MINIO_PROXY
 ARG APP_DIR=/app
-ARG CLIENT_VERSION=v1.5.0
+ARG CLIENT_VERSION=v1.11.6
 
 # define args if you want to build client with built in it process.env vars
 ARG HASURA_GRAPHQL_ENDPOINT
@@ -25,7 +25,7 @@ ENV CUBEJS_REST_API_URL $CUBEJS_REST_API_URL
 ENV CUBEJS_API_DOCS_URL $CUBEJS_API_DOCS_URL
 
 WORKDIR $APP_DIR
-RUN curl https://github.com/mlcraft-io/client-v2/releases/download/$CLIENT_VERSION/dist.tar.gz -L | tar -xz -C $APP_DIR && \
+RUN curl https://github.com/synmetrix/client-v2/releases/download/$CLIENT_VERSION/dist.tar.gz -L | tar -xz -C $APP_DIR && \
     rm -rf /usr/share/nginx/html && \
     mv $APP_DIR/dist /usr/share/nginx/html
 
