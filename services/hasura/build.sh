@@ -1,0 +1,1 @@
+docker build --platform linux/amd64 -t quicklookup/synmetrix-hasura-migrations:latest --push .
