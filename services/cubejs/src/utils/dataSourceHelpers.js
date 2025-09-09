@@ -128,14 +128,8 @@ export const findUser = async ({ userId }) => {
 
   const res = await fetchGraphQL(userQuery, { userId });
 
-  console.log('findUser GraphQL response:', JSON.stringify(res, null, 2));
-  console.log('userId:', userId);
-
   const dataSources = res?.data?.users?.[0]?.datasources;
   const members = res?.data?.users?.[0]?.members;
-
-  console.log('dataSources found:', dataSources?.map(ds => ({ id: ds.id, name: ds.name })));
-  console.log('members found:', members?.length);
 
   return {
     dataSources,
