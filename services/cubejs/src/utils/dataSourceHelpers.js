@@ -125,8 +125,6 @@ const dataschemasQuery = `
 `;
 
 export const findUser = async ({ userId }) => {
-  console.log('findUser GraphQL query:', userQuery);
-  console.log('findUser GraphQL variables:', JSON.stringify({ userId }, null, 2));
 
   const res = await fetchGraphQL(userQuery, { userId });
 
