@@ -14,6 +14,10 @@
 
 Synmetrix (prev. MLCraft) is an open source data engineering platform and semantic layer for centralized metrics management. It provides a complete framework for modeling, integrating, transforming, aggregating, and distributing metrics data at scale.
 
+## Releasing
+Refer to [RELEASING.md](./RELEASING.md) for information about how to release new images from this repo.
+
+
 ### Key Features
 
 - **Data modeling and transformations**: Flexibly define metrics and dimensions using SQL and [Cube](https://github.com/cube-js/cube) data models. Apply transformations and aggregations.

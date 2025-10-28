@@ -57,8 +57,8 @@ const selectedBranchModelsFragment = `
 `;
 
 const userQuery = `
-  query ($_or: [users_bool_exp!]) {
-    users(where: {_or: $_or}, limit: 1) {
+  query ($userId: uuid!) {
+    users(where: {id: {_eq: $userId}}, limit: 1) {
       datasources {
         ${sourceFragment}
         branches {
@@ -125,24 +125,8 @@ const dataschemasQuery = `
 `;
 
 export const findUser = async ({ userId }) => {
-  const where = {
-    _or: [
-      { id: { _eq: userId } },
-      {
-        members: {
-          team: {
-            members: {
-              user_id: { _eq: userId },
-            },
-          },
-        },
-      },
-    ],
-  };
 
-  const res = await fetchGraphQL(userQuery, {
-    ...where,
-  });
+  const res = await fetchGraphQL(userQuery, { userId });
 
   const dataSources = res?.data?.users?.[0]?.datasources;
   const members = res?.data?.users?.[0]?.members;

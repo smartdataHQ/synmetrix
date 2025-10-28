@@ -9,6 +9,10 @@ const toString = (err) => {
     return err.join(", ").toString();
   }
 
+  if (typeof err === 'object' && err !== null) {
+    return JSON.stringify(err);
+  }
+
   return err.toString();
 };
 
