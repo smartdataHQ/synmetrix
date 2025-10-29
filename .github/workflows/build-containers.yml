@@ -1,0 +1,274 @@
+name: Build and Push Containers
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - feature/github-actions-selective-builds
+    paths:
+      - 'services/actions/**'
+      - 'services/cubejs/**'
+      - 'services/client/**'
+      - 'scripts/containers/hasura-cli/**'
+      - 'scripts/containers/hasura-backend-plus/**'
+      - 'scripts/containers/stack/**'
+      - 'services/hasura/**'
+      - '.github/workflows/build-containers.yml'
+
+  pull_request:
+    paths:
+      - 'services/actions/**'
+      - 'services/cubejs/**'
+      - 'services/client/**'
+      - 'scripts/containers/hasura-cli/**'
+      - 'scripts/containers/hasura-backend-plus/**'
+      - 'scripts/containers/stack/**'
+      - 'services/hasura/**'
+      - '.github/workflows/build-containers.yml'
+
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,all)'
+        required: true
+        default: 'all'
+      push_images:
+        description: 'Push images to registry'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.changes.outputs.services }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed services
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual trigger - use input
+            SERVICES="${{ github.event.inputs.services }}"
+            if [ "$SERVICES" = "all" ]; then
+              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus"
+            fi
+            echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          else
+            # Auto trigger - detect changes
+            declare -A SERVICE_PATHS=(
+              ["actions"]="services/actions/"
+              ["cubejs"]="services/cubejs/"
+              ["client"]="services/client/"
+              ["hasura-cli"]="scripts/containers/hasura-cli/|services/hasura/"
+              ["hasura-backend-plus"]="scripts/containers/hasura-backend-plus/"
+            )
+            
+            CHANGED_SERVICES=""
+            for service in "${!SERVICE_PATHS[@]}"; do
+              if git diff --name-only "${{ github.event.before }}..${{ github.sha }}" | grep -E -q "^(${SERVICE_PATHS[$service]})"; then
+                CHANGED_SERVICES="$CHANGED_SERVICES,$service"
+              fi
+            done
+            
+            # Remove leading comma using parameter expansion
+            CHANGED_SERVICES="${CHANGED_SERVICES#,}"
+            
+            echo "services=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set build matrix
+        id: set-matrix
+        run: |
+          SERVICES="${{ steps.changes.outputs.services }}"
+          
+          if [ -z "$SERVICES" ]; then
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          MATRIX_ITEMS=""
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case $service in
+              "actions")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"actions\",\"image\":\"quicklookup/synmetrix-actions\",\"context\":\"services/actions\",\"dockerfile\":\"services/actions/Dockerfile\"},"
+                ;;
+              "cubejs")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"cubejs\",\"image\":\"quicklookup/synmetrix-cube\",\"context\":\"services/cubejs\",\"dockerfile\":\"services/cubejs/Dockerfile\"},"
+                ;;
+              "client")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"client\",\"image\":\"quicklookup/synmetrix-client\",\"context\":\"services/client\",\"dockerfile\":\"services/client/Dockerfile\"},"
+                ;;
+              "hasura-cli")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-cli\",\"image\":\"quicklookup/synmetrix-hasura\",\"context\":\"scripts/containers/hasura-cli\",\"dockerfile\":\"scripts/containers/hasura-cli/Dockerfile\"},"
+                ;;
+              "hasura-backend-plus")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-backend-plus\",\"image\":\"quicklookup/hasura-backend-plus\",\"context\":\"scripts/containers/hasura-backend-plus\",\"dockerfile\":\"scripts/containers/hasura-backend-plus/Dockerfile\"},"
+                ;;
+            esac
+          done
+          
+          # Remove trailing comma and wrap in array
+          MATRIX_ITEMS=$(echo "$MATRIX_ITEMS" | sed 's/,$//')
+          MATRIX="{\"include\":[$MATRIX_ITEMS]}"
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASS }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == true) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Output build summary
+        id: output
+        run: |
+          echo "service=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          echo "image=${{ matrix.image }}" >> $GITHUB_OUTPUT
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
+          echo "pushed=${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == true) }}" >> $GITHUB_OUTPUT
+
+  build-summary:
+    needs: [detect-changes, build-and-push]
+    if: always() && needs.detect-changes.outputs.services != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Summary
+        run: |
+          echo "# 🐳 Container Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get all job outputs
+          SERVICES="${{ needs.detect-changes.outputs.services }}"
+          echo "**Services processed:** $SERVICES" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check build results - matrix jobs make this tricky
+          BUILD_RESULTS='${{ needs.build-and-push.result }}'
+          if [ "$BUILD_RESULTS" = "success" ]; then
+            echo "## ✅ All builds completed successfully" >> $GITHUB_STEP_SUMMARY
+          elif [ "$BUILD_RESULTS" = "failure" ]; then
+            echo "## ⚠️ Some builds failed, but others may have succeeded" >> $GITHUB_STEP_SUMMARY
+            echo "*Check individual service status below*" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ⚠️ Build status: $BUILD_RESULTS" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Built Images" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Image | Tag | Status | Action |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|-----|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Matrix job outputs are not easily accessible, so we'll reconstruct from services
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case $service in
+              "actions")
+                IMAGE="quicklookup/synmetrix-actions"
+                ;;
+              "cubejs")
+                IMAGE="quicklookup/synmetrix-cube"
+                ;;
+              "client")
+                IMAGE="quicklookup/synmetrix-client"
+                ;;
+              "hasura-cli")
+                IMAGE="quicklookup/synmetrix-hasura"
+                ;;
+              "hasura-backend-plus")
+                IMAGE="quicklookup/hasura-backend-plus"
+                ;;
+            esac
+            
+            # For matrix jobs, we can't easily get individual job status
+            # So we show success for all services and note that some may have failed
+            if [ "$BUILD_RESULTS" = "success" ]; then
+              STATUS="✅ Built"
+              if [ "${{ github.event_name }}" != "pull_request" ] && { [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.push_images }}" = "true" ]; }; then
+                ACTION="🚀 Pushed"
+              else
+                ACTION="📦 Built only"
+              fi
+            else
+              # Matrix job failed - some services succeeded, some failed
+              STATUS="⚠️ Mixed"
+              ACTION="📋 Check logs"
+            fi
+            
+            SHORT_SHA="${{ github.sha }}"
+            SHORT_SHA="${SHORT_SHA:0:7}"
+            TAG="\`${{ github.ref_name }}-$SHORT_SHA\`"
+            echo "| \`$service\` | \`$IMAGE\` | $TAG | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏷️ Image Tags" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          echo "All images are tagged with:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}-$SHORT_SHA\` (commit SHA)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}\` (branch name)" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.ref_name }}" = "main" -o "${{ github.ref_name }}" = "master" ]; then
+            echo "- \`latest\` (default branch)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Generated by [GitHub Actions](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*" >> $GITHUB_STEP_SUMMARY
