@@ -13,7 +13,6 @@ on:
       - 'scripts/containers/hasura-cli/**'
       - 'scripts/containers/hasura-backend-plus/**'
       - 'scripts/containers/stack/**'
-      - 'scripts/containers/stepci/**'
       - 'services/hasura/**'
       - '.github/workflows/build-containers.yml'
 
@@ -25,14 +24,13 @@ on:
       - 'scripts/containers/hasura-cli/**'
       - 'scripts/containers/hasura-backend-plus/**'
       - 'scripts/containers/stack/**'
-      - 'scripts/containers/stepci/**'
       - 'services/hasura/**'
       - '.github/workflows/build-containers.yml'
 
   workflow_dispatch:
     inputs:
       services:
-        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,stack,stepci,all)'
+        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,all)'
         required: true
         default: 'all'
       push_images:
@@ -60,7 +58,7 @@ jobs:
             # Manual trigger - use input
             SERVICES="${{ github.event.inputs.services }}"
             if [ "$SERVICES" = "all" ]; then
-              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus,stepci"
+              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus"
             fi
             echo "services=$SERVICES" >> $GITHUB_OUTPUT
           else
@@ -71,7 +69,6 @@ jobs:
               ["client"]="services/client/"
               ["hasura-cli"]="scripts/containers/hasura-cli/|services/hasura/"
               ["hasura-backend-plus"]="scripts/containers/hasura-backend-plus/"
-              ["stepci"]="scripts/containers/stepci/"
             )
             
             CHANGED_SERVICES=""
@@ -116,9 +113,6 @@ jobs:
                 ;;
               "hasura-backend-plus")
                 MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-backend-plus\",\"image\":\"quicklookup/hasura-backend-plus\",\"context\":\"scripts/containers/hasura-backend-plus\",\"dockerfile\":\"scripts/containers/hasura-backend-plus/Dockerfile\"},"
-                ;;
-              "stepci")
-                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"stepci\",\"image\":\"quicklookup/synmetrix-stepci\",\"context\":\"scripts/containers/stepci\",\"dockerfile\":\"scripts/containers/stepci/Dockerfile\"},"
                 ;;
             esac
           done
@@ -239,9 +233,6 @@ jobs:
                 ;;
               "hasura-backend-plus")
                 IMAGE="quicklookup/hasura-backend-plus"
-                ;;
-              "stepci")
-                IMAGE="quicklookup/synmetrix-stepci"
                 ;;
             esac
             

@@ -1,29 +1,66 @@
-# Current release 
+# Release Process
 
-The build process is currently manual.
+## Automated Builds (GitHub Actions)
 
-### Releasing `services/actions`
+The build process now uses GitHub Actions for automated container builds and pushes to Docker Hub.
+
+### Supported Services
+
+The following services are automatically built:
+- **actions** (`quicklookup/synmetrix-actions`)
+- **cubejs** (`quicklookup/synmetrix-cube`) 
+- **client** (`quicklookup/synmetrix-client`)
+- **hasura-cli** (`quicklookup/synmetrix-hasura`)
+- **hasura-backend-plus** (`quicklookup/hasura-backend-plus`)
+
+### Triggering Builds
+
+**Automatic builds** are triggered on push/PR when files change in:
+- `services/actions/`, `services/cubejs/`, `services/client/`
+- `scripts/containers/hasura-cli/`, `scripts/containers/hasura-backend-plus/`
+- `services/hasura/` (triggers hasura-cli build)
+
+**Manual builds** can be triggered via GitHub Actions UI:
+1. Go to Actions → Build and Push Containers
+2. Click "Run workflow" 
+3. Select services (comma-separated or "all")
+4. Choose whether to push images
+
+### Image Tagging
+
+All images are tagged with:
+- `{branch}-{short-sha}` (e.g., `main-abc1234`)
+- `{branch}` (branch name)
+- `latest` (for main/master branch only)
+
+### Manual Build (Legacy)
+
+For individual service builds:
 
 ```bash
 git add "<your changes>"
 git commit -m "a good commit message"
-docker build --platform linux/amd64 -t quicklookup/synmetrix-actions:$(git rev-parse --short HEAD) actions/services --push
+docker build --platform linux/amd64 -t quicklookup/synmetrix-actions:$(git rev-parse --short HEAD) services/actions --push
 ```
 
-This build and pushes a docker image, tagged to the current git (short) SHA.
+## Deploying
 
-### Deploying
-
-Deploying the image to kubernetes involves updating `images` in the **synmetrix overlays in the cxs repo**:
+Deploying images to Kubernetes involves updating `images` in the **synmetrix overlays in the cxs repo**:
 - [staging](https://github.com/smartdataHQ/cxs/blob/main/data/synmetrix/overlays/staging/kustomization.yaml)
 - [prod](https://github.com/smartdataHQ/cxs/blob/main/data/synmetrix/overlays/production/kustomization.yaml)
 
-Modify the `newTag` of the appropriate image to match the git short sha you tagged your image with:
+Update the `newTag` to match the short SHA from your build:
 ```yaml
-[...]
 images:
   - name: quicklookup/synmetrix-actions
-    newTag: <new-sha>
-[...]
+    newTag: abc1234  # Use short SHA from build
+  - name: quicklookup/synmetrix-cube  
+    newTag: abc1234
+  - name: quicklookup/synmetrix-client
+    newTag: abc1234
+  - name: quicklookup/synmetrix-hasura
+    newTag: abc1234
+  - name: quicklookup/hasura-backend-plus
+    newTag: abc1234
 ```
 
