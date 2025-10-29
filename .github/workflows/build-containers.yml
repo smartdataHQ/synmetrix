@@ -153,6 +153,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=pr
             type=sha,prefix={{branch}}-,format=short
+            type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -263,7 +264,8 @@ jobs:
           SHORT_SHA="${{ github.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
           echo "All images are tagged with:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ github.ref_name }}-$SHORT_SHA\` (commit SHA)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}-$SHORT_SHA\` (branch + commit SHA)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`$SHORT_SHA\` (commit SHA only)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ github.ref_name }}\` (branch name)" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.ref_name }}" = "main" -o "${{ github.ref_name }}" = "master" ]; then
             echo "- \`latest\` (default branch)" >> $GITHUB_STEP_SUMMARY
