@@ -158,7 +158,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=sha,prefix={{branch}}-
+            type=sha,prefix={{branch}}-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
@@ -218,8 +218,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📦 Built Images" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Service | Image | Status | Action |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|--------|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Image | Tag | Status | Action |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|-----|---------|---------|" >> $GITHUB_STEP_SUMMARY
           
           # Matrix job outputs are not easily accessible, so we'll reconstruct from services
           IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
@@ -260,14 +260,19 @@ jobs:
               ACTION="📋 Check logs"
             fi
             
-            echo "| \`$service\` | \`$IMAGE\` | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
+            SHORT_SHA="${{ github.sha }}"
+            SHORT_SHA="${SHORT_SHA:0:7}"
+            TAG="\`${{ github.ref_name }}-$SHORT_SHA\`"
+            echo "| \`$service\` | \`$IMAGE\` | $TAG | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
           done
           
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🏷️ Image Tags" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
           echo "All images are tagged with:" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ github.ref_name }}-${{ github.sha }}\` (commit SHA)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}-$SHORT_SHA\` (commit SHA)" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ github.ref_name }}\` (branch name)" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.ref_name }}" = "main" -o "${{ github.ref_name }}" = "master" ]; then
             echo "- \`latest\` (default branch)" >> $GITHUB_STEP_SUMMARY
