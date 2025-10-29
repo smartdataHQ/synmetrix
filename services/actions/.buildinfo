@@ -1,4 +1,4 @@
 Build trigger: GitHub Actions selective build test
 Service: actions
 Image: quicklookup/synmetrix-actions
-Triggered: 2025-10-29
+Triggered: 2025-10-29 (updated - stack removed, summary fixed)

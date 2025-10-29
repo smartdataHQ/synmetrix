@@ -1,4 +1,4 @@
 Build trigger: GitHub Actions selective build test
 Service: stepci
 Image: quicklookup/synmetrix-stepci
-Triggered: 2025-10-29
+Triggered: 2025-10-29 (updated - stack removed, summary fixed)

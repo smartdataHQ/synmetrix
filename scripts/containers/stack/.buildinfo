@@ -1,4 +1,0 @@
-Build trigger: GitHub Actions selective build test
-Service: stack
-Image: synmetrix/stack
-Triggered: 2025-10-29

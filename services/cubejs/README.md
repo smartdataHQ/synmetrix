@@ -18,3 +18,5 @@
 - Basic functionality verified
 
 **Note:** When this branch is pushed to GitHub, the selective build workflow will automatically detect changes in `services/cubejs/` and build the `quicklookup/synmetrix-cube` container image.
+
+**Updated:** Stack container removed from workflow, build summary logic fixed for partial failures.
