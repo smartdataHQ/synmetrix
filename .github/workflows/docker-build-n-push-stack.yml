@@ -1,10 +1,12 @@
-name: Build and push stack
+name: Build and push stack (DEPRECATED - replaced by build-containers.yml)
 
 on:
-  push:
-    branches:
-      - master
-      - main
+  # Disabled - replaced by selective build workflow
+  # push:
+  #   branches:
+  #     - master
+  #     - main
+  workflow_dispatch:
 
 jobs:
   build-and-push:

@@ -1,0 +1,195 @@
+name: Build and Push Containers
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - feature/github-actions-selective-builds
+    paths:
+      - 'services/actions/**'
+      - 'services/cubejs/**'
+      - 'services/client/**'
+      - 'scripts/containers/hasura-cli/**'
+      - 'scripts/containers/hasura-backend-plus/**'
+      - 'scripts/containers/stack/**'
+      - 'scripts/containers/stepci/**'
+      - 'services/hasura/**'
+      - '.github/workflows/build-containers.yml'
+
+  pull_request:
+    paths:
+      - 'services/actions/**'
+      - 'services/cubejs/**'
+      - 'services/client/**'
+      - 'scripts/containers/hasura-cli/**'
+      - 'scripts/containers/hasura-backend-plus/**'
+      - 'scripts/containers/stack/**'
+      - 'scripts/containers/stepci/**'
+      - 'services/hasura/**'
+      - '.github/workflows/build-containers.yml'
+
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,stack,stepci,all)'
+        required: true
+        default: 'all'
+      push_images:
+        description: 'Push images to registry'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.changes.outputs.services }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed services
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual trigger - use input
+            SERVICES="${{ github.event.inputs.services }}"
+            if [ "$SERVICES" = "all" ]; then
+              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus,stack,stepci"
+            fi
+            echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          else
+            # Auto trigger - detect changes
+            CHANGED_SERVICES=""
+            
+            # Check for changes in each service path
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^services/actions/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,actions"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^services/cubejs/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,cubejs"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^services/client/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,client"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -E -q "^(scripts/containers/hasura-cli/|services/hasura/)"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,hasura-cli"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^scripts/containers/hasura-backend-plus/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,hasura-backend-plus"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^scripts/containers/stack/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,stack"
+            fi
+            
+            if git diff --name-only ${{ github.event.before }}..${{ github.sha }} | grep -q "^scripts/containers/stepci/"; then
+              CHANGED_SERVICES="$CHANGED_SERVICES,stepci"
+            fi
+            
+            # Remove leading comma
+            CHANGED_SERVICES=$(echo "$CHANGED_SERVICES" | sed 's/^,//')
+            
+            echo "services=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set build matrix
+        id: set-matrix
+        run: |
+          SERVICES="${{ steps.changes.outputs.services }}"
+          
+          if [ -z "$SERVICES" ]; then
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          MATRIX_ITEMS=""
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case $service in
+              "actions")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"actions\",\"image\":\"quicklookup/synmetrix-actions\",\"context\":\"services/actions\",\"dockerfile\":\"services/actions/Dockerfile\"},"
+                ;;
+              "cubejs")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"cubejs\",\"image\":\"quicklookup/synmetrix-cube\",\"context\":\"services/cubejs\",\"dockerfile\":\"services/cubejs/Dockerfile\"},"
+                ;;
+              "client")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"client\",\"image\":\"quicklookup/synmetrix-client\",\"context\":\"services/client\",\"dockerfile\":\"services/client/Dockerfile\"},"
+                ;;
+              "hasura-cli")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-cli\",\"image\":\"quicklookup/synmetrix-hasura\",\"context\":\"scripts/containers/hasura-cli\",\"dockerfile\":\"scripts/containers/hasura-cli/Dockerfile\"},"
+                ;;
+              "hasura-backend-plus")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-backend-plus\",\"image\":\"quicklookup/hasura-backend-plus\",\"context\":\"scripts/containers/hasura-backend-plus\",\"dockerfile\":\"scripts/containers/hasura-backend-plus/Dockerfile\"},"
+                ;;
+              "stack")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"stack\",\"image\":\"synmetrix/stack\",\"context\":\"scripts/containers/stack\",\"dockerfile\":\"scripts/containers/stack/Dockerfile\"},"
+                ;;
+              "stepci")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"stepci\",\"image\":\"quicklookup/synmetrix-stepci\",\"context\":\"scripts/containers/stepci\",\"dockerfile\":\"scripts/containers/stepci/Dockerfile\"},"
+                ;;
+            esac
+          done
+          
+          # Remove trailing comma and wrap in array
+          MATRIX_ITEMS=$(echo "$MATRIX_ITEMS" | sed 's/,$//')
+          MATRIX="{\"include\":[$MATRIX_ITEMS]}"
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASS }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == 'true') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Built and pushed ${{ matrix.image }} - ${{ steps.meta.outputs.digest }}"
