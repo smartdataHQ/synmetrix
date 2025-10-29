@@ -16,3 +16,5 @@
 - All `@cubejs-backend/*` packages upgraded from 1.3.23 to 1.3.85
 - Package-lock.json updated with new versions
 - Basic functionality verified
+
+**Note:** When this branch is pushed to GitHub, the selective build workflow will automatically detect changes in `services/cubejs/` and build the `quicklookup/synmetrix-cube` container image.
