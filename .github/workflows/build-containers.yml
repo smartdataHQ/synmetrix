@@ -180,6 +180,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -191,5 +192,104 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Image digest
-        run: echo "Built and pushed ${{ matrix.image }} - ${{ steps.meta.outputs.digest }}"
+      - name: Output build summary
+        id: output
+        run: |
+          echo "service=${{ matrix.service }}" >> $GITHUB_OUTPUT
+          echo "image=${{ matrix.image }}" >> $GITHUB_OUTPUT
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
+          echo "pushed=${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == 'true') }}" >> $GITHUB_OUTPUT
+
+  build-summary:
+    needs: [detect-changes, build-and-push]
+    if: always() && needs.detect-changes.outputs.services != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Summary
+        run: |
+          echo "# 🐳 Container Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get all job outputs
+          SERVICES="${{ needs.detect-changes.outputs.services }}"
+          echo "**Services processed:** $SERVICES" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check build results
+          BUILD_RESULTS='${{ toJSON(needs.build-and-push.result) }}'
+          if [ "$BUILD_RESULTS" = "success" ]; then
+            echo "## ✅ All builds completed successfully" >> $GITHUB_STEP_SUMMARY
+          elif [ "$BUILD_RESULTS" = "failure" ]; then
+            echo "## ❌ Some builds failed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ⚠️ Build status: $BUILD_RESULTS" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Built Images" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Image | Status | Action |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Matrix job outputs are not easily accessible, so we'll reconstruct from services
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case $service in
+              "actions")
+                IMAGE="quicklookup/synmetrix-actions"
+                ;;
+              "cubejs")
+                IMAGE="quicklookup/synmetrix-cube"
+                ;;
+              "client")
+                IMAGE="quicklookup/synmetrix-client"
+                ;;
+              "hasura-cli")
+                IMAGE="quicklookup/synmetrix-hasura"
+                ;;
+              "hasura-backend-plus")
+                IMAGE="quicklookup/hasura-backend-plus"
+                ;;
+              "stack")
+                IMAGE="synmetrix/stack"
+                ;;
+              "stepci")
+                IMAGE="quicklookup/synmetrix-stepci"
+                ;;
+            esac
+            
+            if [ "$BUILD_RESULTS" = "success" ]; then
+              STATUS="✅ Built"
+              if [ "${{ github.event_name }}" != "pull_request" ] && [ "${{ github.event_name }}" != "workflow_dispatch" -o "${{ github.event.inputs.push_images }}" = "true" ]; then
+                ACTION="🚀 Pushed"
+              else
+                ACTION="📦 Built only"
+              fi
+            else
+              STATUS="❌ Failed"
+              ACTION="💥 Error"
+            fi
+            
+            echo "| \`$service\` | \`$IMAGE\` | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏷️ Image Tags" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All images are tagged with:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}-${{ github.sha }}\` (commit SHA)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ github.ref_name }}\` (branch name)" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.ref_name }}" = "main" -o "${{ github.ref_name }}" = "master" ]; then
+            echo "- \`latest\` (default branch)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Generated by [GitHub Actions](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*" >> $GITHUB_STEP_SUMMARY
