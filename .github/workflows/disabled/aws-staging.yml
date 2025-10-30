@@ -7,11 +7,11 @@ env:
   PROJECT_DIR: app
   PRIMARY_DOMAIN: synmetrix.org
 
-on:
-  push:
-    branches:
-      - aws-staging
-      - feature/aws-staging
+# on:
+#   push:
+#     branches:
+#       - aws-staging
+#       - feature/aws-staging
 
 jobs:
   repo-sync:

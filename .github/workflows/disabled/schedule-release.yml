@@ -1,9 +1,9 @@
 name: Schedule Release
 
-on:
-  schedule:
-    - cron: '0 23 * * 5'
-  workflow_dispatch:
+# on:
+#   schedule:
+#     - cron: '0 23 * * 5'
+#   workflow_dispatch:
 
 
 permissions:
