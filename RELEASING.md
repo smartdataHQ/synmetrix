@@ -24,7 +24,7 @@ The following services are automatically built:
 1. Go to Actions → Build and Push Containers
 2. Click "Run workflow" 
 3. Select services (comma-separated or "all")
-4. Choose whether to push images
+4. Images are automatically pushed to Docker Hub
 
 ### Image Tagging
 

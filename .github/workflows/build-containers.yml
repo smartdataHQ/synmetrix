@@ -33,11 +33,6 @@ on:
         description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,all)'
         required: true
         default: 'all'
-      push_images:
-        description: 'Push images to registry'
-        required: true
-        default: true
-        type: boolean
 
 jobs:
   detect-changes:
@@ -163,7 +158,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == true) }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
@@ -178,7 +173,7 @@ jobs:
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           echo "digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
-          echo "pushed=${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_images == true) }}" >> $GITHUB_OUTPUT
+          echo "pushed=${{ github.event_name != 'pull_request' }}" >> $GITHUB_OUTPUT
 
   build-summary:
     needs: [detect-changes, build-and-push]
@@ -241,7 +236,7 @@ jobs:
             # So we show success for all services and note that some may have failed
             if [ "$BUILD_RESULTS" = "success" ]; then
               STATUS="✅ Built"
-              if [ "${{ github.event_name }}" != "pull_request" ] && { [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.push_images }}" = "true" ]; }; then
+              if [ "${{ github.event_name }}" != "pull_request" ]; then
                 ACTION="🚀 Pushed"
               else
                 ACTION="📦 Built only"
