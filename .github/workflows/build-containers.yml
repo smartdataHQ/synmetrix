@@ -249,8 +249,7 @@ jobs:
             
             SHORT_SHA="${{ github.sha }}"
             SHORT_SHA="${SHORT_SHA:0:7}"
-            TAG="\`${{ github.ref_name }}-$SHORT_SHA\`"
-            echo "| \`$service\` | \`$IMAGE\` | $TAG | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
+            echo "| \`$service\` | \`$IMAGE\` | \`$SHORT_SHA\` | $STATUS | $ACTION |" >> $GITHUB_STEP_SUMMARY
           done
           
           echo "" >> $GITHUB_STEP_SUMMARY
