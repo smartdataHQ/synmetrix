@@ -38,4 +38,4 @@ RUN apt-get update && apt-get install -y wget unzip && \
     unzip /tmp/DatabricksJDBC.zip -d /app && \
     rm /tmp/DatabricksJDBC.zip
 
-CMD ["yarn", "start.dev"]
+CMD ["yarn", "start"]
