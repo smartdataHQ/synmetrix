@@ -30,7 +30,7 @@ The following services are automatically built:
 
 All images are tagged with:
 - `{branch}-{short-sha}` (e.g., `main-abc1234`)
-- `{short-sha}` (e.g., `abc1234`) 
+- `{short-sha}` (e.g., `abc1234`)
 - `{branch}` (branch name)
 - `latest` (for main/master branch only)
 
