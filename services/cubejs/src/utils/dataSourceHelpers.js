@@ -57,16 +57,26 @@ const selectedBranchModelsFragment = `
 `;
 
 const userQuery = `
-  query ($_or: [users_bool_exp!]) {
-    users(where: {_or: $_or}, limit: 1) {
-      datasources {
-        ${sourceFragment}
-        branches {
-          ${branchesFragment}
-          ${versionsFragment}
+  query ($userId: uuid!) {
+    members(where: {user_id: {_eq: $userId}}) {
+      id
+      team_id
+      team {
+        datasources {
+          ${sourceFragment}
+          branches {
+            ${branchesFragment}
+            ${versionsFragment}
+          }
         }
       }
-      ${membersFragment}
+      member_roles {
+        id
+        team_role
+        access_list {
+          config
+        }
+      }
     }
   }
 `;
@@ -125,27 +135,23 @@ const dataschemasQuery = `
 `;
 
 export const findUser = async ({ userId }) => {
-  const where = {
-    _or: [
-      { id: { _eq: userId } },
-      {
-        members: {
-          team: {
-            members: {
-              user_id: { _eq: userId },
-            },
-          },
-        },
-      },
-    ],
-  };
+  const res = await fetchGraphQL(userQuery, { userId });
 
-  const res = await fetchGraphQL(userQuery, {
-    ...where,
+  const members = res?.data?.members || [];
+
+  // Aggregate datasources from all team memberships
+  const dataSourcesMap = new Map();
+  members.forEach((member) => {
+    const teamDatasources = member?.team?.datasources || [];
+    teamDatasources.forEach((ds) => {
+      // Use Map to dedupe by datasource id
+      if (!dataSourcesMap.has(ds.id)) {
+        dataSourcesMap.set(ds.id, ds);
+      }
+    });
   });
 
-  const dataSources = res?.data?.users?.[0]?.datasources;
-  const members = res?.data?.users?.[0]?.members;
+  const dataSources = Array.from(dataSourcesMap.values());
 
   return {
     dataSources,

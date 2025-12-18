@@ -13,6 +13,20 @@ services:
     networks:
       - synmetrix_default
 
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    restart: always
+    ports:
+      - 5435:5432
+    volumes:
+      - pgstorage-data:/var/lib/postgresql/data
+      - ./etc/postgres.conf:/var/lib/postgresql/data/postgresql.conf
+    env_file:
+      - .env
+      - .dev.env
+    networks:
+      - synmetrix_default
+
   actions:
     build:
       context: ./services/actions/
@@ -107,6 +121,7 @@ services:
       ENABLE_TELEMETRY: "false"
       CONSOLE_MODE: server
     depends_on:
+      - postgres
       - redis
     networks:
       - synmetrix_default
@@ -122,6 +137,8 @@ services:
     env_file:
       - .env
       - .dev.env
+    depends_on:
+      - postgres
     networks:
       - synmetrix_default
 
