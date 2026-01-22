@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,all)'
+        description: 'Services to build (comma-separated: actions,cubejs,client,hasura-cli,hasura-backend-plus,hasura-migrations,all)'
         required: true
         default: 'all'
 
@@ -53,7 +53,7 @@ jobs:
             # Manual trigger - use input
             SERVICES="${{ github.event.inputs.services }}"
             if [ "$SERVICES" = "all" ]; then
-              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus"
+              SERVICES="actions,cubejs,client,hasura-cli,hasura-backend-plus,hasura-migrations"
             fi
             echo "services=$SERVICES" >> $GITHUB_OUTPUT
           else
@@ -62,7 +62,8 @@ jobs:
               ["actions"]="services/actions/"
               ["cubejs"]="services/cubejs/"
               ["client"]="services/client/"
-              ["hasura-cli"]="scripts/containers/hasura-cli/|services/hasura/"
+              ["hasura-cli"]="scripts/containers/hasura-cli/"
+              ["hasura-migrations"]="services/hasura/"
               ["hasura-backend-plus"]="scripts/containers/hasura-backend-plus/"
             )
             
@@ -105,6 +106,9 @@ jobs:
                 ;;
               "hasura-cli")
                 MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-cli\",\"image\":\"quicklookup/synmetrix-hasura\",\"context\":\"scripts/containers/hasura-cli\",\"dockerfile\":\"scripts/containers/hasura-cli/Dockerfile\"},"
+                ;;
+              "hasura-migrations")
+                MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-migrations\",\"image\":\"quicklookup/synmetrix-hasura-migrations\",\"context\":\"services/hasura\",\"dockerfile\":\"services/hasura/Dockerfile\"},"
                 ;;
               "hasura-backend-plus")
                 MATRIX_ITEMS="$MATRIX_ITEMS{\"service\":\"hasura-backend-plus\",\"image\":\"quicklookup/hasura-backend-plus\",\"context\":\"scripts/containers/hasura-backend-plus\",\"dockerfile\":\"scripts/containers/hasura-backend-plus/Dockerfile\"},"
@@ -226,6 +230,9 @@ jobs:
                 ;;
               "hasura-cli")
                 IMAGE="quicklookup/synmetrix-hasura"
+                ;;
+              "hasura-migrations")
+                IMAGE="quicklookup/synmetrix-hasura-migrations"
                 ;;
               "hasura-backend-plus")
                 IMAGE="quicklookup/hasura-backend-plus"
