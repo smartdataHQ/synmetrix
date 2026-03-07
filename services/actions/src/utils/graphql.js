@@ -1,4 +1,5 @@
-import fetch from "node-fetch";
+// Use native fetch (Node 20+) to avoid node-fetch socket hang up issues
+// import fetch from "node-fetch";
 
 const HASURA_ENDPOINT = process.env.HASURA_ENDPOINT;
 const HASURA_GRAPHQL_ADMIN_SECRET = process.env.HASURA_GRAPHQL_ADMIN_SECRET;
@@ -24,7 +25,9 @@ export const parseResponse = async (res) => {
 };
 
 export const fetchGraphQL = async (query, variables, authToken) => {
-  const headers = {};
+  const headers = {
+    "Content-Type": "application/json",
+  };
 
   if (authToken) {
     const token =

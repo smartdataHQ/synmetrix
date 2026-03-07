@@ -21,6 +21,8 @@ services:
     volumes:
       - ./services/actions/src:/app/src
       - ./services/actions/index.js:/app/index.js
+    ports:
+      - 3000:3000
     env_file:
       - .env
       - .dev.env
