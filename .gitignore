@@ -107,3 +107,16 @@ __pycache__
 /infra/aws/.pulumi-passphrase
 /letsencrypt/acme.json
 /.idea/
+
+# Dev environment
+.env
+.dev.env
+.dev-client-v2.pid
+.dev-client-v2.log
+
+# AI/agent tooling
+.claude/
+.specify/
+.codex/
+.opencode/
+agent-os/
