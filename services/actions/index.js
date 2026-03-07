@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 
 import requestId from "express-request-id";
 import requestReceived from "request-received";
@@ -6,6 +7,10 @@ import responseTime from "response-time";
 
 import hyphensToCamelCase from "./src/utils/hyphensToCamelCase.js";
 import logger from "./src/utils/logger.js";
+import signinHandler from "./src/auth/signin.js";
+import callbackHandler from "./src/auth/callback.js";
+import tokenHandler from "./src/auth/token.js";
+import signoutHandler from "./src/auth/signout.js";
 
 const port = parseInt(process.env.PORT, 10) || 3000;
 const dev = process.env.NODE_ENV !== "production";
@@ -21,6 +26,7 @@ app.use(responseTime());
 // adds or re-uses `X-Request-Id` header
 app.use(requestId());
 
+app.use(cookieParser());
 app.use(express.json()); // for parsing application/json
 app.use(express.urlencoded({ extended: true })); // for parsing application/x-www-form-urlencoded
 
@@ -31,6 +37,15 @@ app.get("/healthz", (req, res) => {
     code: "ok",
   });
 });
+
+// Auth routes (must be before RPC catch-all)
+app.get("/auth/config", (req, res) => {
+  res.json({ signupEnabled: process.env.SIGNUP_ENABLED === "true" });
+});
+app.get("/auth/signin", signinHandler);
+app.get("/auth/callback", callbackHandler);
+app.get("/auth/token", tokenHandler);
+app.post("/auth/signout", signoutHandler);
 
 app.post("/rpc/:method", async (req, res) => {
   const { method } = req.params;

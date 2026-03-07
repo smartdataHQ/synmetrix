@@ -255,6 +255,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 ## Active Technologies
 - TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution) (001-dev-environment)
 - PID file at `.dev-client-v2.pid` for client-v2 process (001-dev-environment)
+- JavaScript (ES modules), Node.js 18 + `@workos-inc/node` ^8.4.0, `ioredis` (existing), `express` ^4.17.1 (existing), `jsonwebtoken` (existing), `jose` (existing) (002-workos-auth)
+- PostgreSQL (existing, via Hasura), Redis (new, for sessions) (002-workos-auth)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)
