@@ -67,6 +67,9 @@
       },
       "hasura": {
         "description": "Commands for Hasura CLI management"
+      },
+      "dev": {
+        "description": "Commands for development environment management"
       }
     }
   },
