@@ -27,12 +27,12 @@
 
 **Purpose**: Database migration, Hasura metadata, and project scaffolding
 
-- [ ] T001 Create Hasura migration `{timestamp}_add_teams_settings_column` with up.sql and down.sql in `services/hasura/migrations/`
+- [x] T001 Create Hasura migration `{timestamp}_add_teams_settings_column` with up.sql and down.sql in `services/hasura/migrations/`
 - [ ] T002 Apply migration and verify with `./cli.sh hasura cli "migrate status"`
-- [ ] T003 [P] Add new GraphQL types (ProfileTableOutput, ProfiledColumnOutput with lc_values field, ArrayCandidateOutput, ArrayJoinInput, UpdateTeamSettingsOutput) to `services/hasura/metadata/actions.graphql`
-- [ ] T004 [P] Add new action definitions (profile_table, smart_gen_dataschemas, update_team_settings) with camelCase handler URLs matching RPC filenames to `services/hasura/metadata/actions.yaml`
-- [ ] T005 Add `settings` column to teams table select and update permissions in `services/hasura/metadata/tables.yaml`
-- [ ] T006 Create `services/cubejs/src/utils/smart-generation/` directory structure
+- [x] T003 [P] Add new GraphQL types (ProfileTableOutput, ProfiledColumnOutput with lc_values field, ArrayCandidateOutput, ArrayJoinInput, UpdateTeamSettingsOutput) to `services/hasura/metadata/actions.graphql`
+- [x] T004 [P] Add new action definitions (profile_table, smart_gen_dataschemas, update_team_settings) with camelCase handler URLs matching RPC filenames to `services/hasura/metadata/actions.yaml`
+- [x] T005 Add `settings` column to teams table select and update permissions in `services/hasura/metadata/tables.yaml`
+- [x] T006 Create `services/cubejs/src/utils/smart-generation/` directory structure
 
 **Checkpoint**: Database schema updated, Hasura actions registered, project scaffolding ready
 
@@ -51,12 +51,12 @@
 
 ### Implementation for Foundational
 
-- [ ] T009 [P] Implement ClickHouse type string parser (recursive type parsing, annotation peeling, ColumnType/ValueType classification, Nested/Grouped via dotted column name detection) in `services/cubejs/src/utils/smart-generation/typeParser.js`
-- [ ] T010 [P] Implement field processors (BasicFieldProcessor, MapFieldProcessor, ArrayFieldProcessor, NestedFieldProcessor, FieldProcessorFactory) with column→dimension/measure classification in `services/cubejs/src/utils/smart-generation/fieldProcessors.js`
-- [ ] T011 Extend `findUser()` GraphQL query in `services/cubejs/src/utils/dataSourceHelpers.js` to include `team.settings` in the user resolution query
-- [ ] T012 Extend `defineUserScope()` in `services/cubejs/src/utils/defineUserScope.js` to extract `partition` and `internal_tables` from team settings and pass through to security context
-- [ ] T013 Extend `buildSecurityContext()` in `services/cubejs/src/utils/buildSecurityContext.js` to include partition in the context hash for cache isolation
-- [ ] T014 Add `profileTable(params)` and `smartGenerate(params)` methods to `services/actions/src/utils/cubejsApi.js` with 180s timeout (matching existing `/generate-models` timeout config at line 155-159)
+- [x] T009 [P] Implement ClickHouse type string parser (recursive type parsing, annotation peeling, ColumnType/ValueType classification, Nested/Grouped via dotted column name detection) in `services/cubejs/src/utils/smart-generation/typeParser.js`
+- [x] T010 [P] Implement field processors (BasicFieldProcessor, MapFieldProcessor, ArrayFieldProcessor, NestedFieldProcessor, FieldProcessorFactory) with column→dimension/measure classification in `services/cubejs/src/utils/smart-generation/fieldProcessors.js`
+- [x] T011 Extend `findUser()` GraphQL query in `services/cubejs/src/utils/dataSourceHelpers.js` to include `team.settings` in the user resolution query
+- [x] T012 Extend `defineUserScope()` in `services/cubejs/src/utils/defineUserScope.js` to extract `partition` and `internal_tables` from team settings and pass through to security context
+- [x] T013 Extend `buildSecurityContext()` in `services/cubejs/src/utils/buildSecurityContext.js` to include partition in the context hash for cache isolation
+- [x] T014 Add `profileTable(params)` and `smartGenerate(params)` methods to `services/actions/src/utils/cubejsApi.js` with 180s timeout (matching existing `/generate-models` timeout config at line 155-159)
 
 **Checkpoint**: Foundation ready — type parsing, field classification, and security context threading work. User story implementation can begin.
 
@@ -77,15 +77,15 @@
 
 ### Implementation for User Story 1
 
-- [ ] T019 [US1] Implement ClickHouse table profiler — **port from `cxs-inbox/cube/profile_table.py`** with same SQL patterns and output shape (two-pass: DESCRIBE TABLE + batched SELECT aggregations, 10 columns per batch with fallback, Map key discovery via `groupUniqArrayArray(mapKeys())`, column filtering for empty data, **sampling via ClickHouse `SAMPLE` clause when table exceeds row count threshold per FR-028** — report sample size in profiling summary). Improvements over prototype: modular JS, per-column error handling, SSE progress hooks, existing_model lookup, sampling — in `services/cubejs/src/utils/smart-generation/profiler.js`
-- [ ] T020 [US1] Implement cube builder — **port from `cxs-inbox/cube/generate_cube_from_profile.py`** with same field classification rules and output shape (convert ProfiledTable to cube JS objects using field processors, embed provenance metadata, enforce max Map key limit of 500, detect field name collisions, use `{table_name}.yml` filename convention per Decision 9). Improvements: modular processors, provenance metadata, auto_generated tagging — in `services/cubejs/src/utils/smart-generation/cubeBuilder.js`
-- [ ] T021 [US1] Implement YAML generator (serialize cube objects to Cube.js YAML via `yaml.stringify()`, add `meta.auto_generated: true` to all fields, add cube-level provenance meta with source_database/source_table/generated_at) in `services/cubejs/src/utils/smart-generation/yamlGenerator.js`
-- [ ] T022 [US1] Implement SSE progress emitter utility (standardized event format with `progress`, `complete`, `error` events; no-op mode when Accept header is not `text/event-stream`; proper SSE framing with `Content-Type: text/event-stream` and keep-alive) in `services/cubejs/src/utils/smart-generation/progressEmitter.js`
-- [ ] T023 [US1] Implement CubeJS route `POST /api/v1/profile-table` (accept `branchId` in request, create driver, fetch existing dataschemas on branch to populate `existing_model` info — file_name, file_format, has_user_content, supports_reprofile, suggested_merge_strategy — run profiler with progress events for schema analysis and each profiling batch, return ProfiledTable JSON with existing_model — supports SSE when `Accept: text/event-stream`) in `services/cubejs/src/routes/profileTable.js`
-- [ ] T024 [US1] Implement CubeJS route `POST /api/v1/smart-generate` (profile table, build cubes, generate YAML, fetch existing schemas, compute clean checksum against full merged file content — do NOT reuse existing `generateDataSchema.js` checksum pattern which has a `cur.code` vs `content` field inconsistency — skip if identical per FR-014 and return `changed: false`, create new version, purge compiler cache, emit progress events throughout, return `version_id` + `file_name` + `changed` in response — supports SSE when `Accept: text/event-stream`) in `services/cubejs/src/routes/smartGenerate.js`
-- [ ] T025 [US1] Register both new routes in `services/cubejs/index.js`
-- [ ] T026 [P] [US1] Implement Actions RPC handler `profileTable.js` (thin proxy to CubeJS `/api/v1/profile-table`) in `services/actions/src/rpc/profileTable.js` — CRITICAL: pass `branchId` into the `cubejsApi()` constructor (not just the POST body) so CubeJS security context resolves the correct branch. See Decision 10 for the pre-existing branch-scoping mismatch in `genSchemas.js`.
-- [ ] T027 [P] [US1] Implement Actions RPC handler `smartGenSchemas.js` (thin proxy to CubeJS `/api/v1/smart-generate`) in `services/actions/src/rpc/smartGenSchemas.js` — CRITICAL: same `branchId` constructor pattern as T026. The security context, schema reads, merge, and version write MUST all target the same branch.
+- [x] T019 [US1] Implement ClickHouse table profiler — **port from `cxs-inbox/cube/profile_table.py`** with same SQL patterns and output shape (two-pass: DESCRIBE TABLE + batched SELECT aggregations, 10 columns per batch with fallback, Map key discovery via `groupUniqArrayArray(mapKeys())`, column filtering for empty data, **sampling via ClickHouse `SAMPLE` clause when table exceeds row count threshold per FR-028** — report sample size in profiling summary). Improvements over prototype: modular JS, per-column error handling, SSE progress hooks, existing_model lookup, sampling — in `services/cubejs/src/utils/smart-generation/profiler.js`
+- [x] T020 [US1] Implement cube builder — **port from `cxs-inbox/cube/generate_cube_from_profile.py`** with same field classification rules and output shape (convert ProfiledTable to cube JS objects using field processors, embed provenance metadata, enforce max Map key limit of 500, detect field name collisions, use `{table_name}.yml` filename convention per Decision 9). Improvements: modular processors, provenance metadata, auto_generated tagging — in `services/cubejs/src/utils/smart-generation/cubeBuilder.js`
+- [x] T021 [US1] Implement YAML generator (serialize cube objects to Cube.js YAML via `yaml.stringify()`, add `meta.auto_generated: true` to all fields, add cube-level provenance meta with source_database/source_table/generated_at) in `services/cubejs/src/utils/smart-generation/yamlGenerator.js`
+- [x] T022 [US1] Implement SSE progress emitter utility (standardized event format with `progress`, `complete`, `error` events; no-op mode when Accept header is not `text/event-stream`; proper SSE framing with `Content-Type: text/event-stream` and keep-alive) in `services/cubejs/src/utils/smart-generation/progressEmitter.js`
+- [x] T023 [US1] Implement CubeJS route `POST /api/v1/profile-table` (accept `branchId` in request, create driver, fetch existing dataschemas on branch to populate `existing_model` info — file_name, file_format, has_user_content, supports_reprofile, suggested_merge_strategy — run profiler with progress events for schema analysis and each profiling batch, return ProfiledTable JSON with existing_model — supports SSE when `Accept: text/event-stream`) in `services/cubejs/src/routes/profileTable.js`
+- [x] T024 [US1] Implement CubeJS route `POST /api/v1/smart-generate` (profile table, build cubes, generate YAML, fetch existing schemas, compute clean checksum against full merged file content — do NOT reuse existing `generateDataSchema.js` checksum pattern which has a `cur.code` vs `content` field inconsistency — skip if identical per FR-014 and return `changed: false`, create new version, purge compiler cache, emit progress events throughout, return `version_id` + `file_name` + `changed` in response — supports SSE when `Accept: text/event-stream`) in `services/cubejs/src/routes/smartGenerate.js`
+- [x] T025 [US1] Register both new routes in `services/cubejs/index.js`
+- [x] T026 [P] [US1] Implement Actions RPC handler `profileTable.js` (thin proxy to CubeJS `/api/v1/profile-table`) in `services/actions/src/rpc/profileTable.js` — CRITICAL: pass `branchId` into the `cubejsApi()` constructor (not just the POST body) so CubeJS security context resolves the correct branch. See Decision 10 for the pre-existing branch-scoping mismatch in `genSchemas.js`.
+- [x] T027 [P] [US1] Implement Actions RPC handler `smartGenSchemas.js` (thin proxy to CubeJS `/api/v1/smart-generate`) in `services/actions/src/rpc/smartGenSchemas.js` — CRITICAL: same `branchId` constructor pattern as T026. The security context, schema reads, merge, and version write MUST all target the same branch.
 - [ ] T028 [US1] Add ProfileTable query and SmartGenDataSchemas mutation to `../client-v2/src/graphql/gql/datasources.gql`
 - [ ] T029 [US1] Run `yarn codegen` in client-v2 to generate TypeScript types and URQL hooks
 - [ ] T030 [US1] Add `useProfileTableQuery` and `useSmartGenDataSchemasMutation` to `../client-v2/src/hooks/useSources.ts`
@@ -111,8 +111,8 @@
 
 ### Implementation for User Story 2
 
-- [ ] T037 [US2] Implement smart merger with 4 merge strategies per data-model.md: `"auto"` (detect user content → decide), `"merge"` (field-level + cube-level property preservation for joins/pre_aggregations/segments/description), `"replace"` (full replacement), `"merge_keep_stale"` (like merge, skip stale field removal). User content detection: fields without `auto_generated`, edited descriptions, joins/pre_aggregations/segments blocks. Multi-cube merge: match cubes by `name`, remove deselected auto cubes, preserve user cubes, skip auto cube on name collision with user cube — in `services/cubejs/src/utils/smart-generation/merger.js`
-- [ ] T038 [US2] Integrate merger into `services/cubejs/src/routes/smartGenerate.js` (accept `mergeStrategy` from request, default `"auto"`, pass to merger when existing model found by `{table_name}.yml` convention)
+- [x] T037 [US2] Implement smart merger with 4 merge strategies per data-model.md: `"auto"` (detect user content → decide), `"merge"` (field-level + cube-level property preservation for joins/pre_aggregations/segments/description), `"replace"` (full replacement), `"merge_keep_stale"` (like merge, skip stale field removal). User content detection: fields without `auto_generated`, edited descriptions, joins/pre_aggregations/segments blocks. Multi-cube merge: match cubes by `name`, remove deselected auto cubes, preserve user cubes, skip auto cube on name collision with user cube — in `services/cubejs/src/utils/smart-generation/merger.js`
+- [x] T038 [US2] Integrate merger into `services/cubejs/src/routes/smartGenerate.js` (accept `mergeStrategy` from request, default `"auto"`, pass to merger when existing model found by `{table_name}.yml` convention)
 - [ ] T039 [US2] Create provenance parser utility in `../client-v2/src/utils/provenanceParser.ts` (extract source_database, source_table, source_partition from YAML cube-level metadata, detect user content presence for merge option defaults — reusable for re-profile visibility, request construction, and merge UI)
 - [ ] T040 [US2] Add "Re-profile" button to `../client-v2/src/components/ModelsSidebar/index.tsx` (visible only for models with provenance metadata, detected via provenanceParser utility)
 - [ ] T041 [US2] Add merge options UI to profiling preview in `../client-v2/src/components/DataModelGeneration/index.tsx` (shown when `existing_model` is non-null in profile response: use `has_user_content` for toggle defaults, `suggested_merge_strategy` for initial state — "Preserve custom changes" toggle default ON when `has_user_content: true`, "Keep removed columns" toggle default OFF, confirmation warning when replace chosen on model with user content)
@@ -160,7 +160,7 @@
 
 - [ ] T052 [US4] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to accept partition from security context and add `WHERE partition IN ('{value}')` to all profiling queries when table is internal
 - [ ] T053 [US4] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to use `sql: "SELECT * FROM {schema}.{table} WHERE partition = '{value}'"` instead of `sql_table` when the source table is in the team's `internal_tables` list and a partition value exists (per Decision 8 — `sql_where` is NOT a valid Cube.dev property; use `sql` with WHERE clause instead)
-- [ ] T054 [US4] Implement Actions RPC handler `updateTeamSettings.js` (validate caller is team owner, update teams.settings JSONB via Hasura GraphQL mutation) in `services/actions/src/rpc/updateTeamSettings.js`
+- [x] T054 [US4] Implement Actions RPC handler `updateTeamSettings.js` (validate caller is team owner, update teams.settings JSONB via Hasura GraphQL mutation) in `services/actions/src/rpc/updateTeamSettings.js`
 - [ ] T055 [US4] Create `../client-v2/src/graphql/gql/teams.gql` with UpdateTeamSettings mutation and TeamSettings query
 - [ ] T056 [US4] Run `yarn codegen` in client-v2 for new teams.gql types
 - [ ] T057 [US4] Add `settings` to team GraphQL fragments in `../client-v2/src/graphql/gql/currentUser.gql` and create `../client-v2/src/hooks/useTeamSettings.ts` hook (useTeamSettingsQuery, useUpdateTeamSettingsMutation) — expand team state centrally before building admin UI
@@ -202,7 +202,7 @@
 
 ### Implementation for User Story 6
 
-- [ ] T064 [US6] Implement primary key detector (query `system.tables` for primary key info, fall back to sorting key, filter to columns with sufficient data) in `services/cubejs/src/utils/smart-generation/primaryKeyDetector.js`
+- [x] T064 [US6] Implement primary key detector (query `system.tables` for primary key info, fall back to sorting key, filter to columns with sufficient data) in `services/cubejs/src/utils/smart-generation/primaryKeyDetector.js`
 - [ ] T065 [US6] Integrate primary key detection into cube builder in `services/cubejs/src/utils/smart-generation/cubeBuilder.js` (mark detected PK columns with `primary_key: true` and `public: true`)
 
 **Checkpoint**: Primary keys auto-detected and marked. All user stories independently functional.

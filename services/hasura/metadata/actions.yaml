@@ -91,6 +91,30 @@ actions:
       forward_client_headers: true
     permissions:
       - role: user
+  - name: profile_table
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/profileTable'
+      forward_client_headers: true
+      timeout: 180
+    permissions:
+      - role: user
+  - name: smart_gen_dataschemas
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/smartGenSchemas'
+      forward_client_headers: true
+      timeout: 180
+    permissions:
+      - role: user
+  - name: update_team_settings
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/updateTeamSettings'
+      forward_client_headers: true
+      timeout: 30
+    permissions:
+      - role: user
   - name: send_test_alert
     definition:
       kind: synchronous
@@ -103,6 +127,7 @@ custom_types:
   input_objects:
     - name: SourceTable
     - name: events_create_input
+    - name: ArrayJoinInput
   objects:
     - name: CheckSourceOutput
     - name: GenSourceSchemaOutput
@@ -119,4 +144,10 @@ custom_types:
     - name: PreAggregationsOutput
     - name: PreAggregationPreviewOutput
     - name: SendTestAlertOutput
+    - name: ProfileTableOutput
+    - name: ExistingModelInfo
+    - name: ProfiledColumnOutput
+    - name: ArrayCandidateOutput
+    - name: SmartGenOutput
+    - name: UpdateTeamSettingsOutput
   scalars: []

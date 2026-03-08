@@ -154,7 +154,12 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
 
     let signal = timeoutSignal(10 * 1000);
 
-    if (route === "/get-schema" || route === "/generate-models") {
+    if (
+      route === "/get-schema" ||
+      route === "/generate-models" ||
+      route === "/profile-table" ||
+      route === "/smart-generate"
+    ) {
       signal = timeoutSignal(180 * 1000);
     }
 
@@ -286,6 +291,20 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
     getPreAggregationPreview: (params) => {
       return fetchCubeJS({
         route: "/pre-aggregation-preview",
+        method: "post",
+        params,
+      });
+    },
+    profileTable: (params) => {
+      return fetchCubeJS({
+        route: "/profile-table",
+        method: "post",
+        params,
+      });
+    },
+    smartGenerate: (params) => {
+      return fetchCubeJS({
+        route: "/smart-generate",
         method: "post",
         params,
       });

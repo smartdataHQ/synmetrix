@@ -15,7 +15,7 @@ import prepareDbParams from "./prepareDbParams.js";
  *
  * @throws {Error} - Throws an error if no data source or no dbParams are provided.
  */
-const buildSecurityContext = (dataSource, branch, version) => {
+const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) => {
   if (!dataSource) {
     throw new Error("No dataSource provided");
   }
@@ -23,6 +23,9 @@ const buildSecurityContext = (dataSource, branch, version) => {
   if (!dataSource?.db_params) {
     throw new Error("No dbParams provided");
   }
+
+  const partition = teamSettings.partition || null;
+  const internalTables = teamSettings.internal_tables || [];
 
   const data = {
     dataSourceId: dataSource.id,
@@ -32,7 +35,9 @@ const buildSecurityContext = (dataSource, branch, version) => {
 
   data.dbParams = prepareDbParams(data.dbParams, data.dbType);
 
-  const dataSourceVersion = JSum.digest(data, "SHA256", "hex");
+  // Include partition in the hash for cache isolation between tenants
+  const hashData = partition ? { ...data, partition } : data;
+  const dataSourceVersion = JSum.digest(hashData, "SHA256", "hex");
 
   const dataModels =
     version?.dataschemas ||
@@ -51,6 +56,8 @@ const buildSecurityContext = (dataSource, branch, version) => {
     preAggregationSchema,
     schemaVersion,
     files,
+    partition,
+    internalTables,
   };
 };
 

@@ -62,6 +62,7 @@ const userQuery = `
       id
       team_id
       team {
+        settings
         datasources {
           ${sourceFragment}
           branches {
