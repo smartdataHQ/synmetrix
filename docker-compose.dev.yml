@@ -2,9 +2,23 @@ version: '3.8'
 
 networks:
   synmetrix_default:
-    external: true
 
 services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    container_name: synmetrix-postgres
+    restart: always
+    ports:
+      - 5432:5432
+    volumes:
+      - pgstorage-data:/var/lib/postgresql/data
+      - ./etc/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    env_file:
+      - .env
+      - .dev.env
+    networks:
+      - synmetrix_default
+
   redis:
     image: redis:7.0.0
     restart: always
@@ -89,7 +103,8 @@ services:
       - ./services/hasura/metadata:/hasura/metadata
       - ./services/hasura/config.yaml:/hasura/config.yaml
     depends_on:
-      - hasura
+      hasura:
+        condition: service_healthy
     networks:
       - synmetrix_default
 
@@ -109,6 +124,7 @@ services:
       ENABLE_TELEMETRY: "false"
       CONSOLE_MODE: server
     depends_on:
+      - postgres
       - redis
     networks:
       - synmetrix_default
@@ -124,6 +140,9 @@ services:
     env_file:
       - .env
       - .dev.env
+    depends_on:
+      hasura_cli:
+        condition: service_healthy
     networks:
       - synmetrix_default
 
@@ -166,7 +185,7 @@ services:
         ENABLE_MINIO_PROXY: 'true'
         HASURA_GRAPHQL_ENDPOINT: /v1/graphql
         HASURA_WS_ENDPOINT: /v1/graphql
-        GRAPHQL_PLUS_SERVER_URL: 
+        GRAPHQL_PLUS_SERVER_URL:
         CUBEJS_MYSQL_API_URL: localhost:13306
         CUBEJS_PG_API_URL: localhost:15432
         CUBEJS_REST_API_URL: /api/v1/load
@@ -175,6 +194,11 @@ services:
     ports:
       - 80:8888
       - 9055:9055
+    environment:
+      NGINX_RESOLVER: "127.0.0.11"
+      ACTIONS_UPSTREAM: "actions:3000"
+      HASURA_UPSTREAM: "hasura:8080"
+      CUBEJS_UPSTREAM: "cubejs:4000"
     depends_on:
       - hasura
       - hasura_plus
