@@ -1,0 +1,150 @@
+# Implementation Plan: Dynamic Model Creation
+
+**Branch**: `004-dynamic-model-creation` | **Date**: 2026-03-08 | **Spec**: [spec.md](./spec.md)
+**Input**: Feature specification from `/specs/004-dynamic-model-creation/spec.md`
+
+## Summary
+
+Replace Synmetrix's basic model generation with an intelligent, profile-driven system for ClickHouse tables. The system introspects actual data (Map keys, cardinality, column types, array structures) and generates rich Cube.js YAML models with auto-generated field tagging, field-level smart merge on re-profile, ARRAY JOIN flattened cubes, and partition-based multi-tenancy isolation. This is a new parallel path alongside existing generation — opt-in, ClickHouse only, two-step UX (profile → review → generate).
+
+## Technical Context
+
+**Language/Version**: JavaScript (ES modules), Node.js 18+
+**Primary Dependencies**: Cube.js v1.6.x (CubeJS service), Express 4.x (both services), `yaml@^2.3.4` (CubeJS — YAML parse/generate), `js-yaml@^4.1.0` (Actions), `@cubejs-backend/clickhouse-driver` (wraps `@clickhouse/client@^1.7.0`)
+**Storage**: PostgreSQL via Hasura (versions, dataschemas, team settings), ClickHouse (profiling target — read-only)
+**Testing**: StepCI (integration/API contracts), Vitest (frontend), manual verification (end-to-end)
+**Target Platform**: Docker containers (Linux), browser (React 18 + Vite frontend)
+**Project Type**: Web service (microservice monorepo + SPA frontend)
+**Performance Goals**: <60s for profile+generate (100 columns, 500 Map keys)
+**Constraints**: ClickHouse only v1, existing Hasura action 180s timeout, manual trigger only, ephemeral config
+**Scale/Scope**: Multi-tenant, tables with 100+ columns, 500+ Map keys per column
+
+## Constitution Check
+
+*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+
+### Pre-Design Check
+
+| Principle | Status | Notes |
+|-----------|--------|-------|
+| I. Service Isolation | PASS | New code follows existing service boundaries: CubeJS owns driver/profiling/generation, Actions proxies via HTTP, Hasura defines action contracts. New shared contracts (2 Hasura actions, 2 CubeJS routes) are versioned in metadata. |
+| II. Multi-Tenancy First | PASS | Partition isolation is a core feature. Security context extended with partition + internal tables. Content hash includes partition for cache isolation. All profiling scoped to tenant partition. Runtime filtering embedded in generated YAML `sql` property (not queryRewrite — see Decision 8). |
+| III. Test-Driven Development | PASS | Plan requires tests before implementation: unit tests for profiler/merger/type-parser, StepCI integration tests for new actions/routes, frontend codegen validation. |
+| IV. Security by Default | PASS | All new endpoints behind existing JWT auth (checkAuth). Team settings update restricted to owner role. Partition values used in parameterized queries (no SQL injection). Hasura row-level security on new column. |
+| V. Simplicity/YAGNI | PASS | No template engine (use yaml.stringify), no new dependencies, no asyncModule (deferred), no joins (deferred), no scheduled profiling, ephemeral config. Existing driver for ClickHouse queries. |
+
+### Post-Design Check
+
+| Principle | Status | Notes |
+|-----------|--------|-------|
+| I. Service Isolation | PASS | 2 new CubeJS routes + 3 new Actions RPC handlers + 3 new Hasura actions. All follow existing patterns. Frontend communicates through Hasura GraphQL for mutations and directly to CubeJS for SSE progress streaming (same pattern as existing `/api/v1/*` endpoints). |
+| II. Multi-Tenancy First | PASS | Partition threaded through defineUserScope → buildSecurityContext. Runtime partition filtering embedded in generated YAML `sql` property with WHERE clause (Decision 8 — queryRewrite is NOT modified). Cache isolation via partition in context hash. Profile queries scoped by partition WHERE clause. |
+| III. Test-Driven Development | PASS | Quickstart defines TDD sequence: unit tests for each smart-generation module, StepCI for action contracts, manual verification checklist. |
+| IV. Security by Default | PASS | No new unauthenticated endpoints. Settings update gated by owner role check in RPC handler + Hasura permissions. |
+| V. Simplicity/YAGNI | PASS | 7 focused modules in `smart-generation/`, each <300 lines. No abstractions beyond what's needed. |
+
+## Project Structure
+
+### Documentation (this feature)
+
+```text
+specs/004-dynamic-model-creation/
+├── plan.md              # This file
+├── spec.md              # Feature specification
+├── research.md          # Technology decisions
+├── data-model.md        # Entity definitions and merge rules
+├── quickstart.md        # Developer setup guide
+├── contracts/
+│   ├── hasura-actions.md    # New Hasura actions + migration
+│   ├── cubejs-routes.md     # New CubeJS REST endpoints
+│   └── frontend-graphql.md  # New GraphQL operations + UI flow
+└── tasks.md             # Generated by /speckit.tasks
+```
+
+### Source Code (repository root)
+
+```text
+services/cubejs/
+├── index.js                              # Register new routes
+├── src/
+│   ├── routes/
+│   │   ├── profileTable.js               # NEW: POST /api/v1/profile-table
+│   │   └── smartGenerate.js              # NEW: POST /api/v1/smart-generate
+│   └── utils/
+│       ├── smart-generation/             # NEW: All profiling/generation logic
+│       │   ├── profiler.js               # ClickHouse table profiling
+│       │   ├── typeParser.js             # ClickHouse type string parser
+│       │   ├── fieldProcessors.js        # Column → dimension/measure
+│       │   ├── cubeBuilder.js            # ProfiledTable → cube objects
+│       │   ├── yamlGenerator.js          # Cube objects → YAML with meta
+│       │   ├── merger.js                 # Field-level smart merge
+│       │   ├── primaryKeyDetector.js     # Primary key detection
+│       │   └── progressEmitter.js        # SSE progress event helper
+│       ├── queryRewrite.js               # UNCHANGED: partition handled in generated YAML
+│       ├── defineUserScope.js            # MODIFIED: extract team settings
+│       ├── buildSecurityContext.js        # MODIFIED: partition in hash
+│       └── dataSourceHelpers.js          # MODIFIED: findUser includes settings
+
+services/actions/
+├── src/
+│   ├── rpc/
+│   │   ├── profileTable.js              # NEW: proxy to CubeJS profile
+│   │   ├── smartGenSchemas.js           # NEW: proxy to CubeJS smart-generate
+│   │   └── updateTeamSettings.js        # NEW: team settings CRUD
+│   └── utils/
+│       └── cubejsApi.js                 # MODIFIED: new methods
+
+services/hasura/
+├── metadata/
+│   ├── actions.graphql                  # MODIFIED: new types
+│   ├── actions.yaml                     # MODIFIED: new actions
+│   └── tables.yaml                      # MODIFIED: teams.settings permissions
+└── migrations/
+    └── {timestamp}_add_teams_settings/  # NEW: migration
+        ├── up.sql
+        └── down.sql
+
+../client-v2/
+├── src/
+│   ├── graphql/
+│   │   └── gql/
+│   │       ├── datasources.gql          # MODIFIED: ProfileTable + SmartGen
+│   │       └── teams.gql               # NEW: team settings operations
+│   ├── hooks/
+│   │   ├── useSources.ts               # MODIFIED: smart gen methods
+│   │   └── useTeamSettings.ts          # NEW: team settings hook
+│   ├── components/
+│   │   ├── DataModelGeneration/        # MODIFIED: Smart Generate option + profile preview
+│   │   └── ModelsSidebar/              # MODIFIED: Re-profile button
+│   └── pages/
+│       └── Models/                     # MODIFIED: two-step flow orchestration
+```
+
+**Structure Decision**: Follows existing monorepo service boundaries. New smart-generation modules are co-located in CubeJS where driver access exists. No new services, no new top-level directories.
+
+## Non-Goals / Deferred
+
+These items are explicitly out of scope for this feature and deferred to future work:
+
+- **Cube-to-cube joins generation**: Smart generation does NOT create joins between cubes. However, user-defined `joins` blocks in existing models are always **preserved** during merge/re-profile (FR-024). Join generation is deferred per research in `docs/plans/004a-dynamic-field-resolution.md`.
+- **Dynamic field resolution (asyncModule)**: No runtime dynamic dimension creation. Deferred — `queryRewrite` cannot create new dimensions (runs after compilation). See `004a-dynamic-field-resolution.md`.
+- **Editor decorations**: No special syntax highlighting, code lens, or inline previews for auto-generated vs user fields. Deferred to future UX iteration.
+- **Advanced admin UX**: No partition value autocomplete, no internal tables auto-discovery, no per-datasource settings. Admin UX is minimal: string input for partition, list editor for internal tables.
+- **Scheduled/automatic re-profiling**: No cron-based or event-driven re-profiling. Manual trigger only (FR-022).
+- **Non-ClickHouse smart generation**: ClickHouse only in v1. Other databases may be added later.
+- **JS model output**: Smart generation always produces YAML (FR-018). No JS model generation.
+- **WebSocket progress**: SSE (Server-Sent Events) is used for progress streaming, not WebSocket. The frontend connects directly to CubeJS REST endpoints for SSE; Hasura Actions remain synchronous.
+
+## Key Design Decisions
+
+These decisions were made during review and are recorded in `research.md`:
+
+- **Partition filtering via `sql` with WHERE clause** (Decision 8): Partition isolation is embedded in the generated YAML model by using `sql` (with a WHERE clause) instead of `sql_table`, NOT in `queryRewrite()`. Note: `sql_where` is NOT a valid Cube.dev property. This avoids the owner/admin bypass in `queryRewrite.js:26-28` and the brittle cube-name matching for flattened cubes.
+- **Filename convention** (Decision 9): Smart-generated files use `{table_name}.yml`. Merger locates existing models by this predictable name.
+- **Version checksum** (FR-014): Smart-generate route implements its own clean checksum comparison against full merged file content, not reusing the existing `generateDataSchema.js` pattern (which has a `cur.code` vs `content` field inconsistency).
+
+## Complexity Tracking
+
+| Decision | Added Complexity | Rejected Simpler Alternative | Justification |
+|----------|-----------------|------------------------------|---------------|
+| SSE progress streaming (FR-027) | Dual-mode routes (JSON + SSE), `progressEmitter` utility, direct frontend→CubeJS path for streaming | Spinner-only with no progress feedback | Profiling can take 30-60s for large tables (100+ columns, 500+ Map keys). Without progress feedback, users cannot distinguish a working operation from a hung one (SC-007 requires 3-minute discoverability). The direct CubeJS path follows the existing `/api/v1/*` pattern — no new service boundary. |
