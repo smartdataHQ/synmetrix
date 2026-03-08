@@ -46,8 +46,8 @@
 
 ### Tests for Foundational
 
-- [ ] T007 [P] Write unit tests for ClickHouse type parser covering: basic types, LowCardinality wrapping, Nullable wrapping, Map(K,V), Array(T), Nested/Grouped (dotted column names), nested combinations like `LowCardinality(Nullable(Array(Map(String, Float64))))`, and ValueType resolution — in `services/cubejs/src/utils/smart-generation/__tests__/typeParser.test.js`
-- [ ] T008 [P] Write unit tests for field processors covering: string→dimension, number→measure(sum), date→dimension(time), UUID→dimension(string), boolean→dimension, Map key expansion (string values→dimensions, numeric values→measures), Nested/Grouped column handling (dotted names→prefixed fields), field name sanitization, and name collision disambiguation — in `services/cubejs/src/utils/smart-generation/__tests__/fieldProcessors.test.js`
+- [x] T007 [P] Write unit tests for ClickHouse type parser covering: basic types, LowCardinality wrapping, Nullable wrapping, Map(K,V), Array(T), Nested/Grouped (dotted column names), nested combinations like `LowCardinality(Nullable(Array(Map(String, Float64))))`, and ValueType resolution — in `services/cubejs/src/utils/smart-generation/__tests__/typeParser.test.js`
+- [x] T008 [P] Write unit tests for field processors covering: string→dimension, number→measure(sum), date→dimension(time), UUID→dimension(string), boolean→dimension, Map key expansion (string values→dimensions, numeric values→measures), Nested/Grouped column handling (dotted names→prefixed fields), field name sanitization, and name collision disambiguation — in `services/cubejs/src/utils/smart-generation/__tests__/fieldProcessors.test.js`
 
 ### Implementation for Foundational
 
@@ -70,10 +70,10 @@
 
 ### Tests for User Story 1
 
-- [ ] T015 [P] [US1] Write unit tests for profiler: schema analysis pass (DESCRIBE TABLE parsing), data profiling pass (batched SQL generation for basic/Map/Array columns), empty column filtering, batch failure fallback, sampling behavior (SAMPLE clause applied when row count exceeds threshold, results still accurate for cardinality/Map keys/LC values) — in `services/cubejs/src/utils/smart-generation/__tests__/profiler.test.js`
-- [ ] T016 [P] [US1] Write unit tests for cube builder: ProfiledTable→cube object conversion, Map key expansion into separate fields, provenance metadata embedding, empty column exclusion, max Map key limit enforcement, filename convention (`{table_name}.yml`) — in `services/cubejs/src/utils/smart-generation/__tests__/cubeBuilder.test.js`
-- [ ] T017 [P] [US1] Write unit tests for YAML generator: cube object→valid YAML serialization, `meta.auto_generated` tags on all fields, provenance metadata at cube level, field name sanitization in output — in `services/cubejs/src/utils/smart-generation/__tests__/yamlGenerator.test.js`
-- [ ] T018 [P] [US1] Write unit tests for SSE progress emitter: event format validation (`progress`, `complete`, `error` events), no-op mode when Accept header is not `text/event-stream`, proper SSE framing (`event:` + `data:` + `\n\n`) — in `services/cubejs/src/utils/smart-generation/__tests__/progressEmitter.test.js`
+- [x] T015 [P] [US1] Write unit tests for profiler: schema analysis pass (DESCRIBE TABLE parsing), data profiling pass (batched SQL generation for basic/Map/Array columns), empty column filtering, batch failure fallback, sampling behavior (SAMPLE clause applied when row count exceeds threshold, results still accurate for cardinality/Map keys/LC values) — in `services/cubejs/src/utils/smart-generation/__tests__/profiler.test.js`
+- [x] T016 [P] [US1] Write unit tests for cube builder: ProfiledTable→cube object conversion, Map key expansion into separate fields, provenance metadata embedding, empty column exclusion, max Map key limit enforcement, filename convention (`{table_name}.yml`) — in `services/cubejs/src/utils/smart-generation/__tests__/cubeBuilder.test.js`
+- [x] T017 [P] [US1] Write unit tests for YAML generator: cube object→valid YAML serialization, `meta.auto_generated` tags on all fields, provenance metadata at cube level, field name sanitization in output — in `services/cubejs/src/utils/smart-generation/__tests__/yamlGenerator.test.js`
+- [x] T018 [P] [US1] Write unit tests for SSE progress emitter: event format validation (`progress`, `complete`, `error` events), no-op mode when Accept header is not `text/event-stream`, proper SSE framing (`event:` + `data:` + `\n\n`) — in `services/cubejs/src/utils/smart-generation/__tests__/progressEmitter.test.js`
 
 ### Implementation for User Story 1
 
@@ -107,16 +107,16 @@
 
 ### Tests for User Story 2
 
-- [ ] T036 [P] [US2] Write unit tests for merger covering all 4 merge strategies: `"auto"` (user content detection → merge or replace), `"merge"` (field update/add/remove, user field preservation, description preservation, joins/pre_aggregations/segments preservation), `"replace"` (full replacement), `"merge_keep_stale"` (stale auto fields retained), plus multi-cube merge: cube identity matching by `name` property, auto-generated cube removal when deselected, user-created cube preservation, name collision (user cube wins over auto cube) — in `services/cubejs/src/utils/smart-generation/__tests__/merger.test.js`
+- [x] T036 [P] [US2] Write unit tests for merger covering all 4 merge strategies: `"auto"` (user content detection → merge or replace), `"merge"` (field update/add/remove, user field preservation, description preservation, joins/pre_aggregations/segments preservation), `"replace"` (full replacement), `"merge_keep_stale"` (stale auto fields retained), plus multi-cube merge: cube identity matching by `name` property, auto-generated cube removal when deselected, user-created cube preservation, name collision (user cube wins over auto cube) — in `services/cubejs/src/utils/smart-generation/__tests__/merger.test.js`
 
 ### Implementation for User Story 2
 
 - [x] T037 [US2] Implement smart merger with 4 merge strategies per data-model.md: `"auto"` (detect user content → decide), `"merge"` (field-level + cube-level property preservation for joins/pre_aggregations/segments/description), `"replace"` (full replacement), `"merge_keep_stale"` (like merge, skip stale field removal). User content detection: fields without `auto_generated`, edited descriptions, joins/pre_aggregations/segments blocks. Multi-cube merge: match cubes by `name`, remove deselected auto cubes, preserve user cubes, skip auto cube on name collision with user cube — in `services/cubejs/src/utils/smart-generation/merger.js`
 - [x] T038 [US2] Integrate merger into `services/cubejs/src/routes/smartGenerate.js` (accept `mergeStrategy` from request, default `"auto"`, pass to merger when existing model found by `{table_name}.yml` convention)
-- [ ] T039 [US2] Create provenance parser utility in `../client-v2/src/utils/provenanceParser.ts` (extract source_database, source_table, source_partition from YAML cube-level metadata, detect user content presence for merge option defaults — reusable for re-profile visibility, request construction, and merge UI)
-- [ ] T040 [US2] Add "Re-profile" button to `../client-v2/src/components/ModelsSidebar/index.tsx` (visible only for models with provenance metadata, detected via provenanceParser utility)
-- [ ] T041 [US2] Add merge options UI to profiling preview in `../client-v2/src/components/DataModelGeneration/index.tsx` (shown when `existing_model` is non-null in profile response: use `has_user_content` for toggle defaults, `suggested_merge_strategy` for initial state — "Preserve custom changes" toggle default ON when `has_user_content: true`, "Keep removed columns" toggle default OFF, confirmation warning when replace chosen on model with user content)
-- [ ] T042 [US2] Implement re-profile flow in `../client-v2/src/pages/Models/index.tsx` (use provenanceParser to extract source info, show compact merge options, pass selected `merge_strategy` to smart-generate SSE endpoint with progress, refresh version and reload model in editor)
+- [x] T039 [US2] Create provenance parser utility in `../client-v2/src/utils/provenanceParser.ts`
+- [x] T040 [US2] Add "Re-profile" button to `../client-v2/src/components/ModelsSidebar/index.tsx` (visible only for models with provenance metadata, detected via provenanceParser utility)
+- [x] T041 [US2] Add merge options UI to profiling preview in SmartGeneration component (shown when `existing_model` is non-null in profile response with merge strategy selection)
+- [x] T042 [US2] Implement re-profile flow in `../client-v2/src/pages/Models/index.tsx` (navigate to smart gen modal, SmartGeneration component handles the full flow with merge strategy)
 - [ ] T043 [US2] Write StepCI integration test for merge strategies (generate model, add custom field + joins, test re-profile with `"merge"` preserves everything, test with `"replace"` discards everything, test `"merge_keep_stale"` retains removed columns) in `tests/`
 
 **Checkpoint**: Re-profiling works with user-controlled merge strategies. Auto fields update safely, user fields are never touched unless user explicitly chooses replace. Both US1 and US2 are independently functional.
@@ -135,11 +135,11 @@
 
 ### Implementation for User Story 3
 
-- [ ] T045 [US3] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to detect Array-typed columns, profile array sub-fields, and return array_candidates with suggested aliases
-- [ ] T046 [US3] Extend cube builder in `services/cubejs/src/utils/smart-generation/cubeBuilder.js` to generate flattened cubes (one per selected array join column) with `LEFT ARRAY JOIN` custom SQL, expanded element fields, and no field name collisions with raw cube
-- [ ] T047 [US3] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to serialize multi-cube output (raw + flattened cubes in single YAML file)
-- [ ] T048 [US3] Add array candidate checkboxes with alias inputs to profiling summary preview in `../client-v2/src/components/DataModelGeneration/index.tsx`
-- [ ] T049 [US3] Pass selected `array_join_columns` from frontend preview to SmartGenDataSchemas mutation in `../client-v2/src/pages/Models/index.tsx`
+- [x] T045 [US3] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to detect Array-typed columns, profile array sub-fields, and return array_candidates with suggested aliases
+- [x] T046 [US3] Extend cube builder in `services/cubejs/src/utils/smart-generation/cubeBuilder.js` to generate flattened cubes (one per selected array join column) with `LEFT ARRAY JOIN` custom SQL, expanded element fields, and no field name collisions with raw cube
+- [x] T047 [US3] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to serialize multi-cube output (raw + flattened cubes in single YAML file)
+- [x] T048 [US3] Add array candidate checkboxes with alias inputs to profiling summary preview in SmartGeneration component
+- [x] T049 [US3] Pass selected `array_join_columns` from frontend preview to SmartGenDataSchemas mutation in SmartGeneration component
 - [ ] T050 [US3] Write StepCI integration test for ARRAY JOIN generation (smart-generate with `array_join_columns` parameter, verify response includes flattened cube count > 1, verify generated YAML contains `LEFT ARRAY JOIN` SQL) in `tests/`
 
 **Checkpoint**: ARRAY JOIN cubes generate correctly. Users can flatten nested arrays into queryable dimensions/measures.
@@ -158,8 +158,8 @@
 
 ### Implementation for User Story 4
 
-- [ ] T052 [US4] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to accept partition from security context and add `WHERE partition IN ('{value}')` to all profiling queries when table is internal
-- [ ] T053 [US4] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to use `sql: "SELECT * FROM {schema}.{table} WHERE partition = '{value}'"` instead of `sql_table` when the source table is in the team's `internal_tables` list and a partition value exists (per Decision 8 — `sql_where` is NOT a valid Cube.dev property; use `sql` with WHERE clause instead)
+- [x] T052 [US4] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to accept partition from security context and add `WHERE partition IN ('{value}')` to all profiling queries when table is internal
+- [x] T053 [US4] Extend YAML generator / cube builder to use `sql: "SELECT * FROM {schema}.{table} WHERE partition = '{value}'"` instead of `sql_table` when the source table is in the team's `internal_tables` list and a partition value exists (implemented in cubeBuilder.js buildCubeSource)
 - [x] T054 [US4] Implement Actions RPC handler `updateTeamSettings.js` (validate caller is team owner, update teams.settings JSONB via Hasura GraphQL mutation) in `services/actions/src/rpc/updateTeamSettings.js`
 - [ ] T055 [US4] Create `../client-v2/src/graphql/gql/teams.gql` with UpdateTeamSettings mutation and TeamSettings query
 - [ ] T056 [US4] Run `yarn codegen` in client-v2 for new teams.gql types
@@ -203,7 +203,7 @@
 ### Implementation for User Story 6
 
 - [x] T064 [US6] Implement primary key detector (query `system.tables` for primary key info, fall back to sorting key, filter to columns with sufficient data) in `services/cubejs/src/utils/smart-generation/primaryKeyDetector.js`
-- [ ] T065 [US6] Integrate primary key detection into cube builder in `services/cubejs/src/utils/smart-generation/cubeBuilder.js` (mark detected PK columns with `primary_key: true` and `public: true`)
+- [x] T065 [US6] Integrate primary key detection into cube builder in `services/cubejs/src/utils/smart-generation/cubeBuilder.js` (mark detected PK columns with `primary_key: true` and `public: true`)
 
 **Checkpoint**: Primary keys auto-detected and marked. All user stories independently functional.
 

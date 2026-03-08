@@ -21,7 +21,7 @@ function analyzeExistingModel(code, fileName) {
   let hasUserContent = false;
   let supportsReprofile = false;
 
-  if (fileFormat === 'yaml') {
+  if (fileFormat === 'yml') {
     try {
       const parsed = YAML.parse(code);
       const cubes = parsed?.cubes || [];
@@ -124,9 +124,8 @@ export default async (req, res, cubejs) => {
       if (colData.columnType === ColumnType.ARRAY) {
         arrayCandidates.push({
           column: colName,
-          rawType: colData.rawType,
-          valueType: colData.valueType,
-          hasValues: colData.profile.hasValues,
+          element_type: colData.valueType || 'String',
+          suggested_alias: `${colName}_item`,
         });
       }
     }
