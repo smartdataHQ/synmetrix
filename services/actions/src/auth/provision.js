@@ -160,7 +160,7 @@ async function createMember(userId, teamId) {
 
 async function createMemberRole(memberId, teamRole) {
   const mutation = `
-    mutation CreateMemberRole($member_id: uuid!, $team_role: String!) {
+    mutation CreateMemberRole($member_id: uuid!, $team_role: team_roles_enum!) {
       insert_member_roles_one(object: { member_id: $member_id, team_role: $team_role }) {
         id
       }
