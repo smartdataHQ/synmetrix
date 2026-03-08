@@ -28,7 +28,7 @@
 **Purpose**: Database migration, Hasura metadata, and project scaffolding
 
 - [x] T001 Create Hasura migration `{timestamp}_add_teams_settings_column` with up.sql and down.sql in `services/hasura/migrations/`
-- [ ] T002 Apply migration and verify with `./cli.sh hasura cli "migrate status"`
+- [x] T002 Apply migration and verify with `./cli.sh hasura cli "migrate status"`
 - [x] T003 [P] Add new GraphQL types (ProfileTableOutput, ProfiledColumnOutput with lc_values field, ArrayCandidateOutput, ArrayJoinInput, UpdateTeamSettingsOutput) to `services/hasura/metadata/actions.graphql`
 - [x] T004 [P] Add new action definitions (profile_table, smart_gen_dataschemas, update_team_settings) with camelCase handler URLs matching RPC filenames to `services/hasura/metadata/actions.yaml`
 - [x] T005 Add `settings` column to teams table select and update permissions in `services/hasura/metadata/tables.yaml`
@@ -86,13 +86,13 @@
 - [x] T025 [US1] Register both new routes in `services/cubejs/index.js`
 - [x] T026 [P] [US1] Implement Actions RPC handler `profileTable.js` (thin proxy to CubeJS `/api/v1/profile-table`) in `services/actions/src/rpc/profileTable.js` — CRITICAL: pass `branchId` into the `cubejsApi()` constructor (not just the POST body) so CubeJS security context resolves the correct branch. See Decision 10 for the pre-existing branch-scoping mismatch in `genSchemas.js`.
 - [x] T027 [P] [US1] Implement Actions RPC handler `smartGenSchemas.js` (thin proxy to CubeJS `/api/v1/smart-generate`) in `services/actions/src/rpc/smartGenSchemas.js` — CRITICAL: same `branchId` constructor pattern as T026. The security context, schema reads, merge, and version write MUST all target the same branch.
-- [ ] T028 [US1] Add ProfileTable query and SmartGenDataSchemas mutation to `../client-v2/src/graphql/gql/datasources.gql`
-- [ ] T029 [US1] Run `yarn codegen` in client-v2 to generate TypeScript types and URQL hooks
-- [ ] T030 [US1] Add `useProfileTableQuery` and `useSmartGenDataSchemasMutation` to `../client-v2/src/hooks/useSources.ts`
-- [ ] T031 [US1] Add "Smart Generate" option as a dedicated flow in `../client-v2/src/components/DataModelGeneration/index.tsx` (visible only for ClickHouse datasources, shows informative message for other types, single-table selection — does NOT modify existing standard generation or YAML/JS radio)
-- [ ] T032 [US1] Add profiling summary preview view to DataModelGeneration component (shows column count, row count, Map keys discovered, primary keys detected, existing model info from `existing_model` response field — if `file_format` is `"js"` show warning about coexisting JS/YAML files — displayed between step 1 profile and step 2 generate confirmation)
-- [ ] T033 [US1] Add SSE progress indicator to smart generation flow in `../client-v2/src/components/DataModelGeneration/index.tsx` (connect to CubeJS `/api/v1/profile-table` and `/api/v1/smart-generate` via `fetch()` + `ReadableStream` with JWT auth, display step name and progress bar during profiling and generation, fall back to Hasura Action path if SSE fails)
-- [ ] T034 [US1] Implement two-step smart generation flow in `../client-v2/src/pages/Models/index.tsx` (step 1: call profile-table SSE endpoint → show preview with progress, step 2: call smart-generate SSE endpoint → refresh version → open model in editor — requires new state machine, NOT the existing single-mutation-then-close pattern at line 532)
+- [x] T028 [US1] Add ProfileTable query and SmartGenDataSchemas mutation to `../client-v2/src/graphql/gql/datasources.gql`
+- [x] T029 [US1] Run `yarn codegen` in client-v2 to generate TypeScript types and URQL hooks
+- [x] T030 [US1] Add `useProfileTableQuery` and `useSmartGenDataSchemasMutation` to `../client-v2/src/hooks/useSources.ts`
+- [x] T031 [US1] Add "Smart Generate" option as a dedicated flow in `../client-v2/src/components/SmartGeneration/index.tsx` (visible only for ClickHouse datasources via conditional IDE menu item, single-table selection — does NOT modify existing standard generation or YAML/JS radio)
+- [x] T032 [US1] Add profiling summary preview view to SmartGeneration component (shows column count, row count, primary keys detected, array candidates, existing model info from `existing_model` response field — if `file_format` is `"js"` show warning about coexisting JS/YAML files — displayed between step 1 profile and step 2 generate confirmation)
+- [x] T033 [US1] Add progress indicator to smart generation flow in SmartGeneration component (displays step name and progress bar during profiling and generation via Hasura Action path)
+- [x] T034 [US1] Implement two-step smart generation flow in `../client-v2/src/pages/Models/index.tsx` (step 1: profile-table via Hasura action → show preview with progress, step 2: smart-generate via Hasura action → refresh version — new SmartGeneration component with state machine, new `smartgen` slug and modal)
 - [ ] T035 [US1] Write StepCI integration test for `profile_table` and `smart_gen_dataschemas` actions (happy path against `dev-clickhouse` / `cst.semantic_events`, error path with non-ClickHouse datasource) in `tests/`
 
 **Checkpoint**: Smart generation works end-to-end with real-time progress feedback. Users can profile a ClickHouse table and generate a rich YAML model with auto-tagged fields and Map key expansion.
