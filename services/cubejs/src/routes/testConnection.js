@@ -11,9 +11,9 @@
  */
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const driver = await cubejs.options.driverFactory({ securityContext });
 
   try {
+    const driver = await cubejs.options.driverFactory({ securityContext });
     await driver.testConnection();
 
     res.json({

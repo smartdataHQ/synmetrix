@@ -1,19 +1,12 @@
-import DriverDependencies from "@cubejs-backend/server-core/dist/src/core/DriverDependencies.js";
+import DriverDependenciesModule from "@cubejs-backend/server-core/dist/src/core/DriverDependencies.js";
 import VerticaDriver from '@cubejs-backend/vertica-driver';
-
 import defineUserScope from "./defineUserScope.js";
 
+const DriverDependencies = DriverDependenciesModule.default || DriverDependenciesModule;
+
 const driverError = (err) => {
-  console.error("Driver error:");
-
-  const throwError = () => {
-    throw new Error(err?.message || err);
-  };
-
-  return {
-    tablesSchema: throwError,
-    testConnection: throwError,
-  };
+  console.error("Driver error:", err?.message || err);
+  throw new Error(err?.message || err);
 };
 
 /**
@@ -51,6 +44,9 @@ const driverFactory = async ({ securityContext, dataSource }) => {
     }
 
     const dbDriver = DriverDependencies[dbType];
+    if (!dbDriver) {
+      throw new Error(`Unknown database type: "${dbType}" (available: ${Object.keys(DriverDependencies).join(', ')})`);
+    }
     driverModule = await import(dbDriver);
 
     if (dbType === "druid") {

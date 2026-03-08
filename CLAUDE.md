@@ -257,6 +257,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PID file at `.dev-client-v2.pid` for client-v2 process (001-dev-environment)
 - JavaScript (ES modules), Node.js 18 + `@workos-inc/node` ^8.4.0, `ioredis` (existing), `express` ^4.17.1 (existing), `jsonwebtoken` (existing), `jose` (existing) (002-workos-auth)
 - PostgreSQL (existing, via Hasura), Redis (new, for sessions) (002-workos-auth)
+- JavaScript (ES modules), Node.js 20.19.2 → 22.x (upgrade required) + Cube.js v1.3.23 → v1.6.x, Express 4.18.2, ioredis 5.3.2, React 18 + Vite 4 + Ant Design 5 (frontend) (003-update-deps)
+- PostgreSQL (via Hasura), CubeStore v1.3.23 → v1.6.x (one-way partition format upgrade) (003-update-deps)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

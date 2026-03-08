@@ -220,7 +220,7 @@ paths:
           description: 'Successful operation'
       security:
         - BearerAuth: []
-  /api/v1/generate-dataschema:
+  /api/v1/generate-models:
     post:
       summary: 'Generate data models from the datasource tables'
       requestBody:
@@ -249,6 +249,35 @@ paths:
       responses:
         '200':
           description: 'Successful operation'
+      security:
+        - BearerAuth: []
+  /api/v1/cubesql:
+    post:
+      summary: 'Execute SQL query against the semantic layer'
+      description: 'Executes a SQL query against cubes and views, returning streaming JSONL results. Supports query pushdown for single-datasource queries.'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: 'SQL query to execute against the semantic layer'
+              required:
+                - query
+      parameters:
+        - $ref: '#/components/parameters/HasuraDatasourceId'
+        - $ref: '#/components/parameters/HasuraBranchId'
+      responses:
+        '200':
+          description: 'Streaming JSONL response with schema and data rows'
+        '400':
+          description: 'Invalid SQL syntax or unsupported query'
+        '401':
+          description: 'Missing or invalid JWT'
+        '403':
+          description: 'User lacks access to queried cubes/members'
       security:
         - BearerAuth: []
   /api/v1/pre-aggregations:

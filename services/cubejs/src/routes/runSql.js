@@ -13,7 +13,6 @@
  */
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const driver = await cubejs.options.driverFactory({ securityContext });
 
   if (!req.body.query) {
     res.status(400).json({
@@ -25,6 +24,7 @@ export default async (req, res, cubejs) => {
   }
 
   try {
+    const driver = await cubejs.options.driverFactory({ securityContext });
     const rows = await driver.query(req.body.query);
     res.json(rows);
   } catch (err) {
