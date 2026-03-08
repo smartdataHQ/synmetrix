@@ -37,9 +37,10 @@ export default async (req, res, cubejs) => {
   const { userScope, userId, authToken } = securityContext;
   const { dataSourceId } = userScope.dataSource;
 
-  const driver = await cubejs.options.driverFactory({ securityContext });
+  let driver;
 
   try {
+    driver = await cubejs.options.driverFactory({ securityContext });
     let schema = await driver.tablesSchema();
     const {
       tables = [],

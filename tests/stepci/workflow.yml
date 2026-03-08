@@ -13,3 +13,4 @@ env:
   TEST_TEAM_NAME: Test team
 include:
   - owner_flow.yml
+  - cubesql_flow.yml

@@ -36,6 +36,7 @@ const queryBaseMembers = [
   "timezone",
   "limit",
   "offset",
+  "cache",
 ];
 
 const parseDates = (filters, timezone = "UTC") => {
@@ -153,7 +154,7 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
 
     let signal = timeoutSignal(10 * 1000);
 
-    if (route === "/get-schema" || route === "/generate-dataschema") {
+    if (route === "/get-schema" || route === "/generate-models") {
       signal = timeoutSignal(180 * 1000);
     }
 

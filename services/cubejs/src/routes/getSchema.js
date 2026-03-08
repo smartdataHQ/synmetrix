@@ -13,9 +13,10 @@ export const NO_SCHEMA_KEY = "no_schema";
  */
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const driver = await cubejs.options.driverFactory({ securityContext });
+  let driver;
 
   try {
+    driver = await cubejs.options.driverFactory({ securityContext });
     const schema = await driver.tablesSchema();
 
     if (schema?.[""]) {

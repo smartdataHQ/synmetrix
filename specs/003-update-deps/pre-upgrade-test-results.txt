@@ -1,0 +1,213 @@
+Runtime Environment: dev
+$ docker build -qt stepci-test ./scripts/containers/stepci
+sha256:12ddb16d9cc20be9fee4cab4e994e68ebed154c715f3fa11c9c0b262be96e9a9
+$ docker run --rm --network synmetrix_default --name stepci-tests --network-alias stepci-tests -v /Users/stefanbaxter/Development/synmetrix/tests/stepci:/tests -i --env-file .env --env-file .dev.env stepci-test:latest tests/workflow.yml
+(node:8) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+ FAIL  owner_flow ⏲ 8.074s ⬆ 0 bytes ⬇ 0 bytes
+
+Summary
+
+  ✔ delete_test_data passed after 0.018s
+  ✔ sign_up passed after 2.048s
+  ✔ refresh_token passed after 0.015s
+  ✔ change_password passed after 3.989s
+  ✔ logout passed after 0.006s
+  ✔ login passed after 1.978s
+  ✔ create_team passed after 0.013s
+  ✕ invite_team_member failed after 0.006s
+  ⚠︎ create_datasource skipped after 0s
+  ⚠︎ create_branch skipped after 0s
+  ⚠︎ check_connection skipped after 0s
+  ⚠︎ fetch_tables skipped after 0s
+  ⚠︎ gen_dataschemas skipped after 0s
+  ⚠︎ create_exploration skipped after 0s
+  ⚠︎ fetch_dataset skipped after 0s
+  ⚠︎ export_data_models skipped after 0s
+  ⚠︎ fetch_meta skipped after 0s
+  ⚠︎ run_query skipped after 0s
+  ⚠︎ create_sql_credentials skipped after 0s
+  ⚠︎ create_alert skipped after 0s
+  ⚠︎ create_report skipped after 0s
+  ⚠︎ generate_sql skipped after 0s
+  ⚠︎ create_version skipped after 0s
+  ⚠︎ generate_docs skipped after 0s
+
+✔ owner_flow › delete_test_data
+
+✔ owner_flow › sign_up
+
+✔ owner_flow › refresh_token
+
+✔ owner_flow › change_password
+
+✔ owner_flow › logout
+
+✔ owner_flow › login
+
+✔ owner_flow › create_team
+
+● owner_flow › invite_team_member
+
+Request  HTTP 
+
+POST http://hasura:8080/v1/graphql HTTP/1.1
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJoYXN1cmEiOnsieC1oYXN1cmEtdXNlci1pZCI6IjY5MmY3MmE1LTYwZDktNDFkMy1hYzFlLTI4M2FlYTA0OTI0ZCIsIngtaGFzdXJhLWFsbG93ZWQtcm9sZXMiOlsidXNlciJdLCJ4LWhhc3VyYS1kZWZhdWx0LXJvbGUiOiJ1c2VyIn0sInN1YiI6IjY5MmY3MmE1LTYwZDktNDFkMy1hYzFlLTI4M2FlYTA0OTI0ZCIsImlzcyI6Im5ob3N0IiwiaWF0IjoxNzcyOTU3NzQ4LCJleHAiOjE3NzM2MDU3NDh9.t4h1CbevlCeWN6viT795Df1XFgD7-M-16JNfdcTM0gc
+,x-hasura-user-id: 692f72a5-60d9-41d3-ac1e-283aea04924d
+
+{"query":"mutation ($email: String!, $teamId: uuid) {\n  invite_team_member(email: $email, teamId: $teamId) {\n    code\n    message\n    memberId\n  }\n}\n","variables":{"email":"invite@test.com","teamId":"ca06617e-2529-4bb2-853e-e66eb4ca5a95"}}
+Response
+
+HTTP/1.1 200 OK
+date: Sun 08 Mar 2026 08:15:47 GMT
+content-type: application/json; charset=utf-8
+content-length: 114
+
+{"errors":[{"message":"User was not found","extensions":{"path":"$","code":"/app/src/utils/apiError.js_failed"}}]}
+
+Captures
+
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiJ9.eyJoYXN1cmEiOnsieC1oYXN1cmEtdXNlci1pZCI6IjY5MmY3MmE1LTYwZDktNDFkMy1hYzFlLTI4M2FlYTA0OTI0ZCIsIngtaGFzdXJhLWFsbG93ZWQtcm9sZXMiOlsidXNlciJdLCJ4LWhhc3VyYS1kZWZhdWx0LXJvbGUiOiJ1c2VyIn0sInN1YiI6IjY5MmY3MmE1LTYwZDktNDFkMy1hYzFlLTI4M2FlYTA0OTI0ZCIsImlzcyI6Im5ob3N0IiwiaWF0IjoxNzcyOTU3NzQ4LCJleHAiOjE3NzM2MDU3NDh9.t4h1CbevlCeWN6viT795Df1XFgD7-M-16JNfdcTM0gc",
+  "refreshToken": "eb795c11-202f-48f3-a27a-fe68b9fda5e6",
+  "userId": "692f72a5-60d9-41d3-ac1e-283aea04924d",
+  "teamId": "ca06617e-2529-4bb2-853e-e66eb4ca5a95"
+}
+
+Cookies
+
+[
+  {
+    "key": "refresh_token",
+    "expires": "1970-01-01T00:00:00.000Z",
+    "domain": "hasura_plus",
+    "path": "/",
+    "hostOnly": true,
+    "creation": "2026-03-08T08:15:48.102Z",
+    "lastAccessed": "2026-03-08T08:15:48.102Z"
+  },
+  {
+    "key": "permission_variables",
+    "expires": "1970-01-01T00:00:00.000Z",
+    "domain": "hasura_plus",
+    "path": "/",
+    "hostOnly": true,
+    "creation": "2026-03-08T08:15:48.102Z",
+    "lastAccessed": "2026-03-08T08:15:48.102Z"
+  }
+]
+
+Checks
+
+✕ JSONPath > $.data.invite_team_member.memberId
+
+Expected
+
+[
+  {
+    "isString": true
+  }
+]
+
+Given
+
+undefined
+
+✔ Status
+
+⚠︎ owner_flow › create_datasource
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_branch
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › check_connection
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › fetch_tables
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › gen_dataschemas
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_exploration
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › fetch_dataset
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › export_data_models
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › fetch_meta
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › run_query
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_sql_credentials
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_alert
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_report
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › generate_sql
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › create_version
+
+Step was skipped because previous one failed
+
+
+⚠︎ owner_flow › generate_docs
+
+Step was skipped because previous one failed
+
+
+Tests: 1 failed, 0 passed, 1 total
+Steps: 17 failed, 16 skipped, 7 passed, 24 total
+Time:  8.307s, estimated 8s
+CO2:   0.00072g
+
+Workflow failed after 8.307s
+Give us your feedback on https://step.ci/feedback
+    Error: (node:8) [DEP0169] DeprecationWarning: `url.parse()` behavior is 
+    not standardized and prone to errors that have security implications. Use 
+    the WHATWG URL API instead. CVEs are not issued for `url.parse()` 
+    vulnerabilities.
+    (Use `node --trace-deprecation ...` to show where the warning was created)
+        at StepCI.run (file:///Users/stefanbaxter/Development/synmetrix/cli/di
+    st/src/commands/tests/stepci.js:33:17)
+        exit code: 5

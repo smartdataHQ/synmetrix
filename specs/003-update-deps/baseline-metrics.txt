@@ -1,0 +1,86 @@
+=== Pre-Upgrade Baseline Metrics ===
+Date: 2026-03-08 08:11:29 UTC
+
+--- Node.js Version ---
+v20.19.2
+
+--- CubeJS Version (from logs) ---
+yarn run v1.22.22
+$ nodemon --exitcrash --inspect=0.0.0.0  --max-old-space-size=8096 --max-http-header-size=32768 --watch src --watch index.js
+[33m[nodemon] 2.0.22[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): src/**/* index.js[39m
+[33m[nodemon] watching extensions: js,mjs,json[39m
+[32m[nodemon] starting `node --inspect=0.0.0.0 --max-old-space-size=8096 --max-http-header-size=32768 index.js`[39m
+Debugger listening on ws://0.0.0.0:9229/12e6e806-aebf-455a-9bc1-29fec662b021
+For help, see: https://nodejs.org/en/docs/inspector
+🔗 Cube SQL (pg) is listening on 0.0.0.0:15432
+(node:43) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+(Use `node --trace-warnings ...` to show where the warning was created)
+yarn run v1.22.22
+$ nodemon --exitcrash --inspect=0.0.0.0  --max-old-space-size=8096 --max-http-header-size=32768 --watch src --watch index.js
+[33m[nodemon] 2.0.22[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): src/**/* index.js[39m
+[33m[nodemon] watching extensions: js,mjs,json[39m
+[32m[nodemon] starting `node --inspect=0.0.0.0 --max-old-space-size=8096 --max-http-header-size=32768 index.js`[39m
+Debugger listening on ws://0.0.0.0:9229/9953c83f-b599-4fb5-8f5f-5e60ee6cda8a
+
+--- CubeStore Version ---
+2026-03-07T14:29:49.510Z INFO  [cubestored] <pid:1> Cube Store version 1.3.23
+2026-03-07T14:29:49.543Z INFO  [cubestore::http::status] <pid:1> Serving status probes at 0.0.0.0:3031
+2026-03-07T14:29:49.683Z INFO  [cubestore::metastore::rocks_fs] <pid:1> Downloading remote metastore
+2026-03-07T14:29:49.840Z INFO  [cubestore::mysql] <pid:1> MySQL port open on 0.0.0.0:3306
+2026-03-07T14:29:49.840Z INFO  [cubestore::http] <pid:1> Http Server is listening on 0.0.0.0:3030
+2026-03-07T14:30:04.853Z INFO  [cubestore::metastore::rocks_fs] <pid:1> Downloading remote cachestore
+2026-03-07T22:07:56.523Z INFO  [cubestored] <pid:1> Cube Store version 1.3.23
+2026-03-07T22:07:56.543Z INFO  [cubestore::http::status] <pid:1> Serving status probes at 0.0.0.0:3031
+2026-03-07T22:07:56.550Z INFO  [cubestore::metastore::rocks_fs] <pid:1> Using existing metastore in /cube/.cubestore/data/metastore
+2026-03-07T22:07:56.591Z INFO  [cubestore::mysql] <pid:1> MySQL port open on 0.0.0.0:3306
+
+--- Service Startup Time ---
+Started: 2026-03-07T22:07:56.379690917Z
+
+--- Container Status ---
+synmetrix-actions-1: Up 10 hours
+synmetrix-hasura_plus-1: Up 10 hours (healthy)
+synmetrix-hasura_cli-1: Up 10 hours (healthy)
+synmetrix-cubejs-1: Up 10 hours
+synmetrix-cubejs_refresh_worker-1: Up 10 hours
+synmetrix-hasura-1: Up 10 hours (healthy)
+synmetrix-postgres: Up 10 hours
+synmetrix-redis-1: Up 10 hours
+synmetrix-minio-1: Up 10 hours (healthy)
+synmetrix-cubestore-1: Up 10 hours
+synmetrix-mailhog-1: Up 10 hours
+
+=== Post-Upgrade Final Metrics ===
+Date: 2026-03-08 10:39 UTC
+
+--- Versions ---
+Node.js: v22.14.0 (was v20.19.2)
+CubeStore: v1.6.19 (was v1.3.23)
+Cube.js: v1.6.19 (was v1.3.23)
+
+--- Startup ---
+CubeJS: Starts cleanly, SQL API (PG) listening on 15432
+CubeStore: Running on linux/amd64 via Docker emulation (no ARM64 images for v1.6.x)
+All 10 services: Running
+
+--- New Endpoints ---
+POST /api/v1/cubesql: Auto-registered by Cube.js v1.6, responds with auth enforcement
+
+--- StepCI Tests ---
+cubesql_flow: PASSED (new test)
+owner_flow: FAILED (pre-existing invite_team_member, not upgrade-related)
+
+--- Frontend ---
+ESLint: PASSED (all changed files)
+GraphQL Codegen: PASSED
+New database tiles: 4 (DuckDB, Oracle, SQLite, Apache Pinot)
+Elasticsearch: Marked deprecated
+Snowflake/Databricks: OAuth auth method toggle added
+
+--- Hasura Migration ---
+1709836800002_extend_hide_password_oauth: Applied successfully
+hide_password() now masks oauthToken and oauthClientSecret

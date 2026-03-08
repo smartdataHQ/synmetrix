@@ -113,6 +113,11 @@ const prepareDbParams = (dbParams, dbType) => {
         ...dbConfig,
         account,
       };
+
+      if (dbConfig.oauthToken) {
+        dbConfig.authenticator = "OAUTH";
+        dbConfig.token = dbConfig.oauthToken;
+      }
       break;
     case "druid":
       dbConfig.url = makeUrl(dbConfig.host, dbConfig.port);
@@ -127,6 +132,42 @@ const prepareDbParams = (dbParams, dbType) => {
         password: dbConfig?.password,
         engineName: dbConfig?.engineName,
       };
+      break;
+    case "oracle":
+      dbConfig = {
+        ...dbConfig,
+        connectionString: `${dbConfig.host}:${dbConfig.port || 1521}/${dbConfig.serviceName || dbConfig.database}`,
+      };
+      // Remove connectString if present to avoid NJS-075 conflict
+      delete dbConfig.connectString;
+      break;
+    case "sqlite":
+      dbConfig = {
+        ...dbConfig,
+        pathToDatabase: dbConfig.database,
+      };
+      break;
+    case "pinot":
+      // PinotDriver constructs URL as `${host}:${port}/query/sql` directly,
+      // so ensure host has http:// prefix rather than setting a separate url field
+      if (dbConfig.host && !dbConfig.host.startsWith("http://") && !dbConfig.host.startsWith("https://")) {
+        dbConfig.host = "http://" + dbConfig.host;
+      }
+      dbConfig.port = dbConfig.port || 8099;
+      break;
+    case "duckdb":
+      dbConfig = {
+        ...dbConfig,
+        databasePath: dbConfig.database || dbConfig.databasePath,
+        motherduck_token: dbConfig.motherduckToken,
+      };
+      break;
+    case "databricks-jdbc":
+      if (dbConfig.oauthClientId && dbConfig.oauthClientSecret) {
+        dbConfig.authType = "oauth-m2m";
+        dbConfig.oAuthClientId = dbConfig.oauthClientId;
+        dbConfig.oAuthClientSecret = dbConfig.oauthClientSecret;
+      }
       break;
     default:
       break;

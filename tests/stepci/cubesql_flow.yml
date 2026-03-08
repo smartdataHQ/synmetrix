@@ -1,0 +1,31 @@
+tests:
+  cubesql_flow:
+    steps:
+      - name: cubesql_no_auth
+        http:
+          url: http://cubejs:4000/api/v1/cubesql
+          method: POST
+          headers:
+            Content-Type: application/json
+          body: |
+            {"query": "SELECT 1"}
+          check:
+            status: 500
+            jsonpath:
+              $.error:
+                - isString: true
+
+      - name: cubesql_invalid_auth
+        http:
+          url: http://cubejs:4000/api/v1/cubesql
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer invalid_token_here
+          body: |
+            {"query": "SELECT 1"}
+          check:
+            status: 500
+            jsonpath:
+              $.error:
+                - isString: true

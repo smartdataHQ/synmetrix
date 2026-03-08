@@ -1,4 +1,4 @@
-FROM node:20.19.2-bullseye
+FROM node:22.14.0-bullseye
 
 ARG DATABRICKS_JDBC_URL=https://databricks-bi-artifacts.s3.us-east-2.amazonaws.com/simbaspark-drivers/jdbc/2.6.32/DatabricksJDBC42-2.6.32.1054.zip
 
