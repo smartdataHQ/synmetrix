@@ -1,15 +1,8 @@
+import { loadRules } from "../utils/queryRewrite.js";
+
 /**
  * Asynchronous function to run a SQL query using Cube.js.
- *
- * @param {Object} req - The request object from the client.
- * @param {Object} req.body - The body of the request.
- * @param {string} req.body.query - The SQL query to run.
- * @param {Object} req.securityContext - The security context from the request.
- * @param {Object} res - The response object to the client.
- * @param {Object} cubejs - The Cube.js server instance.
- * @returns {Promise} - A promise that resolves to the result of the SQL query.
- *
- * @throws {Error} - Throws an error if running the SQL query fails.
+ * Blocks access for teams with active query rewrite rules (prevents queryRewrite bypass).
  */
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
@@ -24,6 +17,17 @@ export default async (req, res, cubejs) => {
   }
 
   try {
+    // Check if the user's team has active query rewrite rules
+    const rules = await loadRules();
+    if (rules.length > 0) {
+      res.status(403).json({
+        code: "sql_api_blocked",
+        message:
+          "SQL API access is not available for teams with active access control rules. Use the Cube.js API instead.",
+      });
+      return;
+    }
+
     const driver = await cubejs.options.driverFactory({ securityContext });
     const rows = await driver.query(req.body.query);
     res.json(rows);

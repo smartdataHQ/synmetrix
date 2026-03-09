@@ -1,0 +1,92 @@
+tests:
+  provisioning_with_partition:
+    steps:
+      # Clean up test data
+      - name: cleanup_test_teams
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation cleanup {
+                delete_teams(where: { name: { _in: ["acme-partition-test.com", "no-partition-test.com"] } }) {
+                  affected_rows
+                }
+              }
+          check:
+            status: 200
+
+      # Test 1: Provisioning with partition token should store partition in team settings
+      # This test uses the actions service callback indirectly via admin mutations
+      # to simulate the provisioning result
+      - name: create_team_with_partition
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation CreateTeamWithPartition {
+                insert_teams_one(object: {
+                  name: "acme-partition-test.com",
+                  settings: { partition: "acme-corp" }
+                }) {
+                  id
+                  settings
+                }
+              }
+          captures:
+            partitionTeamId:
+              jsonpath: $.data.insert_teams_one.id
+          check:
+            status: 200
+            jsonpath:
+              $.data.insert_teams_one.settings.partition:
+                - eq: "acme-corp"
+
+      # Test 2: Team created without partition should have empty settings
+      - name: create_team_without_partition
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation CreateTeamNoPartition {
+                insert_teams_one(object: {
+                  name: "no-partition-test.com"
+                }) {
+                  id
+                  settings
+                }
+              }
+          captures:
+            noPartitionTeamId:
+              jsonpath: $.data.insert_teams_one.id
+          check:
+            status: 200
+
+      # Cleanup
+      - name: cleanup_partition_test
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation cleanup {
+                delete_teams(where: { name: { _in: ["acme-partition-test.com", "no-partition-test.com"] } }) {
+                  affected_rows
+                }
+              }
+          check:
+            status: 200

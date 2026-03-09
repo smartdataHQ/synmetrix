@@ -1,6 +1,8 @@
 import express from "express";
 
 import checkAuthMiddleware from "../utils/checkAuth.js";
+import { invalidateUserCache } from "../utils/dataSourceHelpers.js";
+import { invalidateRulesCache } from "../utils/queryRewrite.js";
 import generateDataSchema from "./generateDataSchema.js";
 import getSchema from "./getSchema.js";
 import preAggregationPreview from "./preAggregationPreview.js";
@@ -13,6 +15,21 @@ import testConnection from "./testConnection.js";
 const router = express.Router();
 
 export default ({ basePath, cubejs }) => {
+  // Internal cache invalidation endpoint (called by Actions service, no auth)
+  router.post(`${basePath}/v1/internal/invalidate-cache`, (req, res) => {
+    const { type, userId } = req.body || {};
+
+    if (type === "user") {
+      invalidateUserCache(userId || null);
+    } else if (type === "rules") {
+      invalidateRulesCache();
+    } else if (type === "all") {
+      invalidateUserCache(null);
+      invalidateRulesCache();
+    }
+
+    res.json({ ok: true });
+  });
   router.post(`${basePath}/v1/run-sql`, checkAuthMiddleware, (req, res) =>
     runSql(req, res, cubejs)
   );

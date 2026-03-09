@@ -67,19 +67,9 @@
                     members:
                       user_id:
                         _eq: X-Hasura-User-Id
-  update_permissions:
-    - role: user
-      permission:
-        columns:
-          - email
-        filter:
-          user:
-            id:
-              _eq: X-Hasura-User-Id
-        check:
-          user:
-            id:
-              _eq: X-Hasura-User-Id
+  # SECURITY: UPDATE on email removed for role user (005-simple-access-controls)
+  # Prevents self-escalation to portal admin by changing email to @snjallgogn.is
+  # Email changes must go through WorkOS only
 - table:
     name: providers
     schema: auth
@@ -947,6 +937,7 @@
         columns:
           - created_at
           - id
+          - properties
           - team_id
           - updated_at
           - user_id
@@ -1347,6 +1338,27 @@
                     user_id:
                       _eq: X-Hasura-User-Id
 - table:
+    name: query_rewrite_rules
+    schema: public
+  object_relationships:
+    - name: creator
+      using:
+        foreign_key_constraint_on: created_by
+  select_permissions:
+    - role: user
+      permission:
+        columns:
+          - id
+          - cube_name
+          - dimension
+          - property_source
+          - property_key
+          - operator
+          - created_by
+          - created_at
+          - updated_at
+        filter: {}
+- table:
     name: team_roles
     schema: public
   is_enum: true
@@ -1427,7 +1439,6 @@
       permission:
         columns:
           - name
-          - settings
         filter:
           members:
             _and:

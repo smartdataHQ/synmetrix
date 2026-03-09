@@ -270,3 +270,74 @@ type UpdateTeamSettingsOutput {
   message: String
 }
 
+type Mutation {
+  list_all_teams(
+    limit: Int
+    offset: Int
+  ): ListAllTeamsOutput
+}
+
+type Mutation {
+  manage_query_rewrite_rule(
+    action: String!
+    id: uuid
+    cube_name: String
+    dimension: String
+    property_source: String
+    property_key: String
+    operator: String
+  ): ManageQueryRewriteRuleOutput
+}
+
+type Mutation {
+  update_member_properties(
+    member_id: uuid!
+    properties: jsonb!
+  ): UpdateMemberPropertiesOutput
+}
+
+type Mutation {
+  update_team_properties(
+    team_id: uuid!
+    properties: jsonb!
+  ): UpdateTeamPropertiesOutput
+}
+
+type ListAllTeamsOutput {
+  teams: [TeamInfo!]!
+  total: Int!
+}
+
+type TeamInfo {
+  id: uuid!
+  name: String!
+  settings: jsonb
+  member_count: Int!
+  created_at: String!
+}
+
+type ManageQueryRewriteRuleOutput {
+  success: Boolean!
+  rule_id: uuid
+}
+
+type UpdateTeamPropertiesOutput {
+  success: Boolean!
+}
+
+type UpdateMemberPropertiesOutput {
+  success: Boolean!
+}
+
+type Mutation {
+  copy_datasource(
+    datasource_id: uuid!
+    target_team_id: uuid!
+  ): CopyDatasourceOutput
+}
+
+type CopyDatasourceOutput {
+  id: uuid
+  name: String
+}
+

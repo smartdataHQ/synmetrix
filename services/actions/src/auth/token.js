@@ -70,6 +70,7 @@ export default async function tokenHandler(req, res) {
         return res.json({
           accessToken: freshJwt,
           userId: session.userId,
+          teamId: session.teamId || null,
           role: "user",
         });
       } catch (refreshError) {
@@ -93,6 +94,7 @@ export default async function tokenHandler(req, res) {
     return res.json({
       accessToken,
       userId: session.userId,
+      teamId: session.teamId || null,
       role: "user",
     });
   } catch (error) {

@@ -81,11 +81,12 @@ const defineUserScope = (
     dataSource.team_id
   );
 
-  // Extract team settings (partition, internal_tables) from the member's team
+  // Extract team settings and member properties from the member's team
   const teamMember = allMembers.find(
     (member) => member.team_id === dataSource.team_id
   );
   const teamSettings = teamMember?.team?.settings || {};
+  const memberProperties = teamMember?.properties || {};
 
   const dataSourceContext = buildSecurityContext(
     dataSource,
@@ -97,6 +98,8 @@ const defineUserScope = (
   return {
     dataSource: dataSourceContext,
     ...dataSourceAccessList,
+    teamProperties: teamSettings,
+    memberProperties,
   };
 };
 

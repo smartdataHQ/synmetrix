@@ -115,6 +115,41 @@ actions:
       timeout: 30
     permissions:
       - role: user
+  - name: list_all_teams
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/listAllTeams'
+      forward_client_headers: true
+    permissions:
+      - role: user
+  - name: manage_query_rewrite_rule
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/manageQueryRewriteRule'
+      forward_client_headers: true
+    permissions:
+      - role: user
+  - name: update_member_properties
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/updateMemberProperties'
+      forward_client_headers: true
+    permissions:
+      - role: user
+  - name: update_team_properties
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/updateTeamProperties'
+      forward_client_headers: true
+    permissions:
+      - role: user
+  - name: copy_datasource
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/copyDatasource'
+      forward_client_headers: true
+    permissions:
+      - role: user
   - name: send_test_alert
     definition:
       kind: synchronous
@@ -150,4 +185,10 @@ custom_types:
     - name: ArrayCandidateOutput
     - name: SmartGenOutput
     - name: UpdateTeamSettingsOutput
+    - name: ListAllTeamsOutput
+    - name: TeamInfo
+    - name: ManageQueryRewriteRuleOutput
+    - name: UpdateTeamPropertiesOutput
+    - name: UpdateMemberPropertiesOutput
+    - name: CopyDatasourceOutput
   scalars: []

@@ -365,10 +365,39 @@ export async function profileTable(driver, schema, table, options = {}) {
       })
     : Promise.resolve([]);
 
-  const [metaResult, describeRows] = await Promise.all([
+  // Fetch table comment (description) from system.tables
+  const tableCommentPromise = driver.query(
+    `SELECT comment FROM system.tables WHERE database = '${schema}' AND name = '${table}'`
+  ).catch(err => {
+    console.warn(`[profiler] Table comment fetch failed (non-fatal): ${err.message}`);
+    return [];
+  });
+
+  // Fetch column comments (descriptions) from system.columns
+  const columnCommentsPromise = driver.query(
+    `SELECT name, comment FROM system.columns WHERE database = '${schema}' AND table = '${table}' AND comment != ''`
+  ).catch(err => {
+    console.warn(`[profiler] Column comments fetch failed (non-fatal): ${err.message}`);
+    return [];
+  });
+
+  const [metaResult, describeRows, tableCommentRows, columnCommentRows] = await Promise.all([
     metaPromise,
     driver.query(`DESCRIBE TABLE ${schema}.\`${table}\``),
+    tableCommentPromise,
+    columnCommentsPromise,
   ]);
+
+  // Build column descriptions map
+  const columnDescriptions = new Map();
+  for (const row of columnCommentRows) {
+    if (row.name && row.comment) {
+      columnDescriptions.set(row.name, row.comment);
+    }
+  }
+
+  // Extract table description
+  const tableDescription = tableCommentRows.length > 0 ? (tableCommentRows[0].comment || null) : null;
 
   // Empty columns from system metadata (only when not partition-filtered)
   const emptyColumns = new Set();
@@ -790,5 +819,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     sample_size: needsSampling ? Math.min(Math.round(rowCount / SAMPLE_RATIO), SUBQUERY_LIMIT_MAX) : null,
     sampling_method: needsSampling ? 'subquery_limit' : 'none',
     columns,
+    tableDescription,
+    columnDescriptions,
   };
 }

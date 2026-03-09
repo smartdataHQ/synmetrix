@@ -128,15 +128,16 @@ async function findTeamByName(name) {
   return result.data?.teams?.[0] || null;
 }
 
-async function createTeam(name, userId) {
+async function createTeam(name, userId, initialSettings = {}) {
   const mutation = `
-    mutation CreateTeam($name: String!, $user_id: uuid!) {
-      insert_teams_one(object: { name: $name, user_id: $user_id }) {
+    mutation CreateTeam($name: String!, $user_id: uuid!, $settings: jsonb) {
+      insert_teams_one(object: { name: $name, user_id: $user_id, settings: $settings }) {
         id
       }
     }
   `;
-  const result = await fetchGraphQL(mutation, { name, user_id: userId });
+  const settings = Object.keys(initialSettings).length > 0 ? initialSettings : null;
+  const result = await fetchGraphQL(mutation, { name, user_id: userId, settings });
   return result.data?.insert_teams_one?.id;
 }
 
@@ -173,38 +174,29 @@ async function createMemberRole(memberId, teamRole) {
  * JIT provision a user from WorkOS authentication data.
  * Returns { userId, teamId } for session creation.
  */
-export async function provisionUser(workosUser) {
+export async function provisionUser(workosUser, options = {}) {
+  const { partition, orgId } = options;
   const email = workosUser.email;
   const workosUserId = workosUser.id;
+
+  logger.log(`[Provision] Starting: email=${email}, workosId=${workosUserId}, partition=${partition || "none"}, orgId=${orgId || "none"}`);
 
   // 1. Look up by workos_user_id (primary)
   let account = await findAccountByWorkosId(workosUserId);
 
   if (account) {
-    // Existing user via workos_user_id
-    const member = await findMemberWithTeam(account.user_id);
-    if (member) {
-      return { userId: account.user_id, teamId: member.team_id };
-    }
-    // Orphan: has account but no team membership — fall through to assign team
-    return await assignTeamToUser(account.user_id, email, workosUser);
+    return await ensureOrgTeam(account.user_id, email, workosUser, partition, orgId);
   }
 
   // 2. Fallback: look up by email
   account = await findAccountByEmail(email);
 
   if (account) {
-    // Backfill workos_user_id
     if (!account.workos_user_id) {
       await backfillWorkosId(account.id, workosUserId);
     }
 
-    const member = await findMemberWithTeam(account.user_id);
-    if (member) {
-      return { userId: account.user_id, teamId: member.team_id };
-    }
-    // Orphan
-    return await assignTeamToUser(account.user_id, email, workosUser);
+    return await ensureOrgTeam(account.user_id, email, workosUser, partition, orgId);
   }
 
   // 3. New user: create everything
@@ -212,18 +204,78 @@ export async function provisionUser(workosUser) {
   const userId = await createUser(displayName, workosUser.profilePictureUrl);
   await createAccount(userId, email, workosUserId);
 
-  return await assignTeamToUser(userId, email, workosUser);
+  return await assignTeamToUser(userId, email, workosUser, partition, orgId);
 }
 
-async function assignTeamToUser(userId, email, workosUser) {
+/**
+ * Derive team name from org context.
+ * Priority: partition from JWT (e.g. "blue.is") > email domain (business) > full email (consumer).
+ * The partition claim in WorkOS is the org's unique identifier/slug.
+ */
+function deriveTeamName(email, partition) {
+  if (partition) {
+    return partition.toLowerCase().trim();
+  }
   const emailDomain = email.split("@")[1]?.toLowerCase().trim();
-  const teamName = (isConsumerDomain(emailDomain) ? email : emailDomain).toLowerCase().trim();
+  return (isConsumerDomain(emailDomain) ? email : emailDomain).toLowerCase().trim();
+}
+
+/**
+ * For existing users: ensure they have membership in the org-derived team.
+ * Uses orgName from JWT for team naming when available. Creates the team if needed.
+ * Returns that team as the active team for the session.
+ */
+async function ensureOrgTeam(userId, email, workosUser, partition, orgId) {
+  const teamName = deriveTeamName(email, partition);
+
+  logger.log(`[Provision] ensureOrgTeam: userId=${userId}, teamName="${teamName}", partition=${partition || "none"}, orgId=${orgId || "none"}`);
+
+  // Find or create the org's team
+  let team = await findTeamByName(teamName);
+  let isTeamCreator = false;
+
+  if (!team) {
+    const initialSettings = partition ? { partition } : {};
+    const teamId = await createTeam(teamName, userId, initialSettings);
+    team = { id: teamId };
+    isTeamCreator = true;
+    logger.log(`[Provision] Created new team "${teamName}" (${teamId}) with partition=${partition || "none"}`);
+  }
+
+  // Ensure user is a member of this team (on_conflict handles duplicate)
+  const memberId = await createMember(userId, team.id);
+  if (memberId) {
+    await createMemberRole(memberId, isTeamCreator ? "owner" : "member");
+    logger.log(`[Provision] Added user ${userId} to team ${team.id} (${teamName}) as ${isTeamCreator ? "owner" : "member"}`);
+  }
+
+  // If partition provided and team already existed, ensure partition is set in settings
+  if (partition && !isTeamCreator) {
+    await ensureTeamPartition(team.id, partition);
+  }
+
+  logger.log(
+    `[Provision] ensureOrgTeam result: user=${userId} team=${team.id} (${teamName}) partition=${partition || "none"} newTeam=${isTeamCreator}`
+  );
+
+  return { userId, teamId: team.id };
+}
+
+async function assignTeamToUser(userId, email, workosUser, partition, orgId) {
+  const teamName = deriveTeamName(email, partition);
+
+  if (!partition) {
+    logger.warn(`[Provision] No partition in WorkOS token for user ${email}`);
+  }
+
+  logger.log(`[Provision] assignTeamToUser: userId=${userId}, teamName="${teamName}", partition=${partition || "none"}, orgId=${orgId || "none"}`);
 
   let team = await findTeamByName(teamName);
   let isTeamCreator = false;
 
   if (!team) {
-    const teamId = await createTeam(teamName, userId);
+    const initialSettings = partition ? { partition } : {};
+    const teamId = await createTeam(teamName, userId, initialSettings);
     team = { id: teamId };
     isTeamCreator = true;
   }
@@ -234,10 +286,42 @@ async function assignTeamToUser(userId, email, workosUser) {
   }
 
   logger.log(
-    `Provisioned user ${userId} into team ${team.id} (${teamName}) as ${isTeamCreator ? "owner" : "member"}`
+    `[Provision] assignTeamToUser result: user=${userId} team=${team.id} (${teamName}) role=${isTeamCreator ? "owner" : "member"} partition=${partition || "none"} newTeam=${isTeamCreator}`
   );
 
   return { userId, teamId: team.id };
+}
+
+/**
+ * Ensure a team has the partition value in its settings.
+ * Used when an existing team is found but may not yet have the partition set.
+ */
+async function ensureTeamPartition(teamId, partition) {
+  const query = `
+    query GetTeamSettings($id: uuid!) {
+      teams_by_pk(id: $id) {
+        settings
+      }
+    }
+  `;
+  const result = await fetchGraphQL(query, { id: teamId });
+  const currentSettings = result.data?.teams_by_pk?.settings || {};
+
+  if (currentSettings.partition === partition) {
+    return; // Already set
+  }
+
+  const mutation = `
+    mutation SetTeamPartition($id: uuid!, $settings: jsonb!) {
+      update_teams_by_pk(pk_columns: { id: $id }, _set: { settings: $settings }) {
+        id
+      }
+    }
+  `;
+
+  const newSettings = { ...currentSettings, partition };
+  await fetchGraphQL(mutation, { id: teamId, settings: newSettings });
+  logger.log(`[Provision] Set partition=${partition} on team ${teamId}`);
 }
 
 export default provisionUser;
