@@ -6,7 +6,7 @@
  */
 
 import { processColumn, sanitizeFieldName } from './fieldProcessors.js';
-import { ColumnType } from './typeParser.js';
+import { ColumnType, ValueType } from './typeParser.js';
 
 // -- Helpers ----------------------------------------------------------------
 
@@ -58,6 +58,62 @@ function deduplicateFields(fields) {
   return fields;
 }
 
+// -- Nested group lookup key detection --------------------------------------
+
+/** Naming patterns that indicate a lookup/discriminator column. */
+const LOOKUP_KEY_PATTERN = /(_of|_type|_kind|_category)$/i;
+
+/**
+ * Scan columns to find nested groups that have a lookup key.
+ *
+ * A lookup key is a GROUPED string sub-column with low-cardinality values
+ * (has lcValues). When found, the other sub-columns in that group should
+ * use FILTER_PARAMS to resolve values by the lookup key at query time.
+ *
+ * @param {Map} columns - Map of column name -> column data
+ * @returns {Map<string, { lookupColumn: string, lookupChildName: string, lcValues: string[] }>}
+ *   Map of parentName -> lookup info
+ */
+function detectNestedLookupKeys(columns) {
+  // Group all GROUPED columns by parent
+  const groups = new Map(); // parent -> [columnData]
+  for (const [, col] of columns) {
+    if (col.columnType === ColumnType.GROUPED && col.parentName) {
+      if (!groups.has(col.parentName)) groups.set(col.parentName, []);
+      groups.get(col.parentName).push(col);
+    }
+  }
+
+  const lookups = new Map();
+  for (const [parent, cols] of groups) {
+    // Find the best lookup key candidate:
+    // 1. Prefer columns matching the naming pattern (*_of, *_type, etc.)
+    // 2. Fall back to first string column with lcValues
+    let best = null;
+    for (const col of cols) {
+      if (col.valueType !== ValueType.STRING) continue;
+      if (!col.profile?.lcValues || !Array.isArray(col.profile.lcValues)) continue;
+      if (col.profile.lcValues.length === 0) continue;
+
+      if (LOOKUP_KEY_PATTERN.test(col.childName)) {
+        best = col; // naming match — prefer this
+        break;
+      }
+      if (!best) best = col; // first viable candidate
+    }
+
+    if (best) {
+      lookups.set(parent, {
+        lookupColumn: best.name,
+        lookupChildName: best.childName,
+        lcValues: best.profile.lcValues,
+      });
+    }
+  }
+
+  return lookups;
+}
+
 // -- Core builder -----------------------------------------------------------
 
 /**
@@ -89,13 +145,16 @@ function buildCubeSource(schema, table, partition, isInternal) {
  * @returns {{ dimensions: object[], measures: object[], mapKeysDiscovered: number, columnsProfiled: number, columnsSkipped: number }}
  */
 function processColumns(columns, options) {
-  const { arrayJoinColumns = [], maxMapKeys = 500, primaryKeys = [] } = options;
+  const { arrayJoinColumns = [], maxMapKeys = 500, primaryKeys = [], cubeName = 'cube' } = options;
   const arrayJoinColumnNames = arrayJoinColumns.map((a) => a.column);
 
   const allFields = [];
   let mapKeysDiscovered = 0;
   let columnsProfiled = 0;
   let columnsSkipped = 0;
+
+  // Detect nested groups with lookup keys for FILTER_PARAMS generation
+  const nestedLookups = detectNestedLookupKeys(columns);
 
   for (const [columnName, columnData] of columns) {
     // The profiler stores column data flat: { name, rawType, columnType, ..., profile }
@@ -109,6 +168,80 @@ function processColumns(columns, options) {
     }
 
     columnsProfiled++;
+
+    // ---------------------------------------------------------------
+    // Nested group with lookup key → FILTER_PARAMS dimensions
+    // ---------------------------------------------------------------
+    if (details.columnType === ColumnType.GROUPED && details.parentName) {
+      const lookup = nestedLookups.get(details.parentName);
+      if (lookup) {
+        const parentName = details.parentName;
+        const childName = details.childName;
+
+        if (columnName === lookup.lookupColumn) {
+          // This IS the lookup key → emit a filter dimension.
+          // The sql uses FILTER_PARAMS to echo back the filter value so that
+          // Cube.js's auto-generated WHERE clause becomes e.g. 'Vehicle' = 'Vehicle' (always true).
+          const filterDimName = `${sanitizeFieldName(parentName)}_type`;
+          const filterDimRef = `${cubeName}.${filterDimName}`;
+          const field = {
+            name: filterDimName,
+            sql: `toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)})`,
+            type: 'string',
+            fieldType: 'dimension',
+            _sourceColumn: columnName,
+            meta: {
+              auto_generated: true,
+              source_column: columnName,
+              raw_type: details.rawType,
+              nested_lookup_key: true,
+              known_values: lookup.lcValues,
+            },
+          };
+          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
+            field.meta.max_array_length = profile.maxArrayLength;
+          }
+          allFields.push(field);
+        } else {
+          // This is a data sub-column → emit FILTER_PARAMS-resolved dimension
+          const fieldName = `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}`;
+          const filterDimRef = `${cubeName}.${sanitizeFieldName(parentName)}_type`;
+
+          // Determine type from the child column
+          const isCoordinate = /^(lat|latitude|lon|lng|longitude)$/i.test(childName);
+          const fieldType = details.valueType === ValueType.NUMBER ? 'number'
+            : details.valueType === ValueType.DATE ? 'time'
+            : details.valueType === ValueType.BOOLEAN ? 'boolean'
+            : 'string';
+          // Coordinates are dimensions; other numbers are measures
+          const cubeFieldType = (details.valueType === ValueType.NUMBER && !isCoordinate) ? 'measure' : 'dimension';
+          const cubeType = cubeFieldType === 'measure' ? 'sum' : fieldType;
+
+          const field = {
+            name: fieldName,
+            sql: `arrayElementOrNull({CUBE}.\`${parentName}.${childName}\`, indexOf({CUBE}.\`${parentName}.${lookup.lookupChildName}\`, toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)})))`,
+            type: cubeType,
+            fieldType: cubeFieldType,
+            _sourceColumn: columnName,
+            meta: {
+              auto_generated: true,
+              source_column: columnName,
+              raw_type: details.rawType,
+              resolved_by: `${sanitizeFieldName(parentName)}_type`,
+            },
+          };
+          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
+            field.meta.max_array_length = profile.maxArrayLength;
+          }
+          allFields.push(field);
+        }
+        continue; // skip normal processing for this column
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Normal column processing (non-lookup nested, basic, map, array)
+    // ---------------------------------------------------------------
 
     // Enforce maxMapKeys limit for Map columns
     let effectiveProfile = profile;
@@ -140,8 +273,57 @@ function processColumns(columns, options) {
         field.public = true;
       }
 
-      // Add auto-generated meta
+      // Add auto-generated meta with source info
       field.meta = { auto_generated: true };
+      field.meta.source_column = columnName;
+      field.meta.raw_type = details.rawType;
+
+      // Add profile stats when available
+      if (profile) {
+        // For Map-expanded fields, unique_values from the parent is the key count
+        // — not meaningful per-field. Only attach for non-map fields.
+        if (!field._mapKey && profile.uniqueValues > 0) {
+          field.meta.unique_values = profile.uniqueValues;
+        }
+        if (profile.minValue != null) {
+          field.meta.min_value = profile.minValue;
+        }
+        if (profile.maxValue != null) {
+          field.meta.max_value = profile.maxValue;
+        }
+        if (profile.avgValue != null) {
+          field.meta.avg_value = profile.avgValue;
+        }
+        if (profile.maxArrayLength != null && profile.maxArrayLength > 0) {
+          field.meta.max_array_length = profile.maxArrayLength;
+        }
+      }
+
+      // For Map-expanded fields, add per-key metadata
+      if (field._mapKey) {
+        field.meta.map_key = field._mapKey;
+
+        // Per-key stats from profiler (numeric: min/max/avg, string: unique_values)
+        if (profile && profile.keyStats && profile.keyStats[field._mapKey]) {
+          const stats = profile.keyStats[field._mapKey];
+          if (stats.min != null) field.meta.min_value = stats.min;
+          if (stats.max != null) field.meta.max_value = stats.max;
+          if (stats.avg != null) field.meta.avg_value = stats.avg;
+          if (stats.unique_values != null) field.meta.unique_values = stats.unique_values;
+        }
+
+        // String map keys get LC values
+        if (profile && profile.lcValues && typeof profile.lcValues === 'object' && !Array.isArray(profile.lcValues)) {
+          if (profile.lcValues[field._mapKey]) {
+            field.meta.lc_values = profile.lcValues[field._mapKey];
+          }
+        }
+      } else {
+        // Non-map fields: attach LC values for categorical data
+        if (profile && profile.lcValues != null && Array.isArray(profile.lcValues)) {
+          field.meta.lc_values = profile.lcValues;
+        }
+      }
 
       allFields.push(field);
     }
@@ -204,6 +386,7 @@ function buildRawCube(profiledTable, options) {
       arrayJoinColumns,
       maxMapKeys,
       primaryKeys,
+      cubeName,
     });
 
   const meta = {

@@ -1,0 +1,210 @@
+tests:
+  smart_gen_flow:
+    steps:
+      # Profile a table via Hasura action
+      - name: profile_table
+        retries:
+          count: 2
+          interval: 3s
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              query ($datasource_id: uuid!, $branch_id: uuid!, $table_name: String!, $table_schema: String!) {
+                profile_table(
+                  datasource_id: $datasource_id
+                  branch_id: $branch_id
+                  table_name: $table_name
+                  table_schema: $table_schema
+                ) {
+                  code
+                  row_count
+                  sampled
+                  sample_size
+                  columns {
+                    name
+                    raw_type
+                    column_type
+                    value_type
+                    has_values
+                    unique_values
+                  }
+                  primary_keys
+                }
+              }
+            variables:
+              datasource_id: ${{captures.datasourceId}}
+              branch_id: ${{captures.branchId}}
+              table_name: cell_towers
+              table_schema: default
+          check:
+            status: 200
+            jsonpath:
+              $.data.profile_table.code: "ok"
+              $.data.profile_table.row_count:
+                - isNumber: true
+              $.data.profile_table.columns:
+                - isArray: true
+
+      # Smart generate a model
+      - name: smart_gen_dataschemas
+        retries:
+          count: 2
+          interval: 3s
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation ($datasource_id: uuid!, $branch_id: uuid!, $table_name: String!, $table_schema: String!) {
+                smart_gen_dataschemas(
+                  datasource_id: $datasource_id
+                  branch_id: $branch_id
+                  table_name: $table_name
+                  table_schema: $table_schema
+                ) {
+                  code
+                  message
+                  version_id
+                  file_name
+                  changed
+                }
+              }
+            variables:
+              datasource_id: ${{captures.datasourceId}}
+              branch_id: ${{captures.branchId}}
+              table_name: cell_towers
+              table_schema: default
+          captures:
+            smartGenVersionId:
+              jsonpath: $.data.smart_gen_dataschemas.version_id
+            smartGenFileName:
+              jsonpath: $.data.smart_gen_dataschemas.file_name
+          check:
+            status: 200
+            jsonpath:
+              $.data.smart_gen_dataschemas.code: "ok"
+              $.data.smart_gen_dataschemas.changed: true
+              $.data.smart_gen_dataschemas.file_name:
+                - isString: true
+              $.data.smart_gen_dataschemas.version_id:
+                - isString: true
+
+      # Re-generate with merge strategy (should detect existing model)
+      - name: smart_gen_merge_replace
+        retries:
+          count: 2
+          interval: 3s
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation ($datasource_id: uuid!, $branch_id: uuid!, $table_name: String!, $table_schema: String!, $merge_strategy: String) {
+                smart_gen_dataschemas(
+                  datasource_id: $datasource_id
+                  branch_id: $branch_id
+                  table_name: $table_name
+                  table_schema: $table_schema
+                  merge_strategy: $merge_strategy
+                ) {
+                  code
+                  message
+                  changed
+                }
+              }
+            variables:
+              datasource_id: ${{captures.datasourceId}}
+              branch_id: ${{captures.branchId}}
+              table_name: cell_towers
+              table_schema: default
+              merge_strategy: replace
+          check:
+            status: 200
+            jsonpath:
+              $.data.smart_gen_dataschemas.code: "ok"
+
+      # Re-profile existing smart model (should return existing_model info)
+      - name: profile_existing_model
+        retries:
+          count: 2
+          interval: 3s
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              query ($datasource_id: uuid!, $branch_id: uuid!, $table_name: String!, $table_schema: String!) {
+                profile_table(
+                  datasource_id: $datasource_id
+                  branch_id: $branch_id
+                  table_name: $table_name
+                  table_schema: $table_schema
+                ) {
+                  code
+                  existing_model {
+                    file_name
+                    file_format
+                    has_user_content
+                    supports_reprofile
+                    suggested_merge_strategy
+                  }
+                }
+              }
+            variables:
+              datasource_id: ${{captures.datasourceId}}
+              branch_id: ${{captures.branchId}}
+              table_name: cell_towers
+              table_schema: default
+          check:
+            status: 200
+            jsonpath:
+              $.data.profile_table.code: "ok"
+              $.data.profile_table.existing_model.file_name:
+                - isString: true
+              $.data.profile_table.existing_model.supports_reprofile: true
+
+      # Update team settings (partition + internal tables)
+      - name: update_team_settings
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation ($team_id: uuid!, $settings: jsonb!) {
+                update_team_settings(team_id: $team_id, settings: $settings) {
+                  code
+                  message
+                }
+              }
+            variables:
+              team_id: ${{captures.teamId}}
+              settings:
+                partition: test_partition
+                internal_tables:
+                  - cell_towers
+          check:
+            status: 200
+            jsonpath:
+              $.data.update_team_settings.code: "ok"

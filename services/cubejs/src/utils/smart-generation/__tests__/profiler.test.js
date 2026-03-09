@@ -8,21 +8,27 @@ import { ColumnType, ValueType } from '../typeParser.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Create a mock driver whose `query` method dispatches based on SQL content.
+ * Create a mock driver for the multi-pass profiler.
+ *
+ * The new profiler flow:
+ *   Pass 0: DESCRIBE TABLE + system.parts_columns (parallel)
+ *   Pass 1: Initial profile (single unsampled query with count(), min, max, avg, uniq, max(length))
+ *   Pass 2: Deep profiling (sampled, maps + nested only)
+ *   Pass 3: LC probe + map stats
  *
  * @param {Object} opts
- * @param {Array}  opts.describeRows   Rows returned for DESCRIBE TABLE
- * @param {number} opts.rowCount       Value returned for count() query
- * @param {Object} opts.profileResult  Row returned for profiling SELECT(s)
- * @param {Function} [opts.onQuery]    Optional spy/interceptor (receives sql)
- * @param {Function} [opts.queryImpl]  Full override for driver.query
+ * @param {Array}  opts.describeRows       Rows for DESCRIBE TABLE
+ * @param {Object} opts.initialProfileRow  Row for initial profile query (Pass 1)
+ * @param {Object} opts.deepProfileResult  Row for deep profiling (Pass 2)
+ * @param {Function} [opts.onQuery]        Spy interceptor
+ * @param {Function} [opts.queryImpl]      Full override
  * @returns {{ query: Function, calls: string[] }}
  */
 function createMockDriver(opts = {}) {
   const {
     describeRows = [],
-    rowCount = 0,
-    profileResult = {},
+    initialProfileRow = {},
+    deepProfileResult = {},
     onQuery,
     queryImpl,
   } = opts;
@@ -35,14 +41,27 @@ function createMockDriver(opts = {}) {
 
     if (queryImpl) return queryImpl(sql, calls);
 
+    // system.parts_columns metadata check — return empty (no optimization)
+    if (sql.includes('system.parts_columns')) {
+      return [];
+    }
     if (sql.startsWith('DESCRIBE TABLE')) {
       return describeRows;
     }
-    if (sql.includes('count()')) {
-      return [{ cnt: rowCount }];
+    // Sampling probe — throw to simulate no SAMPLE BY support
+    if (sql.includes('SAMPLE') && sql.includes('LIMIT 1')) {
+      throw new Error("Storage doesn't support sampling");
     }
-    // profiling SELECT
-    return [profileResult];
+    // Initial profile query (Pass 1) — contains count() as row_count
+    if (sql.includes('count() as row_count')) {
+      return [initialProfileRow];
+    }
+    // Fallback count query (only if initial profile fails)
+    if (sql.includes('count() as cnt')) {
+      return [{ cnt: initialProfileRow.row_count || 0 }];
+    }
+    // Deep profiling / LC probe / map stats
+    return [deepProfileResult];
   }
 
   return { query, calls };
@@ -96,7 +115,7 @@ describe('profileTable — schema analysis', () => {
         { name: 'name', type: 'String' },
         { name: 'created_at', type: 'DateTime' },
       ],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'mydb', 'users');
@@ -121,7 +140,7 @@ describe('profileTable — schema analysis', () => {
       describeRows: [
         { name: 'status', type: 'LowCardinality(Nullable(String))' },
       ],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -137,7 +156,7 @@ describe('profileTable — schema analysis', () => {
       describeRows: [
         { name: 'props', type: 'Map(String, Float64)' },
       ],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -151,7 +170,7 @@ describe('profileTable — schema analysis', () => {
       describeRows: [
         { name: 'tags', type: 'Array(String)' },
       ],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -166,7 +185,7 @@ describe('profileTable — schema analysis', () => {
       describeRows: [
         { name: 'nested.field', type: 'Array(String)' },
       ],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -180,7 +199,7 @@ describe('profileTable — schema analysis', () => {
   it('initializes all profile fields to defaults', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -191,24 +210,27 @@ describe('profileTable — schema analysis', () => {
     assert.equal(profile.uniqueValues, 0);
     assert.equal(profile.minValue, null);
     assert.equal(profile.maxValue, null);
+    assert.equal(profile.avgValue, null);
     assert.deepEqual(profile.uniqueKeys, []);
     assert.equal(profile.lcValues, null);
+    assert.equal(profile.keyStats, null);
+    assert.equal(profile.maxArrayLength, null);
   });
 });
 
 // ---------------------------------------------------------------------------
-// profileTable — data profiling pass
+// profileTable — initial profile (Pass 1)
 // ---------------------------------------------------------------------------
 
-describe('profileTable — data profiling', () => {
-  it('profiles NUMBER columns with min/max/valueRows', async () => {
+describe('profileTable — initial profile', () => {
+  it('profiles NUMBER columns with min/max/avg from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'amount', type: 'Float64' }],
-      rowCount: 100,
-      profileResult: {
-        amount__min_value: 1.5,
-        amount__max_value: 999.99,
-        amount__value_rows: 98,
+      initialProfileRow: {
+        row_count: 100,
+        amount__min: 1.5,
+        amount__max: 999.99,
+        amount__avg: 500.745,
       },
     });
 
@@ -217,17 +239,17 @@ describe('profileTable — data profiling', () => {
 
     assert.equal(profile.minValue, 1.5);
     assert.equal(profile.maxValue, 999.99);
-    assert.equal(profile.valueRows, 98);
+    assert.equal(profile.avgValue, 500.745);
+    assert.equal(profile.valueRows, 100); // = rowCount when hasValues
     assert.equal(profile.hasValues, true);
   });
 
-  it('profiles STRING columns with distinct_count and value_rows', async () => {
+  it('profiles STRING columns with uniq count from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'status', type: 'String' }],
-      rowCount: 50,
-      profileResult: {
-        status__distinct_count: 5,
-        status__value_rows: 48,
+      initialProfileRow: {
+        row_count: 50,
+        status__count: 5,
       },
     });
 
@@ -235,18 +257,17 @@ describe('profileTable — data profiling', () => {
     const profile = result.columns.get('status').profile;
 
     assert.equal(profile.uniqueValues, 5);
-    assert.equal(profile.valueRows, 48);
+    assert.equal(profile.valueRows, 50); // = rowCount
     assert.equal(profile.hasValues, true);
   });
 
-  it('profiles DATE columns with min/max', async () => {
+  it('profiles DATE columns with min/max from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'ts', type: 'DateTime' }],
-      rowCount: 10,
-      profileResult: {
-        ts__min_value: '2024-01-01',
-        ts__max_value: '2024-06-15',
-        ts__value_rows: 10,
+      initialProfileRow: {
+        row_count: 10,
+        ts__min: '2024-01-01',
+        ts__max: '2024-06-15',
       },
     });
 
@@ -259,13 +280,16 @@ describe('profileTable — data profiling', () => {
     assert.equal(profile.hasValues, true);
   });
 
-  it('profiles MAP columns with map_keys and distinct_count', async () => {
+  it('profiles MAP columns with key count from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'props', type: 'Map(String, Float64)' }],
-      rowCount: 20,
-      profileResult: {
+      initialProfileRow: {
+        row_count: 20,
+        props__key_count: 3,
+      },
+      // Deep profiling (Pass 2) returns the actual keys
+      deepProfileResult: {
         props__map_keys: ['width', 'height', 'depth'],
-        props__distinct_count: 3,
         props__value_rows: 18,
       },
     });
@@ -274,18 +298,15 @@ describe('profileTable — data profiling', () => {
     const profile = result.columns.get('props').profile;
 
     assert.deepEqual(profile.uniqueKeys, ['width', 'height', 'depth']);
-    assert.equal(profile.uniqueValues, 3);
-    assert.equal(profile.valueRows, 18);
     assert.equal(profile.hasValues, true);
   });
 
   it('handles string values for numeric fields (coercion)', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'x', type: 'String' }],
-      rowCount: 5,
-      profileResult: {
-        x__distinct_count: '42',
-        x__value_rows: '5',
+      initialProfileRow: {
+        row_count: '5',
+        x__count: '42',
       },
     });
 
@@ -296,6 +317,49 @@ describe('profileTable — data profiling', () => {
     assert.equal(profile.valueRows, 5);
     assert.equal(profile.hasValues, true);
   });
+
+  it('detects nested group depth via max(length(sentinel))', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'nested.field', type: 'Array(String)' },
+        { name: 'nested.other', type: 'Array(Int32)' },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        nested__max_length: 5,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+
+    // Both columns should have maxArrayLength from the group
+    assert.equal(result.columns.get('nested.field').profile.maxArrayLength, 5);
+    assert.equal(result.columns.get('nested.other').profile.maxArrayLength, 5);
+  });
+
+  it('marks empty groups (maxLength=0) and skips their sub-columns', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'empty.sub1', type: 'Array(String)' },
+        { name: 'empty.sub2', type: 'Array(Int32)' },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        empty__max_length: 0,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+
+    assert.equal(result.columns.get('empty.sub1').profile.maxArrayLength, 0);
+    assert.equal(result.columns.get('empty.sub2').profile.maxArrayLength, 0);
+
+    // No deep profiling queries should have run for these
+    const deepQueries = driver.calls.filter(
+      (s) => s.includes('empty_sub') && !s.includes('count() as row_count') && !s.includes('max_length')
+    );
+    assert.equal(deepQueries.length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -303,18 +367,16 @@ describe('profileTable — data profiling', () => {
 // ---------------------------------------------------------------------------
 
 describe('profileTable — empty column filtering', () => {
-  it('marks columns with zero value_rows as hasValues: false', async () => {
+  it('marks columns with no data as hasValues: false', async () => {
     const driver = createMockDriver({
       describeRows: [
         { name: 'filled', type: 'String' },
         { name: 'empty', type: 'String' },
       ],
-      rowCount: 100,
-      profileResult: {
-        filled__distinct_count: 10,
-        filled__value_rows: 90,
-        empty__distinct_count: 0,
-        empty__value_rows: 0,
+      initialProfileRow: {
+        row_count: 100,
+        filled__count: 10,
+        empty__count: 0,
       },
     });
 
@@ -327,7 +389,7 @@ describe('profileTable — empty column filtering', () => {
   it('leaves profiles at defaults when row count is 0', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'col', type: 'Int32' }],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -339,43 +401,32 @@ describe('profileTable — empty column filtering', () => {
 });
 
 // ---------------------------------------------------------------------------
-// profileTable — batch failure fallback
+// profileTable — initial profile failure fallback
 // ---------------------------------------------------------------------------
 
-describe('profileTable — batch failure fallback', () => {
-  it('falls back to individual queries when batch query fails', async () => {
-    // Create 3 columns — all fit in one batch. The batch query fails,
-    // so the profiler should retry each column individually.
-    const describeRows = [
-      { name: 'a', type: 'Int32' },
-      { name: 'b', type: 'String' },
-      { name: 'c', type: 'Float64' },
-    ];
-
-    let batchAttempted = false;
-
+describe('profileTable — initial profile failure fallback', () => {
+  it('falls back to count query when initial profile query fails', async () => {
     const driver = createMockDriver({
-      describeRows,
-      rowCount: 100,
+      describeRows: [
+        { name: 'a', type: 'Int32' },
+        { name: 'b', type: 'String' },
+      ],
       queryImpl(sql) {
-        if (sql.startsWith('DESCRIBE TABLE')) return describeRows;
-        if (sql.includes('count()')) return [{ cnt: 100 }];
-
-        // First profiling query is the batch — fail it
-        if (!batchAttempted) {
-          batchAttempted = true;
-          throw new Error('batch query syntax error');
+        if (sql.includes('system.parts_columns')) return [];
+        if (sql.startsWith('DESCRIBE TABLE')) return [
+          { name: 'a', type: 'Int32' },
+          { name: 'b', type: 'String' },
+        ];
+        // Initial profile fails
+        if (sql.includes('count() as row_count')) {
+          throw new Error('initial profile syntax error');
         }
-
-        // Individual fallback queries
-        if (sql.includes('a__')) {
-          return [{ a__min_value: 0, a__max_value: 50, a__value_rows: 100 }];
+        // Fallback count query succeeds
+        if (sql.includes('count() as cnt')) {
+          return [{ cnt: 100 }];
         }
-        if (sql.includes('b__')) {
-          return [{ b__distinct_count: 20, b__value_rows: 95 }];
-        }
-        if (sql.includes('c__')) {
-          return [{ c__min_value: 1.1, c__max_value: 9.9, c__value_rows: 80 }];
+        if (sql.includes('SAMPLE') && sql.includes('LIMIT 1')) {
+          throw new Error("Storage doesn't support sampling");
         }
         return [{}];
       },
@@ -383,40 +434,87 @@ describe('profileTable — batch failure fallback', () => {
 
     const result = await profileTable(driver, 'db', 'tbl');
 
-    // All three columns should still have their profiles populated
-    assert.equal(result.columns.get('a').profile.hasValues, true);
-    assert.equal(result.columns.get('a').profile.minValue, 0);
-    assert.equal(result.columns.get('a').profile.maxValue, 50);
+    // Row count should still be available from fallback
+    assert.equal(result.row_count, 100);
+    // But columns won't have profile data (initial profile failed)
+    assert.equal(result.columns.get('a').profile.hasValues, false);
+  });
+});
 
-    assert.equal(result.columns.get('b').profile.hasValues, true);
-    assert.equal(result.columns.get('b').profile.uniqueValues, 20);
+// ---------------------------------------------------------------------------
+// profileTable — deep profiling batch failure fallback
+// ---------------------------------------------------------------------------
 
-    assert.equal(result.columns.get('c').profile.hasValues, true);
-    assert.equal(result.columns.get('c').profile.minValue, 1.1);
+describe('profileTable — deep profiling batch failure', () => {
+  it('falls back to individual queries when batch query fails', async () => {
+    // Map columns need deep profiling
+    const describeRows = [
+      { name: 'map1', type: 'Map(String, Float64)' },
+      { name: 'map2', type: 'Map(String, String)' },
+    ];
+
+    let deepProfileAttempted = false;
+
+    const driver = createMockDriver({
+      describeRows,
+      queryImpl(sql) {
+        if (sql.includes('system.parts_columns')) return [];
+        if (sql.startsWith('DESCRIBE TABLE')) return describeRows;
+        if (sql.includes('SAMPLE') && sql.includes('LIMIT 1')) {
+          throw new Error("Storage doesn't support sampling");
+        }
+        // Initial profile — report both maps have data
+        if (sql.includes('count() as row_count')) {
+          return [{ row_count: 100, map1__key_count: 3, map2__key_count: 2 }];
+        }
+        // First deep profiling query (batch) — fail
+        if (!deepProfileAttempted && sql.includes('map_keys')) {
+          deepProfileAttempted = true;
+          throw new Error('batch query syntax error');
+        }
+        // Individual fallback queries
+        if (sql.includes('map1__')) {
+          return [{ map1__map_keys: ['a', 'b', 'c'], map1__value_rows: 90 }];
+        }
+        if (sql.includes('map2__')) {
+          return [{ map2__map_keys: ['x', 'y'], map2__value_rows: 80 }];
+        }
+        return [{}];
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+
+    assert.deepEqual(result.columns.get('map1').profile.uniqueKeys, ['a', 'b', 'c']);
+    assert.deepEqual(result.columns.get('map2').profile.uniqueKeys, ['x', 'y']);
   });
 
   it('skips column gracefully when individual fallback also fails', async () => {
     const describeRows = [
-      { name: 'good', type: 'String' },
-      { name: 'bad', type: 'String' },
+      { name: 'good', type: 'Map(String, String)' },
+      { name: 'bad', type: 'Map(String, String)' },
     ];
 
-    let batchAttempted = false;
+    let deepProfileAttempted = false;
 
     const driver = createMockDriver({
       describeRows,
-      rowCount: 10,
       queryImpl(sql) {
+        if (sql.includes('system.parts_columns')) return [];
         if (sql.startsWith('DESCRIBE TABLE')) return describeRows;
-        if (sql.includes('count()')) return [{ cnt: 10 }];
-
-        if (!batchAttempted) {
-          batchAttempted = true;
+        if (sql.includes('SAMPLE') && sql.includes('LIMIT 1')) {
+          throw new Error("Storage doesn't support sampling");
+        }
+        if (sql.includes('count() as row_count')) {
+          return [{ row_count: 10, good__key_count: 3, bad__key_count: 2 }];
+        }
+        // First deep profiling query (batch) — fail
+        if (!deepProfileAttempted && sql.includes('map_keys')) {
+          deepProfileAttempted = true;
           throw new Error('batch fail');
         }
-
         if (sql.includes('good__')) {
-          return [{ good__distinct_count: 5, good__value_rows: 10 }];
+          return [{ good__map_keys: ['a', 'b', 'c'], good__value_rows: 10 }];
         }
         if (sql.includes('bad__')) {
           throw new Error('individual column fail');
@@ -427,10 +525,9 @@ describe('profileTable — batch failure fallback', () => {
 
     const result = await profileTable(driver, 'db', 'tbl');
 
-    assert.equal(result.columns.get('good').profile.hasValues, true);
-    // 'bad' column stays at defaults
-    assert.equal(result.columns.get('bad').profile.hasValues, false);
-    assert.equal(result.columns.get('bad').profile.valueRows, 0);
+    assert.deepEqual(result.columns.get('good').profile.uniqueKeys, ['a', 'b', 'c']);
+    // 'bad' column has key_count from initial profile but no keys from deep profile
+    assert.deepEqual(result.columns.get('bad').profile.uniqueKeys, []);
   });
 });
 
@@ -439,14 +536,16 @@ describe('profileTable — batch failure fallback', () => {
 // ---------------------------------------------------------------------------
 
 describe('profileTable — sampling behavior', () => {
-  it('uses SAMPLE clause when row count exceeds threshold', async () => {
+  it('uses sampling for deep profiling when row count exceeds threshold', async () => {
     const driver = createMockDriver({
-      describeRows: [{ name: 'val', type: 'Int32' }],
-      rowCount: 5_000_000,
-      profileResult: {
-        val__min_value: 1,
-        val__max_value: 100,
-        val__value_rows: 500_000,
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: {
+        row_count: 5_000_000,
+        meta__key_count: 10,
+      },
+      deepProfileResult: {
+        meta__map_keys: ['k1', 'k2'],
+        meta__value_rows: 100_000,
       },
     });
 
@@ -455,24 +554,54 @@ describe('profileTable — sampling behavior', () => {
     });
 
     assert.equal(result.sampled, true);
-    assert.equal(result.sample_size, 500_000);
+    assert.equal(result.sample_size, 200_000);
 
-    // Verify SAMPLE appears in the profiling SQL (not in DESCRIBE or count)
-    const profilingSql = driver.calls.find(
-      (sql) => !sql.startsWith('DESCRIBE') && !sql.includes('count()')
+    // Deep profiling query should use LIMIT for sampling
+    const deepSql = driver.calls.find(
+      (sql) => sql.includes('meta__') && sql.includes('map_keys') && sql.includes('FROM')
     );
-    assert.ok(profilingSql, 'Expected a profiling query');
-    assert.ok(profilingSql.includes('SAMPLE 0.1'), 'Expected SAMPLE 0.1 in SQL');
+    assert.ok(deepSql, 'Expected a deep profiling query');
+    assert.ok(
+      deepSql.includes('LIMIT 200000'),
+      'Expected subquery LIMIT sampling in deep profiling SQL'
+    );
   });
 
-  it('does not use SAMPLE when row count is below threshold', async () => {
+  it('initial profile is never sampled (always runs unsampled)', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'val', type: 'Int32' }],
-      rowCount: 500,
-      profileResult: {
-        val__min_value: 1,
-        val__max_value: 100,
-        val__value_rows: 500,
+      initialProfileRow: {
+        row_count: 5_000_000,
+        val__min: 1,
+        val__max: 100,
+        val__avg: 50.5,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'big_table', {
+      sampleThreshold: 1_000_000,
+    });
+
+    // Initial profile query should NOT have LIMIT or SAMPLE
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql, 'Expected initial profile query');
+    assert.ok(!initialSql.includes('LIMIT'), 'Initial profile should not use LIMIT');
+    assert.ok(!initialSql.includes('SAMPLE'), 'Initial profile should not use SAMPLE');
+
+    // But result should still report sampled=true (for deep profiling)
+    assert.equal(result.sampled, true);
+  });
+
+  it('does not use sampling when row count is below threshold', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: {
+        row_count: 500,
+        meta__key_count: 5,
+      },
+      deepProfileResult: {
+        meta__map_keys: ['a', 'b'],
+        meta__value_rows: 500,
       },
     });
 
@@ -481,18 +610,25 @@ describe('profileTable — sampling behavior', () => {
     assert.equal(result.sampled, false);
     assert.equal(result.sample_size, null);
 
-    const profilingSql = driver.calls.find(
-      (sql) => !sql.startsWith('DESCRIBE') && !sql.includes('count()')
+    const deepSql = driver.calls.find(
+      (sql) => sql.includes('meta__') && sql.includes('map_keys') && sql.includes('FROM')
     );
-    assert.ok(profilingSql);
-    assert.ok(!profilingSql.includes('SAMPLE'), 'Should not contain SAMPLE');
+    if (deepSql) {
+      assert.ok(!deepSql.includes('LIMIT'), 'Should not contain LIMIT sampling');
+    }
   });
 
   it('respects custom sampleThreshold', async () => {
     const driver = createMockDriver({
-      describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 200,
-      profileResult: { x__min_value: 1, x__max_value: 5, x__value_rows: 200 },
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: {
+        row_count: 200,
+        meta__key_count: 3,
+      },
+      deepProfileResult: {
+        meta__map_keys: ['a'],
+        meta__value_rows: 20,
+      },
     });
 
     const result = await profileTable(driver, 'db', 'tbl', {
@@ -509,11 +645,17 @@ describe('profileTable — sampling behavior', () => {
 // ---------------------------------------------------------------------------
 
 describe('profileTable — partition WHERE clause', () => {
-  it('includes WHERE clause in count and profiling queries for internal tables', async () => {
+  it('includes WHERE clause in initial profile and deep profiling for internal tables', async () => {
     const driver = createMockDriver({
-      describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 10,
-      profileResult: { x__min_value: 0, x__max_value: 9, x__value_rows: 10 },
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: {
+        row_count: 10,
+        meta__key_count: 2,
+      },
+      deepProfileResult: {
+        meta__map_keys: ['a', 'b'],
+        meta__value_rows: 10,
+      },
     });
 
     await profileTable(driver, 'db', 'events', {
@@ -521,20 +663,26 @@ describe('profileTable — partition WHERE clause', () => {
       internalTables: ['events'],
     });
 
-    const countSql = driver.calls.find((s) => s.includes('count()'));
-    assert.ok(countSql.includes(`WHERE partition IN ('2024-03')`));
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes(`WHERE partition IN ('2024-03')`));
 
-    const profilingSql = driver.calls.find(
-      (s) => !s.startsWith('DESCRIBE') && !s.includes('count()')
+    const deepSql = driver.calls.find(
+      (s) => s.includes('meta__') && s.includes('map_keys')
     );
-    assert.ok(profilingSql.includes(`WHERE partition IN ('2024-03')`));
+    if (deepSql) {
+      assert.ok(deepSql.includes(`WHERE partition IN ('2024-03')`));
+    }
   });
 
   it('omits WHERE clause when table is not in internalTables', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 10,
-      profileResult: { x__min_value: 0, x__max_value: 9, x__value_rows: 10 },
+      initialProfileRow: {
+        row_count: 10,
+        x__min: 0,
+        x__max: 9,
+        x__avg: 4.5,
+      },
     });
 
     await profileTable(driver, 'db', 'events', {
@@ -542,8 +690,8 @@ describe('profileTable — partition WHERE clause', () => {
       internalTables: ['other_table'],
     });
 
-    const countSql = driver.calls.find((s) => s.includes('count()'));
-    assert.ok(!countSql.includes('WHERE'));
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(!initialSql.includes('WHERE'));
   });
 });
 
@@ -555,7 +703,7 @@ describe('profileTable — return shape', () => {
   it('returns the expected top-level fields', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'id', type: 'UInt64' }],
-      rowCount: 42,
+      initialProfileRow: { row_count: 42 },
     });
 
     const result = await profileTable(driver, 'mydb', 'orders', {
@@ -573,7 +721,7 @@ describe('profileTable — return shape', () => {
   it('returns sampled=false and sample_size=null for small tables', async () => {
     const driver = createMockDriver({
       describeRows: [],
-      rowCount: 10,
+      initialProfileRow: { row_count: 10 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -585,7 +733,7 @@ describe('profileTable — return shape', () => {
   it('returns sampled=true and sample_size for large tables', async () => {
     const driver = createMockDriver({
       describeRows: [],
-      rowCount: 2_000_000,
+      initialProfileRow: { row_count: 2_000_000 },
     });
 
     const result = await profileTable(driver, 'db', 'tbl');
@@ -596,39 +744,99 @@ describe('profileTable — return shape', () => {
 });
 
 // ---------------------------------------------------------------------------
-// profileTable — batching
+// profileTable — deep profiling only for maps + nested
 // ---------------------------------------------------------------------------
 
-describe('profileTable — batching', () => {
-  it('splits columns into batches of 10', async () => {
-    // Create 12 columns — should result in 2 batches (10 + 2)
-    const describeRows = [];
-    for (let i = 0; i < 12; i++) {
-      describeRows.push({ name: `col${i}`, type: 'Int32' });
-    }
-
+describe('profileTable — deep profiling scope', () => {
+  it('does not deep-profile scalar columns (covered by initial profile)', async () => {
     const driver = createMockDriver({
-      describeRows,
-      rowCount: 5,
-      profileResult: {},
+      describeRows: [
+        { name: 'amount', type: 'Float64' },
+        { name: 'status', type: 'String' },
+        { name: 'ts', type: 'DateTime' },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        amount__min: 1.0,
+        amount__max: 99.0,
+        amount__avg: 50.0,
+        status__count: 5,
+        ts__min: '2024-01-01',
+        ts__max: '2024-12-31',
+      },
     });
 
     await profileTable(driver, 'db', 'tbl');
 
-    // Queries: DESCRIBE + count + 2 batch profiling queries = 4
-    const profilingQueries = driver.calls.filter(
-      (s) => !s.startsWith('DESCRIBE') && !s.includes('count()')
+    // No deep profiling queries — only initial profile, DESCRIBE, metadata, and LC probe
+    const deepQueries = driver.calls.filter(
+      (s) =>
+        !s.startsWith('DESCRIBE') &&
+        !s.includes('system.parts_columns') &&
+        !s.includes('count() as row_count') &&
+        !s.includes('SAMPLE') &&
+        !s.includes('lc_values') &&
+        (s.includes('amount__') || s.includes('status__') || s.includes('ts__'))
     );
-    assert.equal(profilingQueries.length, 2);
+    assert.equal(deepQueries.length, 0, 'Scalar columns should not trigger deep profiling');
+  });
 
-    // First batch should have 10 columns (30 select parts for NUMBER: min, max, value_rows each)
-    // Second batch should have 2 columns
-    const firstBatchParts = profilingQueries[0].split(',').length;
-    const secondBatchParts = profilingQueries[1].split(',').length;
-    // 10 INT columns × 3 parts = 30 parts
-    assert.equal(firstBatchParts, 30);
-    // 2 INT columns × 3 parts = 6 parts
-    assert.equal(secondBatchParts, 6);
+  it('deep-profiles Map columns to discover keys', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'x', type: 'Int32' },
+        { name: 'meta', type: 'Map(String, String)' },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        x__min: 1,
+        x__max: 50,
+        x__avg: 25.0,
+        meta__key_count: 5,
+      },
+      deepProfileResult: {
+        meta__map_keys: ['color', 'size'],
+        meta__value_rows: 80,
+      },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    // There should be a deep profiling query containing map_keys
+    const deepQuery = driver.calls.find(
+      (s) => s.includes('meta__map_keys') && s.includes('groupUniqArrayArray')
+    );
+    assert.ok(deepQuery, 'Expected deep profiling query for Map column');
+  });
+
+  it('deep-profiles nested sub-columns in active groups', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'group.name', type: 'Array(String)' },
+        { name: 'group.value', type: 'Array(Int32)' },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        group__max_length: 3,
+      },
+      deepProfileResult: {
+        group_name__value_rows: 90,
+        group_name__distinct_count: 10,
+        group_value__value_rows: 85,
+        group_value__min_value: 0,
+        group_value__max_value: 100,
+      },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    // There should be deep profiling query for nested sub-columns
+    const deepQuery = driver.calls.find(
+      (s) => (s.includes('group_name__') || s.includes('group_value__')) &&
+             !s.includes('count() as row_count') &&
+             !s.includes('max_length')
+    );
+    assert.ok(deepQuery, 'Expected deep profiling query for nested group sub-columns');
   });
 });
 
@@ -647,16 +855,21 @@ describe('profileTable — emitter', () => {
 
     const driver = createMockDriver({
       describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 10,
-      profileResult: { x__min_value: 0, x__max_value: 9, x__value_rows: 10 },
+      initialProfileRow: {
+        row_count: 10,
+        x__min: 0,
+        x__max: 9,
+        x__avg: 4.5,
+      },
     });
 
     await profileTable(driver, 'db', 'tbl', { emitter });
 
     const steps = events.map((e) => e.step);
     assert.ok(steps.includes('schema_analysis'));
+    assert.ok(steps.includes('initial_profile'));
     assert.ok(steps.includes('profiling'));
-    assert.ok(events.length >= 4); // at least: schema start, schema done, profiling batch, profiling complete
+    assert.ok(events.length >= 4);
   });
 });
 
@@ -668,73 +881,121 @@ describe('profileTable — generated SQL', () => {
   it('generates correct DESCRIBE TABLE query', async () => {
     const driver = createMockDriver({
       describeRows: [],
-      rowCount: 0,
+      initialProfileRow: { row_count: 0 },
     });
 
     await profileTable(driver, 'analytics', 'page_views');
 
-    assert.equal(driver.calls[0], 'DESCRIBE TABLE analytics.`page_views`');
+    const describeSql = driver.calls.find((s) => s.startsWith('DESCRIBE'));
+    assert.equal(describeSql, 'DESCRIBE TABLE analytics.`page_views`');
   });
 
-  it('generates correct count query', async () => {
-    const driver = createMockDriver({
-      describeRows: [{ name: 'x', type: 'Int32' }],
-      rowCount: 0,
-    });
-
-    await profileTable(driver, 'analytics', 'page_views');
-
-    const countSql = driver.calls.find((s) => s.includes('count()'));
-    assert.equal(countSql, 'SELECT count() as cnt FROM analytics.`page_views`');
-  });
-
-  it('generates correct profiling SQL for STRING column', async () => {
+  it('generates initial profile SQL with correct aggregates for STRING column', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'status', type: 'String' }],
-      rowCount: 10,
-      profileResult: {},
+      initialProfileRow: { row_count: 10 },
     });
 
     await profileTable(driver, 'db', 'tbl');
 
-    const profilingSql = driver.calls.find(
-      (s) => !s.startsWith('DESCRIBE') && !s.includes('count()')
-    );
-    assert.ok(profilingSql.includes('uniqExact(`status`) as status__distinct_count'));
-    assert.ok(profilingSql.includes("countIf(`status` IS NOT NULL and `status` != '') as status__value_rows"));
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes('uniq(`status`) as status__count'), 'String should use uniq()');
   });
 
-  it('generates correct profiling SQL for MAP column', async () => {
+  it('generates initial profile SQL with correct aggregates for NUMBER column', async () => {
     const driver = createMockDriver({
-      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
-      rowCount: 10,
-      profileResult: {},
+      describeRows: [{ name: 'amount', type: 'Float64' }],
+      initialProfileRow: { row_count: 10 },
     });
 
     await profileTable(driver, 'db', 'tbl');
 
-    const profilingSql = driver.calls.find(
-      (s) => !s.startsWith('DESCRIBE') && !s.includes('count()')
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes('min(`amount`) as amount__min'));
+    assert.ok(initialSql.includes('max(`amount`) as amount__max'));
+    assert.ok(initialSql.includes('avg(`amount`) as amount__avg'));
+  });
+
+  it('generates initial profile SQL with correct aggregates for DATE column', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'ts', type: 'DateTime' }],
+      initialProfileRow: { row_count: 10 },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes('min(`ts`) as ts__min'));
+    assert.ok(initialSql.includes('max(`ts`) as ts__max'));
+    assert.ok(!initialSql.includes('avg(`ts`)'), 'Date should not have avg');
+  });
+
+  it('generates initial profile SQL with uniq(mapKeys()) for MAP columns', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: { row_count: 10 },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes('uniq(mapKeys(`meta`)) as meta__key_count'));
+  });
+
+  it('generates initial profile SQL with max(length(sentinel)) for nested groups', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'nested.field', type: 'Array(String)' },
+        { name: 'nested.other', type: 'Array(Int32)' },
+      ],
+      initialProfileRow: { row_count: 10, nested__max_length: 3 },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
+    assert.ok(initialSql.includes('max(length(`nested.field`)) as nested__max_length') ||
+              initialSql.includes('max(length(`nested.other`)) as nested__max_length'),
+              'Should include max(length()) for the group sentinel');
+  });
+
+  it('generates correct deep profiling SQL for MAP column', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'meta', type: 'Map(String, String)' }],
+      initialProfileRow: { row_count: 10, meta__key_count: 3 },
+      deepProfileResult: { meta__map_keys: ['a'], meta__value_rows: 10 },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const deepSql = driver.calls.find(
+      (s) => s.includes('meta__map_keys') && !s.includes('count() as row_count')
     );
-    assert.ok(profilingSql.includes('groupUniqArrayArray(mapKeys(`meta`)) as meta__map_keys'));
-    assert.ok(profilingSql.includes('meta__distinct_count'));
-    assert.ok(profilingSql.includes('meta__value_rows'));
+    assert.ok(deepSql, 'Expected deep profiling query');
+    assert.ok(deepSql.includes('groupUniqArrayArray(200)(mapKeys(`meta`)) as meta__map_keys'));
+    assert.ok(deepSql.includes('meta__value_rows'));
   });
 
   it('replaces dots with underscores in aliases for grouped columns', async () => {
     const driver = createMockDriver({
-      describeRows: [{ name: 'nested.field', type: 'String' }],
-      rowCount: 10,
-      profileResult: {},
+      describeRows: [{ name: 'nested.field', type: 'Array(String)' }],
+      initialProfileRow: {
+        row_count: 10,
+        nested__max_length: 5,
+      },
+      deepProfileResult: {
+        nested_field__value_rows: 8,
+        nested_field__distinct_count: 3,
+      },
     });
 
     await profileTable(driver, 'db', 'tbl');
 
-    const profilingSql = driver.calls.find(
-      (s) => !s.startsWith('DESCRIBE') && !s.includes('count()')
+    const deepSql = driver.calls.find(
+      (s) => s.includes('nested_field__') && !s.includes('count() as row_count') && !s.includes('max_length')
     );
-    // Alias should use underscore, column expression uses original name
-    assert.ok(profilingSql.includes('nested_field__'), 'Alias should replace dots with underscores');
-    assert.ok(profilingSql.includes('`nested.field`'), 'Column expression should use original name');
+    assert.ok(deepSql, 'Expected deep profiling query for nested column');
+    assert.ok(deepSql.includes('nested_field__'), 'Alias should replace dots with underscores');
+    assert.ok(deepSql.includes('`nested.field`'), 'Column expression should use original name');
   });
 });

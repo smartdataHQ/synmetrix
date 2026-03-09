@@ -93,7 +93,7 @@
 - [x] T032 [US1] Add profiling summary preview view to SmartGeneration component (shows column count, row count, primary keys detected, array candidates, existing model info from `existing_model` response field — if `file_format` is `"js"` show warning about coexisting JS/YAML files — displayed between step 1 profile and step 2 generate confirmation)
 - [x] T033 [US1] Add progress indicator to smart generation flow in SmartGeneration component (displays step name and progress bar during profiling and generation via Hasura Action path)
 - [x] T034 [US1] Implement two-step smart generation flow in `../client-v2/src/pages/Models/index.tsx` (step 1: profile-table via Hasura action → show preview with progress, step 2: smart-generate via Hasura action → refresh version — new SmartGeneration component with state machine, new `smartgen` slug and modal)
-- [ ] T035 [US1] Write StepCI integration test for `profile_table` and `smart_gen_dataschemas` actions (happy path against `dev-clickhouse` / `cst.semantic_events`, error path with non-ClickHouse datasource) in `tests/`
+- [x] T035 [US1] Write StepCI integration test for `profile_table` and `smart_gen_dataschemas` actions (happy path against `dev-clickhouse` / `cst.semantic_events`, error path with non-ClickHouse datasource) in `tests/`
 
 **Checkpoint**: Smart generation works end-to-end with real-time progress feedback. Users can profile a ClickHouse table and generate a rich YAML model with auto-tagged fields and Map key expansion.
 
@@ -117,7 +117,7 @@
 - [x] T040 [US2] Add "Re-profile" button to `../client-v2/src/components/ModelsSidebar/index.tsx` (visible only for models with provenance metadata, detected via provenanceParser utility)
 - [x] T041 [US2] Add merge options UI to profiling preview in SmartGeneration component (shown when `existing_model` is non-null in profile response with merge strategy selection)
 - [x] T042 [US2] Implement re-profile flow in `../client-v2/src/pages/Models/index.tsx` (navigate to smart gen modal, SmartGeneration component handles the full flow with merge strategy)
-- [ ] T043 [US2] Write StepCI integration test for merge strategies (generate model, add custom field + joins, test re-profile with `"merge"` preserves everything, test with `"replace"` discards everything, test `"merge_keep_stale"` retains removed columns) in `tests/`
+- [x] T043 [US2] Write StepCI integration test for merge strategies (generate model, add custom field + joins, test re-profile with `"merge"` preserves everything, test with `"replace"` discards everything, test `"merge_keep_stale"` retains removed columns) in `tests/`
 
 **Checkpoint**: Re-profiling works with user-controlled merge strategies. Auto fields update safely, user fields are never touched unless user explicitly chooses replace. Both US1 and US2 are independently functional.
 
@@ -131,7 +131,7 @@
 
 ### Tests for User Story 3
 
-- [ ] T044 [P] [US3] Write unit tests for ARRAY JOIN extensions: profiler array detection and sub-field profiling, cube builder flattened cube generation with `LEFT ARRAY JOIN` SQL, YAML generator multi-cube serialization, field name collision avoidance between raw and flattened cubes — in `services/cubejs/src/utils/smart-generation/__tests__/arrayJoin.test.js`
+- [x] T044 [P] [US3] Write unit tests for ARRAY JOIN extensions: profiler array detection and sub-field profiling, cube builder flattened cube generation with `LEFT ARRAY JOIN` SQL, YAML generator multi-cube serialization, field name collision avoidance between raw and flattened cubes — in `services/cubejs/src/utils/smart-generation/__tests__/arrayJoin.test.js`
 
 ### Implementation for User Story 3
 
@@ -140,7 +140,7 @@
 - [x] T047 [US3] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to serialize multi-cube output (raw + flattened cubes in single YAML file)
 - [x] T048 [US3] Add array candidate checkboxes with alias inputs to profiling summary preview in SmartGeneration component
 - [x] T049 [US3] Pass selected `array_join_columns` from frontend preview to SmartGenDataSchemas mutation in SmartGeneration component
-- [ ] T050 [US3] Write StepCI integration test for ARRAY JOIN generation (smart-generate with `array_join_columns` parameter, verify response includes flattened cube count > 1, verify generated YAML contains `LEFT ARRAY JOIN` SQL) in `tests/`
+- [x] T050 [US3] Write StepCI integration test for ARRAY JOIN generation (smart-generate with `array_join_columns` parameter, verify response includes flattened cube count > 1, verify generated YAML contains `LEFT ARRAY JOIN` SQL) in `tests/`
 
 **Checkpoint**: ARRAY JOIN cubes generate correctly. Users can flatten nested arrays into queryable dimensions/measures.
 
@@ -154,18 +154,18 @@
 
 ### Tests for User Story 4
 
-- [ ] T051 [P] [US4] Write unit tests for partition isolation: profiler partition scoping (WHERE clause generation for internal tables), YAML generator `sql` vs `sql_table` selection (uses `sql` with WHERE clause instead of `sql_table` when table is internal and partition configured), verify partition SQL is regenerated on re-profile — in `services/cubejs/src/utils/smart-generation/__tests__/partition.test.js`
+- [x] T051 [P] [US4] Write unit tests for partition isolation: profiler partition scoping (WHERE clause generation for internal tables), YAML generator `sql` vs `sql_table` selection (uses `sql` with WHERE clause instead of `sql_table` when table is internal and partition configured), verify partition SQL is regenerated on re-profile — in `services/cubejs/src/utils/smart-generation/__tests__/partition.test.js`
 
 ### Implementation for User Story 4
 
 - [x] T052 [US4] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to accept partition from security context and add `WHERE partition IN ('{value}')` to all profiling queries when table is internal
 - [x] T053 [US4] Extend YAML generator / cube builder to use `sql: "SELECT * FROM {schema}.{table} WHERE partition = '{value}'"` instead of `sql_table` when the source table is in the team's `internal_tables` list and a partition value exists (implemented in cubeBuilder.js buildCubeSource)
 - [x] T054 [US4] Implement Actions RPC handler `updateTeamSettings.js` (validate caller is team owner, update teams.settings JSONB via Hasura GraphQL mutation) in `services/actions/src/rpc/updateTeamSettings.js`
-- [ ] T055 [US4] Create `../client-v2/src/graphql/gql/teams.gql` with UpdateTeamSettings mutation and TeamSettings query
-- [ ] T056 [US4] Run `yarn codegen` in client-v2 for new teams.gql types
-- [ ] T057 [US4] Add `settings` to team GraphQL fragments in `../client-v2/src/graphql/gql/currentUser.gql` and create `../client-v2/src/hooks/useTeamSettings.ts` hook (useTeamSettingsQuery, useUpdateTeamSettingsMutation) — expand team state centrally before building admin UI
-- [ ] T058 [US4] Add team settings UI for partition and internal tables configuration (string input for partition, list editor for internal table names) in appropriate admin settings area of client-v2
-- [ ] T059 [US4] Write StepCI integration test for update_team_settings (owner succeeds, member rejected) and partition-filtered profiling (verify generated YAML uses `sql` with WHERE clause, not `sql_table`) in `tests/`
+- [x] T055 [US4] Create `../client-v2/src/graphql/gql/teams.gql` with UpdateTeamSettings mutation and TeamSettings query (mutation already in datasources.gql; added settings to UserTeamFields fragment in currentUser.gql)
+- [x] T056 [US4] Run `yarn codegen` in client-v2 for new teams.gql types
+- [x] T057 [US4] Add `settings` to team GraphQL fragments in `../client-v2/src/graphql/gql/currentUser.gql` and create `../client-v2/src/hooks/useTeamSettings.ts` hook (useTeamSettingsQuery, useUpdateTeamSettingsMutation) — expand team state centrally before building admin UI
+- [x] T058 [US4] Add team settings UI for partition and internal tables configuration (string input for partition, list editor for internal table names) in appropriate admin settings area of client-v2
+- [x] T059 [US4] Write StepCI integration test for update_team_settings (owner succeeds, member rejected) and partition-filtered profiling (verify generated YAML uses `sql` with WHERE clause, not `sql_table`) in `tests/`
 
 **Checkpoint**: Partition isolation works end-to-end — profiling scoped, generated models use `sql` with partition WHERE clause, admin UI functional.
 
@@ -179,12 +179,12 @@
 
 ### Tests for User Story 5
 
-- [ ] T060 [P] [US5] Write unit tests for LC probe: profiler LC value enumeration for basic columns with <200 unique values, per-key LC on Map columns, skip for high-cardinality columns, YAML generator embedding of `lc_values` in field-level `meta` — in `services/cubejs/src/utils/smart-generation/__tests__/lcProbe.test.js`
+- [x] T060 [P] [US5] Write unit tests for LC probe: profiler LC value enumeration for basic columns with <200 unique values, per-key LC on Map columns, skip for high-cardinality columns, YAML generator embedding of `lc_values` in field-level `meta` — in `services/cubejs/src/utils/smart-generation/__tests__/lcProbe.test.js`
 
 ### Implementation for User Story 5
 
-- [ ] T061 [US5] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to run LC probe (`arraySort(groupUniqArray(...))`) for columns with `unique_values < 200` and for per-key LC on Map columns
-- [ ] T062 [US5] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to embed `lc_values` in field-level `meta` when LC probe data is available
+- [x] T061 [US5] Extend profiler in `services/cubejs/src/utils/smart-generation/profiler.js` to run LC probe (`arraySort(groupUniqArray(...))`) for columns with `unique_values < 200` and for per-key LC on Map columns
+- [x] T062 [US5] Extend YAML generator in `services/cubejs/src/utils/smart-generation/yamlGenerator.js` to embed `lc_values` in field-level `meta` when LC probe data is available
 
 **Checkpoint**: LC values are captured and available in model metadata for frontend consumption.
 
@@ -198,7 +198,7 @@
 
 ### Tests for User Story 6
 
-- [ ] T063 [P] [US6] Write unit tests for primary key detector: query `system.tables` parsing, sorting key fallback, filter to columns with data, integration with cube builder (PK columns get `primary_key: true` and `public: true`) — in `services/cubejs/src/utils/smart-generation/__tests__/primaryKeyDetector.test.js`
+- [x] T063 [P] [US6] Write unit tests for primary key detector: query `system.tables` parsing, sorting key fallback, filter to columns with data, integration with cube builder (PK columns get `primary_key: true` and `public: true`) — in `services/cubejs/src/utils/smart-generation/__tests__/primaryKeyDetector.test.js`
 
 ### Implementation for User Story 6
 
@@ -214,7 +214,7 @@
 **Purpose**: Improvements that affect multiple user stories
 
 - [ ] T066 [P] Verify all StepCI integration tests pass together with `./cli.sh tests stepci`
-- [ ] T067 [P] Run `yarn codegen` and `yarn lint` in client-v2 to verify no type errors or lint issues
+- [x] T067 [P] Run `yarn codegen` and `yarn lint` in client-v2 to verify no type errors or lint issues
 - [ ] T068 Run end-to-end manual verification per `specs/004-dynamic-model-creation/quickstart.md` verification checklist (include SC-001 performance validation: profile+generate <60s for tables with up to 100 columns)
 - [ ] T069 [P] Verify non-ClickHouse datasources still work correctly with standard generation (regression check)
 

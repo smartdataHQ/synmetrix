@@ -6,7 +6,7 @@ import createMd5Hex from '../utils/md5Hex.js';
 import { profileTable } from '../utils/smart-generation/profiler.js';
 import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
 import { buildCubes } from '../utils/smart-generation/cubeBuilder.js';
-import { generateYaml, generateFileName } from '../utils/smart-generation/yamlGenerator.js';
+import { generateJs, generateFileName } from '../utils/smart-generation/yamlGenerator.js';
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
 import { mergeModels } from '../utils/smart-generation/merger.js';
 
@@ -61,10 +61,11 @@ export default async (req, res, cubejs) => {
       primaryKeys,
     });
 
-    // Step 4: Generate YAML
-    emitter.emit('generating', 'Generating YAML model...', 0.7);
-    const yamlContent = generateYaml(cubeResult.cubes);
-    const fileName = generateFileName(table);
+    // Step 4: Generate JS model (JS is a superset of YAML — supports
+    // FILTER_PARAMS callbacks, asyncModule, COMPILE_CONTEXT, extends)
+    emitter.emit('generating', 'Generating JS model...', 0.7);
+    const yamlContent = generateJs(cubeResult.cubes);
+    const fileName = generateFileName(table, true);
 
     // Step 5: Fetch existing schemas
     emitter.emit('versioning', 'Checking existing schemas...', 0.75);

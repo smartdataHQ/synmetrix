@@ -8,13 +8,30 @@
 import YAML from 'yaml';
 
 /**
- * Generate a file name for a cube YAML file.
+ * Check if any cube definition contains FILTER_PARAMS callbacks
+ * that require JS output (YAML parser can't handle arrow functions).
+ *
+ * @param {object[]} cubeDefinitions
+ * @returns {boolean}
+ */
+export function requiresJsOutput(cubeDefinitions) {
+  for (const cube of cubeDefinitions) {
+    for (const field of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+      if (field.sql && field.sql.includes('FILTER_PARAMS')) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Generate a file name for a cube model file.
  *
  * @param {string} tableName - Source table name
- * @returns {string} File name with .yml extension
+ * @param {boolean} [js=true] - Use .js extension (default) or .yml
+ * @returns {string} File name
  */
-export function generateFileName(tableName) {
-  return `${tableName}.yml`;
+export function generateFileName(tableName, js = true) {
+  return `${tableName}.${js ? 'js' : 'yml'}`;
 }
 
 /**
@@ -24,14 +41,28 @@ export function generateFileName(tableName) {
  * @returns {object} YAML-ready field object
  */
 function formatField(field) {
-  return {
+  const meta = {
+    auto_generated: true,
+    ...field.meta,
+  };
+
+  // Clean internal-only properties
+  delete meta.auto_generated;
+  meta.auto_generated = true;
+
+  const entry = {
     name: field.name,
     sql: field.sql,
     type: field.type,
-    meta: {
-      auto_generated: true,
-    },
+    meta,
   };
+
+  if (field.primary_key) {
+    entry.primary_key = true;
+    entry.public = true;
+  }
+
+  return entry;
 }
 
 /**
@@ -86,4 +117,125 @@ export function generateYaml(cubeDefinitions) {
   };
 
   return YAML.stringify(doc, { lineWidth: 0 });
+}
+
+// -- JS generator (for cubes with FILTER_PARAMS callbacks) ------------------
+
+/**
+ * Escape a string for use inside a JS template literal.
+ * @param {string} str
+ * @returns {string}
+ */
+function escapeTemplateLiteral(str) {
+  return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+}
+
+/**
+ * Convert a sql expression from YAML syntax ({FILTER_PARAMS...}, {CUBE})
+ * to JS template literal syntax (${FILTER_PARAMS...}, ${CUBE}).
+ *
+ * @param {string} sql
+ * @returns {string}
+ */
+function sqlToJsTemplate(sql) {
+  // First escape backticks for the template literal
+  let js = escapeTemplateLiteral(sql);
+  // Convert {FILTER_PARAMS...} and {CUBE} to ${...}
+  js = js.replace(/\{(FILTER_PARAMS\.|CUBE)/g, '${$1');
+  return js;
+}
+
+/**
+ * Serialize a meta object as a JS object literal string.
+ * @param {object} meta
+ * @param {number} indent - base indentation level
+ * @returns {string}
+ */
+function metaToJs(meta, indent) {
+  const pad = ' '.repeat(indent);
+  const inner = ' '.repeat(indent + 2);
+  const lines = [`${pad}meta: {`];
+  for (const [key, value] of Object.entries(meta)) {
+    if (Array.isArray(value)) {
+      lines.push(`${inner}${key}: ${JSON.stringify(value)},`);
+    } else if (typeof value === 'string') {
+      lines.push(`${inner}${key}: ${JSON.stringify(value)},`);
+    } else if (typeof value === 'boolean' || typeof value === 'number') {
+      lines.push(`${inner}${key}: ${value},`);
+    }
+  }
+  lines.push(`${pad}},`);
+  return lines.join('\n');
+}
+
+/**
+ * Generate a Cube.js JavaScript model string from cube definitions.
+ * Used when cubes contain FILTER_PARAMS callbacks that YAML can't parse.
+ *
+ * @param {object[]} cubeDefinitions - Array of cube definition objects
+ * @returns {string} JavaScript model string
+ */
+export function generateJs(cubeDefinitions) {
+  const parts = [];
+
+  for (const cube of cubeDefinitions) {
+    const formatted = formatCube(cube);
+    const lines = [];
+
+    lines.push(`cube(\`${formatted.name}\`, {`);
+
+    // Source
+    if (formatted.sql_table) {
+      lines.push(`  sql_table: \`${escapeTemplateLiteral(formatted.sql_table)}\`,`);
+    } else if (formatted.sql) {
+      lines.push(`  sql: \`${sqlToJsTemplate(formatted.sql)}\`,`);
+    }
+
+    // Cube-level meta
+    if (formatted.meta) {
+      lines.push('');
+      lines.push(metaToJs(formatted.meta, 2));
+    }
+
+    // Dimensions
+    if (formatted.dimensions && formatted.dimensions.length > 0) {
+      lines.push('');
+      lines.push('  dimensions: {');
+      for (const dim of formatted.dimensions) {
+        lines.push(`    ${dim.name}: {`);
+        lines.push(`      sql: \`${sqlToJsTemplate(dim.sql)}\`,`);
+        lines.push(`      type: \`${dim.type}\`,`);
+        if (dim.primary_key) {
+          lines.push('      primary_key: true,');
+          lines.push('      public: true,');
+        }
+        if (dim.meta) {
+          lines.push(metaToJs(dim.meta, 6));
+        }
+        lines.push('    },');
+      }
+      lines.push('  },');
+    }
+
+    // Measures
+    if (formatted.measures && formatted.measures.length > 0) {
+      lines.push('');
+      lines.push('  measures: {');
+      for (const m of formatted.measures) {
+        lines.push(`    ${m.name}: {`);
+        lines.push(`      sql: \`${sqlToJsTemplate(m.sql)}\`,`);
+        lines.push(`      type: \`${m.type}\`,`);
+        if (m.meta) {
+          lines.push(metaToJs(m.meta, 6));
+        }
+        lines.push('    },');
+      }
+      lines.push('  },');
+    }
+
+    lines.push('});');
+    parts.push(lines.join('\n'));
+  }
+
+  return parts.join('\n\n');
 }

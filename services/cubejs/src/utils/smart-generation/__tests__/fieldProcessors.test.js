@@ -11,6 +11,9 @@ import {
   processColumn,
 } from '../fieldProcessors.js';
 
+// Re-export NestedFieldProcessor for coordinate tests
+const NestedFieldProcessorClass = NestedFieldProcessor;
+
 import { ColumnType, ValueType } from '../typeParser.js';
 
 // ---------------------------------------------------------------------------
@@ -165,6 +168,92 @@ describe('BasicFieldProcessor', () => {
       fieldType: 'dimension',
     });
   });
+
+  it('Int8 with values beyond 0/1 -> reclassified as number measure', () => {
+    const col = {
+      name: 'importance',
+      rawType: 'Nullable(Int8)',
+      columnType: ColumnType.BASIC,
+      valueType: ValueType.BOOLEAN,
+    };
+    const profile = {
+      hasValues: true,
+      minValue: 1,
+      maxValue: 5,
+      lcValues: [1, 2, 3, 4, 5],
+    };
+    const result = processor.process(col, profile);
+    assert.equal(result.type, 'sum', 'should be numeric measure');
+    assert.equal(result.fieldType, 'measure');
+    assert.equal(result.sql, '{CUBE}.importance', 'should NOT use = 1 comparison');
+  });
+
+  it('Int8 with only 0/1 values stays boolean', () => {
+    const col = {
+      name: 'is_active',
+      rawType: 'Int8',
+      columnType: ColumnType.BASIC,
+      valueType: ValueType.BOOLEAN,
+    };
+    const profile = {
+      hasValues: true,
+      minValue: 0,
+      maxValue: 1,
+      lcValues: [0, 1],
+    };
+    const result = processor.process(col, profile);
+    assert.equal(result.type, 'boolean');
+    assert.equal(result.fieldType, 'dimension');
+    assert.equal(result.sql, '({CUBE}.is_active) = 1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinate detection
+// ---------------------------------------------------------------------------
+
+describe('Coordinate column detection', () => {
+  const processor = new BasicFieldProcessor();
+
+  it('latitude -> number dimension, not sum measure', () => {
+    const col = {
+      name: 'latitude',
+      rawType: 'Float64',
+      columnType: ColumnType.BASIC,
+      valueType: ValueType.NUMBER,
+    };
+    const result = processor.process(col, null);
+    assert.equal(result.fieldType, 'dimension');
+    assert.equal(result.type, 'number');
+  });
+
+  it('longitude -> number dimension, not sum measure', () => {
+    const col = {
+      name: 'longitude',
+      rawType: 'Float64',
+      columnType: ColumnType.BASIC,
+      valueType: ValueType.NUMBER,
+    };
+    const result = processor.process(col, null);
+    assert.equal(result.fieldType, 'dimension');
+    assert.equal(result.type, 'number');
+  });
+
+  it('nested location.latitude -> number dimension', () => {
+    const nestedProcessor = new NestedFieldProcessor();
+    const col = {
+      name: 'location.latitude',
+      rawType: 'Float64',
+      columnType: ColumnType.GROUPED,
+      valueType: ValueType.NUMBER,
+      parentName: 'location',
+      childName: 'latitude',
+    };
+    const result = nestedProcessor.process(col, null);
+    assert.equal(result.fieldType, 'dimension');
+    assert.equal(result.type, 'number');
+    assert.equal(result.name, 'location_latitude');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -195,11 +284,13 @@ describe('MapFieldProcessor', () => {
   });
 
   it('string value map -> string dimensions per key', () => {
+    // valueType is OTHER for Map columns; valueDataType holds the actual type
     const col = {
       name: 'tags',
       rawType: 'Map(String, String)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.STRING,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.STRING,
     };
     const profile = { uniqueKeys: ['color', 'size'] };
     const result = processor.process(col, profile);
@@ -210,12 +301,14 @@ describe('MapFieldProcessor', () => {
       sql: "{CUBE}.tags['color']",
       type: 'string',
       fieldType: 'dimension',
+      _mapKey: 'color',
     });
     assert.deepEqual(result[1], {
       name: 'tags_size',
       sql: "{CUBE}.tags['size']",
       type: 'string',
       fieldType: 'dimension',
+      _mapKey: 'size',
     });
   });
 
@@ -224,7 +317,8 @@ describe('MapFieldProcessor', () => {
       name: 'metrics',
       rawType: 'Map(String, Float64)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.NUMBER,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.NUMBER,
     };
     const profile = { uniqueKeys: ['latency'] };
     const result = processor.process(col, profile);
@@ -235,7 +329,27 @@ describe('MapFieldProcessor', () => {
       sql: "CAST({CUBE}.metrics['latency'] AS Float64)",
       type: 'sum',
       fieldType: 'measure',
+      _mapKey: 'latency',
     });
+  });
+
+  it('numeric value map with LowCardinality wrappers -> measures (real-world)', () => {
+    // Map(LowCardinality(String), Float32) — as seen in real ClickHouse tables
+    const col = {
+      name: 'metrics',
+      rawType: 'Map(LowCardinality(String), Float32)',
+      columnType: ColumnType.MAP,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.NUMBER,
+    };
+    const profile = { uniqueKeys: ['total_trips', 'avg_speed_kmh'] };
+    const result = processor.process(col, profile);
+
+    assert.equal(result.length, 2);
+    assert.equal(result[0].fieldType, 'measure');
+    assert.equal(result[0].type, 'sum');
+    assert.ok(result[0].sql.includes('CAST'));
+    assert.equal(result[1].fieldType, 'measure');
   });
 
   it('numeric value map (UInt32) -> CAST to UInt64', () => {
@@ -243,7 +357,8 @@ describe('MapFieldProcessor', () => {
       name: 'counts',
       rawType: 'Map(String, UInt32)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.NUMBER,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.NUMBER,
     };
     const profile = { uniqueKeys: ['hits'] };
     const result = processor.process(col, profile);
@@ -256,7 +371,8 @@ describe('MapFieldProcessor', () => {
       name: 'deltas',
       rawType: 'Map(String, Int32)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.NUMBER,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.NUMBER,
     };
     const profile = { uniqueKeys: ['diff'] };
     const result = processor.process(col, profile);
@@ -269,7 +385,8 @@ describe('MapFieldProcessor', () => {
       name: 'flags',
       rawType: 'Map(String, Int8)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.NUMBER,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.NUMBER,
     };
     const profile = { uniqueKeys: ['enabled'] };
     const result = processor.process(col, profile);
@@ -279,15 +396,18 @@ describe('MapFieldProcessor', () => {
       sql: "({CUBE}.flags['enabled']) = 1",
       type: 'boolean',
       fieldType: 'dimension',
+      _mapKey: 'enabled',
     });
   });
 
   it('boolean value map -> boolean dimensions', () => {
+    // Map(LowCardinality(String), Bool) — as seen in real ClickHouse tables
     const col = {
       name: 'settings',
-      rawType: 'Map(String, Bool)',
+      rawType: 'Map(LowCardinality(String), Bool)',
       columnType: ColumnType.MAP,
-      valueType: ValueType.BOOLEAN,
+      valueType: ValueType.OTHER,
+      valueDataType: ValueType.BOOLEAN,
     };
     const profile = { uniqueKeys: ['dark_mode'] };
     const result = processor.process(col, profile);
@@ -297,6 +417,7 @@ describe('MapFieldProcessor', () => {
       sql: "{CUBE}.settings['dark_mode']",
       type: 'boolean',
       fieldType: 'dimension',
+      _mapKey: 'dark_mode',
     });
   });
 

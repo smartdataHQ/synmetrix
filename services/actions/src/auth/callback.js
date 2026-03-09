@@ -66,6 +66,9 @@ export default async function callbackHandler(req, res) {
 
     await createSession(sessionId, sessionData);
 
+    // Determine redirect target — redirect to the frontend app
+    const appUrl = process.env.APP_FRONTEND_URL || process.env.APP_URL || "http://localhost:8000";
+
     // Set session cookie
     const isSecure = appUrl.startsWith("https://") || process.env.NODE_ENV === "production";
     res.cookie("session", sessionId, {
@@ -75,9 +78,6 @@ export default async function callbackHandler(req, res) {
       maxAge: 86400000, // 24 hours in ms
       path: "/",
     });
-
-    // Determine redirect target — redirect to the frontend app
-    const appUrl = process.env.APP_FRONTEND_URL || process.env.APP_URL || "http://localhost:8000";
     let redirectTo = `${appUrl}/explore`;
     if (state) {
       try {

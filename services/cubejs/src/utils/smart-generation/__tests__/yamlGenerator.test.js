@@ -102,16 +102,20 @@ describe('yamlGenerator – generateYaml', () => {
   });
 
   describe('generateFileName', () => {
-    it('should return table_name.yml', () => {
-      assert.strictEqual(generateFileName('orders'), 'orders.yml');
+    it('should return table_name.js by default', () => {
+      assert.strictEqual(generateFileName('orders'), 'orders.js');
+    });
+
+    it('should return .yml when js=false', () => {
+      assert.strictEqual(generateFileName('orders', false), 'orders.yml');
     });
 
     it('should handle names with special characters', () => {
-      assert.strictEqual(generateFileName('my-table'), 'my-table.yml');
+      assert.strictEqual(generateFileName('my-table'), 'my-table.js');
     });
 
     it('should handle names with dots', () => {
-      assert.strictEqual(generateFileName('schema.table'), 'schema.table.yml');
+      assert.strictEqual(generateFileName('schema.table'), 'schema.table.js');
     });
   });
 

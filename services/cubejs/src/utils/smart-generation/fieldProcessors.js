@@ -51,17 +51,50 @@ function cubeField({ name, sql, type, fieldType }) {
 // -- Shared logic -----------------------------------------------------------
 
 /**
+ * Check whether an Int8 column is actually boolean (only 0/1 values)
+ * or is used for small numbers (e.g., importance levels 1-5, age).
+ *
+ * @param {string} rawType - Column's raw ClickHouse type
+ * @param {object|null} profile - Profiling data with min/max/lcValues
+ * @returns {boolean} true if the column is genuinely boolean
+ */
+function isInt8Boolean(rawType, profile) {
+  if (!(rawType || '').toLowerCase().includes('int8')) return false;
+  if (!profile) return true; // assume boolean without profile data
+  if (profile.maxValue != null && profile.maxValue > 1) return false;
+  if (profile.minValue != null && profile.minValue < 0) return false;
+  if (profile.lcValues && Array.isArray(profile.lcValues)) {
+    for (const v of profile.lcValues) {
+      const n = Number(v);
+      if (!isNaN(n) && n !== 0 && n !== 1) return false;
+    }
+  }
+  return true;
+}
+
+/** Coordinate column names that should always be dimensions, never summed. */
+const COORDINATE_NAMES = /^(lat|latitude|lon|lng|longitude)$/i;
+
+/**
  * Determine whether a column should be a dimension or measure.
  *
  * @param {object} columnDetails
+ * @param {object|null} profile
  * @returns {string} "dimension" | "measure"
  */
-function determineFieldType(columnDetails) {
-  const rawType = (columnDetails.rawType || '').toLowerCase();
-
-  // ClickHouse Int8 is treated as boolean-like -> dimension
-  if (rawType.includes('int8')) {
+function determineFieldType(columnDetails, profile) {
+  // Coordinate columns are dimensions — summing lat/lon is meaningless
+  const name = (columnDetails.childName || columnDetails.name || '').toLowerCase();
+  if (COORDINATE_NAMES.test(name)) {
     return 'dimension';
+  }
+
+  const rawType = (columnDetails.rawType || '').toLowerCase();
+  const hasInt8 = rawType.includes('int8');
+
+  if (hasInt8) {
+    // Int8 is boolean only if actual values are 0/1; otherwise it's a small number
+    return isInt8Boolean(rawType, profile) ? 'dimension' : 'measure';
   }
 
   if (columnDetails.valueType === ValueType.NUMBER) {
@@ -75,13 +108,15 @@ function determineFieldType(columnDetails) {
  * Map a profiled column to the appropriate Cube.js type string.
  *
  * @param {object} columnDetails
+ * @param {object|null} profile
  * @returns {string}
  */
-function getCubeType(columnDetails) {
+function getCubeType(columnDetails, profile) {
   const rawType = (columnDetails.rawType || '').toLowerCase();
+  const hasInt8 = rawType.includes('int8');
 
-  if (rawType.includes('int8')) {
-    return 'boolean';
+  if (hasInt8) {
+    return isInt8Boolean(rawType, profile) ? 'boolean' : 'number';
   }
   if (columnDetails.valueType === ValueType.NUMBER) {
     return 'number';
@@ -96,16 +131,16 @@ function getCubeType(columnDetails) {
  * Generate the SQL expression for a basic/nested column.
  *
  * @param {object} columnDetails
+ * @param {object|null} profile
  * @returns {string}
  */
-function generateSqlExpression(columnDetails) {
+function generateSqlExpression(columnDetails, profile) {
   const columnName = columnDetails.name;
-  const rawType = (columnDetails.rawType || '').toLowerCase();
 
   if (columnDetails.valueType === ValueType.UUID) {
     return `toString({CUBE}.${columnName})`;
   }
-  if (rawType.includes('int8')) {
+  if (isInt8Boolean(columnDetails.rawType, profile)) {
     return `({CUBE}.${columnName}) = 1`;
   }
   return `{CUBE}.${columnName}`;
@@ -122,11 +157,11 @@ export class BasicFieldProcessor {
    * @param {object|null} profile
    * @returns {object|null} CubeField or null on error
    */
-  process(columnDetails, _profile) {
+  process(columnDetails, profile) {
     try {
-      const fieldType = determineFieldType(columnDetails);
-      const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails);
-      const sql = generateSqlExpression(columnDetails);
+      const fieldType = determineFieldType(columnDetails, profile);
+      const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails, profile);
+      const sql = generateSqlExpression(columnDetails, profile);
 
       return cubeField({
         name: columnDetails.name,
@@ -166,22 +201,27 @@ export class MapFieldProcessor {
       valueSubtype = mapMatch[1].trim();
     }
 
+    // Use valueDataType (the Map's declared value type) for classification.
+    // valueType is always OTHER for Map columns; valueDataType holds the actual type.
+    const effectiveValueType = columnDetails.valueDataType || columnDetails.valueType;
+
     for (const key of profile.uniqueKeys) {
       try {
         const sanitizedKey = sanitizeFieldName(key);
         const fieldName = `${columnName}_${sanitizedKey}`;
+        let field;
 
-        if (columnDetails.valueType === ValueType.NUMBER) {
+        if (effectiveValueType === ValueType.NUMBER) {
           // Int8 inside numeric map value -> boolean dimension
           if (valueSubtype.includes('int8')) {
-            fields.push(
-              cubeField({
-                name: fieldName,
-                sql: `({CUBE}.${columnName}['${key}']) = 1`,
-                type: 'boolean',
-                fieldType: 'dimension',
-              })
-            );
+            field = cubeField({
+              name: fieldName,
+              sql: `({CUBE}.${columnName}['${key}']) = 1`,
+              type: 'boolean',
+              fieldType: 'dimension',
+            });
+            field._mapKey = key;
+            fields.push(field);
             continue;
           }
 
@@ -194,15 +234,13 @@ export class MapFieldProcessor {
           }
           // float / decimal / double -> Float64 (default)
 
-          fields.push(
-            cubeField({
-              name: fieldName,
-              sql: `CAST({CUBE}.${columnName}['${key}'] AS ${castTarget})`,
-              type: 'sum',
-              fieldType: 'measure',
-            })
-          );
-        } else if (columnDetails.valueType === ValueType.BOOLEAN) {
+          field = cubeField({
+            name: fieldName,
+            sql: `CAST({CUBE}.${columnName}['${key}'] AS ${castTarget})`,
+            type: 'sum',
+            fieldType: 'measure',
+          });
+        } else if (effectiveValueType === ValueType.BOOLEAN) {
           let boolSql;
           if (valueSubtype.includes('bool') || valueSubtype.includes('boolean')) {
             boolSql = `{CUBE}.${columnName}['${key}']`;
@@ -212,25 +250,24 @@ export class MapFieldProcessor {
             boolSql = `{CUBE}.${columnName}['${key}']`;
           }
 
-          fields.push(
-            cubeField({
-              name: fieldName,
-              sql: boolSql,
-              type: 'boolean',
-              fieldType: 'dimension',
-            })
-          );
+          field = cubeField({
+            name: fieldName,
+            sql: boolSql,
+            type: 'boolean',
+            fieldType: 'dimension',
+          });
         } else {
           // STRING / OTHER -> string dimension
-          fields.push(
-            cubeField({
-              name: fieldName,
-              sql: `{CUBE}.${columnName}['${key}']`,
-              type: 'string',
-              fieldType: 'dimension',
-            })
-          );
+          field = cubeField({
+            name: fieldName,
+            sql: `{CUBE}.${columnName}['${key}']`,
+            type: 'string',
+            fieldType: 'dimension',
+          });
         }
+
+        field._mapKey = key;
+        fields.push(field);
       } catch {
         // Skip keys that fail processing
         continue;
@@ -314,10 +351,10 @@ export class ArrayFieldProcessor {
 export class NestedFieldProcessor {
   /**
    * @param {object} columnDetails
-   * @param {object|null} _profile
+   * @param {object|null} profile
    * @returns {object|null} CubeField
    */
-  process(columnDetails, _profile) {
+  process(columnDetails, profile) {
     try {
       const parentName = columnDetails.parentName || '';
       const childName = columnDetails.childName || columnDetails.name;
@@ -326,9 +363,9 @@ export class NestedFieldProcessor {
         ? `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}`
         : sanitizeFieldName(childName);
 
-      const fieldType = determineFieldType(columnDetails);
-      const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails);
-      const sql = generateSqlExpression(columnDetails);
+      const fieldType = determineFieldType(columnDetails, profile);
+      const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails, profile);
+      const sql = generateSqlExpression(columnDetails, profile);
 
       return cubeField({
         name: fieldName,

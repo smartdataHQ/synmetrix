@@ -13,4 +13,5 @@ env:
   TEST_TEAM_NAME: Test team
 include:
   - owner_flow.yml
+  - smart_gen_flow.yml
   - cubesql_flow.yml
