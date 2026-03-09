@@ -1415,6 +1415,7 @@
           - created_at
           - id
           - name
+          - settings
           - updated_at
           - user_id
         filter:
@@ -1426,6 +1427,7 @@
       permission:
         columns:
           - name
+          - settings
         filter:
           members:
             _and:

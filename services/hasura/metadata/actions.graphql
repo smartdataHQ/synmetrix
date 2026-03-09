@@ -91,6 +91,34 @@ type Mutation {
   ): RunSourceQueryOutput
 }
 
+type Query {
+  profile_table(
+    datasource_id: uuid!
+    branch_id: uuid!
+    table_name: String!
+    table_schema: String!
+  ): ProfileTableOutput
+}
+
+type Mutation {
+  smart_gen_dataschemas(
+    datasource_id: uuid!
+    branch_id: uuid!
+    table_name: String!
+    table_schema: String!
+    array_join_columns: [ArrayJoinInput]
+    max_map_keys: Int
+    merge_strategy: String
+  ): SmartGenOutput
+}
+
+type Mutation {
+  update_team_settings(
+    team_id: uuid!
+    settings: jsonb!
+  ): UpdateTeamSettingsOutput
+}
+
 type Mutation {
   send_test_alert(
     name: String
@@ -98,6 +126,11 @@ type Mutation {
     deliveryConfig: json!
     explorationId: uuid
   ): SendTestAlertOutput
+}
+
+input ArrayJoinInput {
+  column: String!
+  alias: String!
 }
 
 input SourceTable {
@@ -186,5 +219,54 @@ type PreAggregationPreviewOutput {
 type SendTestAlertOutput {
   error: Boolean
   result: json
+}
+
+type ProfileTableOutput {
+  code: String!
+  row_count: Int
+  sampled: Boolean!
+  sample_size: Int
+  columns: [ProfiledColumnOutput]
+  array_candidates: [ArrayCandidateOutput]
+  primary_keys: [String]
+  existing_model: ExistingModelInfo
+}
+
+type ExistingModelInfo {
+  file_name: String!
+  file_format: String!
+  has_user_content: Boolean!
+  supports_reprofile: Boolean!
+  suggested_merge_strategy: String!
+}
+
+type ProfiledColumnOutput {
+  name: String!
+  raw_type: String!
+  column_type: String!
+  value_type: String!
+  has_values: Boolean!
+  unique_values: Int
+  unique_keys: [String]
+  lc_values: jsonb
+}
+
+type ArrayCandidateOutput {
+  column: String!
+  element_type: String!
+  suggested_alias: String!
+}
+
+type SmartGenOutput {
+  code: String!
+  message: String
+  version_id: uuid
+  file_name: String
+  changed: Boolean!
+}
+
+type UpdateTeamSettingsOutput {
+  code: String!
+  message: String
 }
 
