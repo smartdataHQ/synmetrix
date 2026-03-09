@@ -35,8 +35,11 @@ const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) =>
 
   data.dbParams = prepareDbParams(data.dbParams, data.dbType);
 
-  // Include partition in the hash for cache isolation between tenants
-  const hashData = partition ? { ...data, partition } : data;
+  // Include all team properties in the hash for cache isolation between tenants.
+  // Member properties are NOT included — they are applied at query time via queryRewrite,
+  // preventing cache over-fragmentation with hundreds of members.
+  const teamPropsForHash = Object.keys(teamSettings).length > 0 ? teamSettings : null;
+  const hashData = teamPropsForHash ? { ...data, teamProperties: teamPropsForHash } : data;
   const dataSourceVersion = JSum.digest(hashData, "SHA256", "hex");
 
   const dataModels =

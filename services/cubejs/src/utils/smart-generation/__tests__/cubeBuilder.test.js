@@ -66,8 +66,10 @@ describe('cubeBuilder – buildCubes', () => {
     it('should produce a measure for numeric columns', () => {
       const { cubes } = buildCubes(table);
       const measureNames = cubes[0].measures.map((m) => m.name);
+      assert.ok(measureNames.includes('count'), 'should include auto-generated count measure');
       assert.ok(measureNames.includes('amount'));
-      assert.strictEqual(cubes[0].measures[0].type, 'sum');
+      const amountMeasure = cubes[0].measures.find((m) => m.name === 'amount');
+      assert.strictEqual(amountMeasure.type, 'sum');
     });
 
     it('should set correct cube type on dimensions', () => {
@@ -146,9 +148,9 @@ describe('cubeBuilder – buildCubes', () => {
       const { cubes } = buildCubes(t, { maxMapKeys: 3 });
       const dimNames = cubes[0].dimensions.map((d) => d.name);
 
-      // Should have exactly 3 expanded fields
+      // Should have exactly 3 expanded fields + 1 native map accessor
       const mapFields = dimNames.filter((n) => n.startsWith('big_map_'));
-      assert.strictEqual(mapFields.length, 3);
+      assert.strictEqual(mapFields.length, 4); // 3 expanded + big_map_map
     });
 
     it('should keep all keys when under the limit', () => {
@@ -164,7 +166,7 @@ describe('cubeBuilder – buildCubes', () => {
       const { cubes } = buildCubes(t, { maxMapKeys: 500 });
       const dimNames = cubes[0].dimensions.map((d) => d.name);
       const mapFields = dimNames.filter((n) => n.startsWith('small_map_'));
-      assert.strictEqual(mapFields.length, 3);
+      assert.strictEqual(mapFields.length, 4); // 3 expanded + small_map_map
     });
   });
 
@@ -217,9 +219,9 @@ describe('cubeBuilder – buildCubes', () => {
   describe('summary counts', () => {
     it('should report correct summary counts', () => {
       const { summary } = buildCubes(table);
-      // id, user_name, created_at = 3 dimensions; amount = 1 measure
+      // id, user_name, created_at = 3 dimensions; count + amount = 2 measures
       assert.strictEqual(summary.dimensions_count, 3);
-      assert.strictEqual(summary.measures_count, 1);
+      assert.strictEqual(summary.measures_count, 2);
       assert.strictEqual(summary.cubes_count, 1);
       assert.strictEqual(summary.columns_profiled, 4);
       assert.strictEqual(summary.columns_skipped, 0);

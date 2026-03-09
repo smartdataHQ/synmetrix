@@ -135,6 +135,47 @@ function buildCubeSource(schema, table, partition, isInternal) {
 }
 
 /**
+ * Map a ValueType to a JSON-friendly field type string.
+ *
+ * @param {string} valueType - ValueType enum value
+ * @param {string} rawType - Raw ClickHouse type string
+ * @returns {string} JSON-friendly type like "string", "integer", "float", "boolean", "datetime", "uuid"
+ */
+function toJsonFieldType(valueType, rawType) {
+  const raw = (rawType || '').toLowerCase();
+  switch (valueType) {
+    case ValueType.STRING:
+      return 'string';
+    case ValueType.NUMBER:
+      if (/^u?int/i.test(raw.replace(/nullable\(|lowcardinality\(/g, ''))) return 'integer';
+      return 'float';
+    case ValueType.DATE:
+      return 'datetime';
+    case ValueType.UUID:
+      return 'uuid';
+    case ValueType.BOOLEAN:
+      return 'boolean';
+    default:
+      return 'string';
+  }
+}
+
+/**
+ * Check whether a field represents an Int8 boolean (for meta filtering).
+ *
+ * @param {string} rawType
+ * @param {object|null} profile
+ * @returns {boolean}
+ */
+function isInt8Boolean(rawType, profile) {
+  if (!(rawType || '').toLowerCase().includes('int8')) return false;
+  if (!profile) return true;
+  if (profile.maxValue != null && profile.maxValue > 1) return false;
+  if (profile.minValue != null && profile.minValue < 0) return false;
+  return true;
+}
+
+/**
  * Process all columns from a profiled table into cube fields.
  *
  * @param {Map} columns - Map of column name -> { details, profile }
@@ -142,10 +183,11 @@ function buildCubeSource(schema, table, partition, isInternal) {
  * @param {Array<{column: string, alias: string}>} options.arrayJoinColumns
  * @param {number} options.maxMapKeys
  * @param {string[]} options.primaryKeys
+ * @param {Map} [options.columnDescriptions] - Map of column name -> description
  * @returns {{ dimensions: object[], measures: object[], mapKeysDiscovered: number, columnsProfiled: number, columnsSkipped: number }}
  */
 function processColumns(columns, options) {
-  const { arrayJoinColumns = [], maxMapKeys = 500, primaryKeys = [], cubeName = 'cube' } = options;
+  const { arrayJoinColumns = [], maxMapKeys = 500, primaryKeys = [], cubeName = 'cube', columnDescriptions = new Map() } = options;
   const arrayJoinColumnNames = arrayJoinColumns.map((a) => a.column);
 
   const allFields = [];
@@ -177,11 +219,10 @@ function processColumns(columns, options) {
       if (lookup) {
         const parentName = details.parentName;
         const childName = details.childName;
+        const colDescription = columnDescriptions.get(columnName) || null;
 
         if (columnName === lookup.lookupColumn) {
           // This IS the lookup key → emit a filter dimension.
-          // The sql uses FILTER_PARAMS to echo back the filter value so that
-          // Cube.js's auto-generated WHERE clause becomes e.g. 'Vehicle' = 'Vehicle' (always true).
           const filterDimName = `${sanitizeFieldName(parentName)}_type`;
           const filterDimRef = `${cubeName}.${filterDimName}`;
           const field = {
@@ -194,10 +235,12 @@ function processColumns(columns, options) {
               auto_generated: true,
               source_column: columnName,
               raw_type: details.rawType,
+              field_type: 'string',
               nested_lookup_key: true,
               known_values: lookup.lcValues,
             },
           };
+          if (colDescription) field.meta.description = colDescription;
           if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
             field.meta.max_array_length = profile.maxArrayLength;
           }
@@ -213,10 +256,12 @@ function processColumns(columns, options) {
             : details.valueType === ValueType.DATE ? 'time'
             : details.valueType === ValueType.BOOLEAN ? 'boolean'
             : 'string';
+          const jsonFieldType = toJsonFieldType(details.valueType, details.rawType);
           // Coordinates are dimensions; other numbers are measures
           const cubeFieldType = (details.valueType === ValueType.NUMBER && !isCoordinate) ? 'measure' : 'dimension';
           const cubeType = cubeFieldType === 'measure' ? 'sum' : fieldType;
 
+          // FILTER_PARAMS-resolved field (requires selector)
           const field = {
             name: fieldName,
             sql: `arrayElementOrNull({CUBE}.\`${parentName}.${childName}\`, indexOf({CUBE}.\`${parentName}.${lookup.lookupChildName}\`, toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)})))`,
@@ -227,13 +272,38 @@ function processColumns(columns, options) {
               auto_generated: true,
               source_column: columnName,
               raw_type: details.rawType,
+              field_type: jsonFieldType,
               resolved_by: `${sanitizeFieldName(parentName)}_type`,
             },
           };
+          if (colDescription) field.meta.description = colDescription;
           if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
             field.meta.max_array_length = profile.maxArrayLength;
           }
           allFields.push(field);
+
+          // Also emit a native array dimension (full array when no selector)
+          // This lets queries access the complete array without FILTER_PARAMS
+          const arrayFieldName = `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}_all`;
+          const arrayField = {
+            name: arrayFieldName,
+            sql: `toString({CUBE}.\`${parentName}.${childName}\`)`,
+            type: 'string',
+            fieldType: 'dimension',
+            _sourceColumn: columnName,
+            meta: {
+              auto_generated: true,
+              source_column: columnName,
+              raw_type: details.rawType,
+              field_type: `array<${jsonFieldType}>`,
+              full_array: true,
+            },
+          };
+          if (colDescription) arrayField.meta.description = colDescription;
+          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
+            arrayField.meta.max_array_length = profile.maxArrayLength;
+          }
+          allFields.push(arrayField);
         }
         continue; // skip normal processing for this column
       }
@@ -278,6 +348,21 @@ function processColumns(columns, options) {
       field.meta.source_column = columnName;
       field.meta.raw_type = details.rawType;
 
+      // Add JSON-friendly field_type
+      const isBoolField = isInt8Boolean(details.rawType, profile);
+      if (field._mapKey) {
+        // For map-expanded fields, use the map's value data type
+        field.meta.field_type = toJsonFieldType(details.valueDataType || details.valueType, details.rawType);
+      } else {
+        field.meta.field_type = isBoolField ? 'boolean' : toJsonFieldType(details.valueType, details.rawType);
+      }
+
+      // Add column description if available
+      const colDescription = columnDescriptions.get(columnName) || null;
+      if (colDescription) {
+        field.meta.description = colDescription;
+      }
+
       // Add profile stats when available
       if (profile) {
         // For Map-expanded fields, unique_values from the parent is the key count
@@ -285,15 +370,20 @@ function processColumns(columns, options) {
         if (!field._mapKey && profile.uniqueValues > 0) {
           field.meta.unique_values = profile.uniqueValues;
         }
-        if (profile.minValue != null) {
-          field.meta.min_value = profile.minValue;
+
+        // Don't add min/max/avg for boolean fields — they are meaningless
+        if (!isBoolField) {
+          if (profile.minValue != null) {
+            field.meta.min_value = profile.minValue;
+          }
+          if (profile.maxValue != null) {
+            field.meta.max_value = profile.maxValue;
+          }
+          if (profile.avgValue != null) {
+            field.meta.avg_value = profile.avgValue;
+          }
         }
-        if (profile.maxValue != null) {
-          field.meta.max_value = profile.maxValue;
-        }
-        if (profile.avgValue != null) {
-          field.meta.avg_value = profile.avgValue;
-        }
+
         if (profile.maxArrayLength != null && profile.maxArrayLength > 0) {
           field.meta.max_array_length = profile.maxArrayLength;
         }
@@ -326,6 +416,30 @@ function processColumns(columns, options) {
       }
 
       allFields.push(field);
+    }
+
+    // For Map columns, also emit native accessor dimensions (the full map column)
+    // This lets queries access the map directly without individual key expansion
+    if (details.columnType === ColumnType.MAP && profile && profile.uniqueKeys && profile.uniqueKeys.length > 0) {
+      const mapFieldName = `${sanitizeFieldName(columnName)}_map`;
+      const colDescription = columnDescriptions.get(columnName) || null;
+      const nativeMapField = {
+        name: mapFieldName,
+        sql: `toString({CUBE}.\`${columnName}\`)`,
+        type: 'string',
+        fieldType: 'dimension',
+        _sourceColumn: columnName,
+        meta: {
+          auto_generated: true,
+          source_column: columnName,
+          raw_type: details.rawType,
+          field_type: 'map',
+          native_map: true,
+          known_keys: profile.uniqueKeys,
+        },
+      };
+      if (colDescription) nativeMapField.meta.description = colDescription;
+      allFields.push(nativeMapField);
     }
   }
 
@@ -387,7 +501,16 @@ function buildRawCube(profiledTable, options) {
       maxMapKeys,
       primaryKeys,
       cubeName,
+      columnDescriptions: profiledTable.columnDescriptions || new Map(),
     });
+
+  // Add count measure (always present — fundamental for any cube)
+  measures.unshift({
+    name: 'count',
+    sql: '*',
+    type: 'count',
+    meta: { auto_generated: true, field_type: 'integer' },
+  });
 
   const meta = {
     auto_generated: true,
@@ -395,6 +518,11 @@ function buildRawCube(profiledTable, options) {
     source_table: table,
     generated_at: new Date().toISOString(),
   };
+
+  // Include table description if available
+  if (profiledTable.tableDescription) {
+    meta.description = profiledTable.tableDescription;
+  }
 
   if (isInternal && partition) {
     meta.source_partition = partition;

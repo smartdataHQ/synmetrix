@@ -21,10 +21,38 @@ export default async function callbackHandler(req, res) {
       code,
     });
 
-    const { user, accessToken, refreshToken } = authResult;
+    const { user, accessToken, refreshToken, organizationId } = authResult;
+
+    // Decode WorkOS access token to extract org claims
+    let jwtClaims = {};
+    try {
+      jwtClaims = jose.decodeJwt(accessToken);
+      logger.log("[Auth Callback] WorkOS JWT claims:", JSON.stringify(jwtClaims, null, 2));
+    } catch (e) {
+      logger.warn("[Auth Callback] Failed to decode WorkOS JWT:", e?.message);
+    }
+
+    // Log full auth result for debugging team assignments
+    logger.log("[Auth Callback] WorkOS auth result:", JSON.stringify({
+      userId: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      organizationId,
+      jwtOrgId: jwtClaims.org_id,
+      jwtOrgName: jwtClaims.org_name,
+      authResultKeys: Object.keys(authResult),
+    }, null, 2));
+
+    // Extract partition from JWT claims (custom claim set in WorkOS)
+    // Falls back to org_id, then top-level organizationId
+    const partition = jwtClaims.partition || jwtClaims.org_id || organizationId || null;
+    const orgId = jwtClaims.org_id || organizationId || null;
+    logger.log(`[Auth Callback] Extracted partition: ${partition}, orgId: ${orgId}`);
 
     // JIT provision user in PostgreSQL
-    const { userId, teamId } = await provisionUser(user);
+    const { userId, teamId } = await provisionUser(user, { partition, orgId });
+    logger.log(`[Auth Callback] Provisioned: userId=${userId}, teamId=${teamId}, partition=${partition}, orgId=${orgId}`);
 
     // Mint Hasura-compatible JWT
     const hasuraJwt = await generateUserAccessToken(userId);

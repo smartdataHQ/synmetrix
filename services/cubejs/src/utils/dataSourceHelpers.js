@@ -1,5 +1,37 @@
 import { fetchGraphQL } from "./graphql.js";
 
+// --- User scope cache: keyed by userId, 30s TTL ---
+const userCache = new Map();
+const USER_CACHE_TTL = 30_000;
+const USER_CACHE_MAX_SIZE = 500;
+
+function getUserCacheEntry(userId) {
+  const entry = userCache.get(userId);
+  if (!entry) return null;
+  if (Date.now() - entry.time > USER_CACHE_TTL) {
+    userCache.delete(userId);
+    return null;
+  }
+  return entry.data;
+}
+
+function setUserCacheEntry(userId, data) {
+  // Evict oldest entries if cache is full
+  if (userCache.size >= USER_CACHE_MAX_SIZE) {
+    const oldest = userCache.keys().next().value;
+    userCache.delete(oldest);
+  }
+  userCache.set(userId, { data, time: Date.now() });
+}
+
+export function invalidateUserCache(userId) {
+  if (userId) {
+    userCache.delete(userId);
+  } else {
+    userCache.clear();
+  }
+}
+
 const sourceFragment = `
   id
   name
@@ -61,6 +93,7 @@ const userQuery = `
     members(where: {user_id: {_eq: $userId}}) {
       id
       team_id
+      properties
       team {
         settings
         datasources {
@@ -136,6 +169,9 @@ const dataschemasQuery = `
 `;
 
 export const findUser = async ({ userId }) => {
+  const cached = getUserCacheEntry(userId);
+  if (cached) return cached;
+
   const res = await fetchGraphQL(userQuery, { userId });
 
   const members = res?.data?.members || [];
@@ -154,10 +190,9 @@ export const findUser = async ({ userId }) => {
 
   const dataSources = Array.from(dataSourcesMap.values());
 
-  return {
-    dataSources,
-    members,
-  };
+  const result = { dataSources, members };
+  setUserCacheEntry(userId, result);
+  return result;
 };
 
 export const findSqlCredentials = async (username) => {

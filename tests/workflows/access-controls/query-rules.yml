@@ -1,0 +1,109 @@
+tests:
+  query_rules_management:
+    steps:
+      # Verify seed rules exist
+      - name: list_seed_rules
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query {
+                query_rewrite_rules(order_by: { cube_name: asc }) {
+                  id
+                  cube_name
+                  dimension
+                  property_source
+                  property_key
+                  operator
+                }
+              }
+          captures:
+            seedRules:
+              jsonpath: $.data.query_rewrite_rules
+          check:
+            status: 200
+            jsonpath:
+              $.data.query_rewrite_rules:
+                - isArray: true
+
+      # Verify user role has SELECT on query_rewrite_rules
+      - name: user_can_select_rules
+        if: ${{env.TEST_ACCESS_TOKEN}}
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{env.TEST_ACCESS_TOKEN}}
+            x-hasura-role: user
+          graphql:
+            query: |
+              query {
+                query_rewrite_rules {
+                  id
+                  cube_name
+                }
+              }
+          check:
+            status: 200
+            jsonpath:
+              $.data.query_rewrite_rules:
+                - isArray: true
+
+      # Verify user role cannot INSERT into query_rewrite_rules
+      - name: user_cannot_insert_rules
+        if: ${{env.TEST_ACCESS_TOKEN}}
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{env.TEST_ACCESS_TOKEN}}
+            x-hasura-role: user
+          graphql:
+            query: |
+              mutation {
+                insert_query_rewrite_rules_one(object: {
+                  cube_name: "test_cube"
+                  dimension: "test_dim"
+                  property_source: "team"
+                  property_key: "test_key"
+                }) {
+                  id
+                }
+              }
+          check:
+            status: 200
+            jsonpath:
+              $.errors:
+                - isArray: true
+
+      # Verify unique constraint prevents duplicate rules
+      - name: duplicate_rule_rejected
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation {
+                insert_query_rewrite_rules_one(object: {
+                  cube_name: "semantic_events"
+                  dimension: "partition"
+                  property_source: "team"
+                  property_key: "partition"
+                }) {
+                  id
+                }
+              }
+          check:
+            status: 200
+            jsonpath:
+              $.errors:
+                - isArray: true

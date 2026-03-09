@@ -261,6 +261,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL (via Hasura), CubeStore v1.3.23 → v1.6.x (one-way partition format upgrade) (003-update-deps)
 - JavaScript (ES modules), Node.js 18+ + Cube.js v1.6.x (CubeJS service), Express 4.x (both services), `yaml@^2.3.4` (CubeJS — YAML parse/generate), `js-yaml@^4.1.0` (Actions), `@cubejs-backend/clickhouse-driver` (wraps `@clickhouse/client@^1.7.0`) (004-dynamic-model-creation)
 - PostgreSQL via Hasura (versions, dataschemas, team settings), ClickHouse (profiling target — read-only) (004-dynamic-model-creation)
+- JavaScript (ES modules), Node.js 18+ + Cube.js v1.6.x (CubeJS), Express 4.x (Actions), Hasura v2 (GraphQL), React 18 + Vite + Ant Design 5 (client-v2), URQL (GraphQL client), Zustand (state) (005-simple-access-controls)
+- PostgreSQL (via Hasura), Redis (sessions), CubeStore (query cache) (005-simple-access-controls)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

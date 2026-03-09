@@ -1,0 +1,122 @@
+tests:
+  admin_properties:
+    steps:
+      # Verify query_rewrite_rules table is accessible
+      - name: read_rules
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query {
+                query_rewrite_rules {
+                  id
+                  cube_name
+                  dimension
+                  property_source
+                  property_key
+                  operator
+                }
+              }
+          check:
+            status: 200
+            jsonpath:
+              $.data.query_rewrite_rules:
+                - isArray: true
+
+      # Verify members.properties column exists
+      - name: check_members_properties_column
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query {
+                members(limit: 1) {
+                  id
+                  properties
+                }
+              }
+          check:
+            status: 200
+
+      # Verify user role cannot UPDATE teams.settings directly
+      - name: verify_settings_update_blocked
+        if: ${{env.TEST_ACCESS_TOKEN}}
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{env.TEST_ACCESS_TOKEN}}
+            x-hasura-role: user
+          graphql:
+            query: |
+              mutation ($team_id: uuid!, $settings: jsonb!) {
+                update_teams_by_pk(pk_columns: { id: $team_id }, _set: { settings: $settings }) {
+                  id
+                }
+              }
+            variables:
+              team_id: "00000000-0000-0000-0000-000000000000"
+              settings: { partition: "hijacked" }
+          check:
+            status: 200
+            jsonpath:
+              $.errors:
+                - isArray: true
+
+      # Verify user role cannot UPDATE auth.accounts.email directly
+      - name: verify_email_update_blocked
+        if: ${{env.TEST_ACCESS_TOKEN}}
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{env.TEST_ACCESS_TOKEN}}
+            x-hasura-role: user
+          graphql:
+            query: |
+              mutation ($id: uuid!) {
+                update_auth_accounts_by_pk(pk_columns: { id: $id }, _set: { email: "admin@snjallgogn.is" }) {
+                  id
+                }
+              }
+            variables:
+              id: "00000000-0000-0000-0000-000000000000"
+          check:
+            status: 200
+            jsonpath:
+              $.errors:
+                - isArray: true
+
+      # Verify user role cannot read members.properties
+      - name: verify_properties_not_readable
+        if: ${{env.TEST_ACCESS_TOKEN}}
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{env.TEST_ACCESS_TOKEN}}
+            x-hasura-role: user
+          graphql:
+            query: |
+              query {
+                members(limit: 1) {
+                  id
+                  properties
+                }
+              }
+          check:
+            status: 200
+            jsonpath:
+              $.errors:
+                - isArray: true

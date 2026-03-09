@@ -1,5 +1,7 @@
 import apiError from "../utils/apiError.js";
+import { invalidateAllUserCaches } from "../utils/cubeCache.js";
 import { fetchGraphQL } from "../utils/graphql.js";
+import { isPortalAdmin } from "../utils/portalAdmin.js";
 
 const updateTeamSettingsMutation = `
   mutation ($team_id: uuid!, $settings: jsonb!) {
@@ -20,6 +22,14 @@ const memberRoleQuery = `
   }
 `;
 
+const protectedKeysQuery = `
+  query {
+    query_rewrite_rules(where: { property_source: { _eq: "team" } }) {
+      property_key
+    }
+  }
+`;
+
 export default async (session, input, headers) => {
   const { team_id: teamId, settings } = input || {};
   const userId = session?.["x-hasura-user-id"];
@@ -32,21 +42,41 @@ export default async (session, input, headers) => {
   }
 
   try {
-    // Verify caller is team owner
-    const roleRes = await fetchGraphQL(
-      memberRoleQuery,
-      { userId, teamId },
-      headers?.authorization
-    );
+    // Check if caller is portal admin (alternative authorization path)
+    const admin = await isPortalAdmin(userId);
 
-    const memberRoles = roleRes?.data?.members?.[0]?.member_roles || [];
-    const isOwner = memberRoles.some((r) => r.team_role === "owner");
+    if (!admin) {
+      // Verify caller is team owner
+      const roleRes = await fetchGraphQL(
+        memberRoleQuery,
+        { userId, teamId },
+        headers?.authorization
+      );
 
-    if (!isOwner) {
-      return {
-        code: "forbidden",
-        message: "Only team owners can update team settings",
-      };
+      const memberRoles = roleRes?.data?.members?.[0]?.member_roles || [];
+      const isOwner = memberRoles.some((r) => r.team_role === "owner");
+
+      if (!isOwner) {
+        return {
+          code: "forbidden",
+          message: "Only team owners or portal admins can update team settings",
+        };
+      }
+
+      // Strip access-control keys from owner's payload to prevent overwriting
+      // security properties like `partition`
+      const protectedRes = await fetchGraphQL(protectedKeysQuery);
+      const protectedKeys = new Set(
+        (protectedRes?.data?.query_rewrite_rules || []).map((r) => r.property_key)
+      );
+
+      if (protectedKeys.size > 0) {
+        for (const key of protectedKeys) {
+          if (key in settings) {
+            delete settings[key];
+          }
+        }
+      }
     }
 
     // Validate settings shape
@@ -72,6 +102,7 @@ export default async (session, input, headers) => {
     );
 
     if (res?.data?.update_teams_by_pk) {
+      invalidateAllUserCaches();
       return {
         code: "ok",
         message: "Team settings updated successfully",
