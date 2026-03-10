@@ -2,6 +2,7 @@ import * as jose from "jose";
 
 import { workos } from "../utils/workos.js";
 import { createSession } from "../utils/session.js";
+import { getSessionCookieOptions } from "../utils/sessionCookie.js";
 import { provisionUser } from "./provision.js";
 import generateUserAccessToken from "../utils/jwt.js";
 import logger from "../utils/logger.js";
@@ -98,14 +99,7 @@ export default async function callbackHandler(req, res) {
     const appUrl = process.env.APP_FRONTEND_URL || process.env.APP_URL || "http://localhost:8000";
 
     // Set session cookie
-    const isSecure = appUrl.startsWith("https://") || process.env.NODE_ENV === "production";
-    res.cookie("session", sessionId, {
-      httpOnly: true,
-      secure: isSecure,
-      sameSite: "lax",
-      maxAge: 86400000, // 24 hours in ms
-      path: "/",
-    });
+    res.cookie("session", sessionId, getSessionCookieOptions(req));
     let redirectTo = `${appUrl}/explore`;
     if (state) {
       try {
