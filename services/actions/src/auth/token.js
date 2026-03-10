@@ -2,6 +2,7 @@ import * as jose from "jose";
 
 import { workos } from "../utils/workos.js";
 import { getSession, updateSession, extendSession } from "../utils/session.js";
+import { getSessionCookieOptions } from "../utils/sessionCookie.js";
 import generateUserAccessToken from "../utils/jwt.js";
 import logger from "../utils/logger.js";
 
@@ -33,6 +34,7 @@ export default async function tokenHandler(req, res) {
     const session = await getSession(sessionId);
 
     if (!session) {
+      res.clearCookie("session", { path: "/" });
       return res.status(401).json({
         error: true,
         code: "unauthorized",
@@ -44,6 +46,9 @@ export default async function tokenHandler(req, res) {
     extendSession(sessionId).catch((err) =>
       logger.error("[Token] Failed to extend session TTL:", err)
     );
+
+    // Keep the browser cookie sliding in lockstep with the Redis session TTL.
+    res.cookie("session", sessionId, getSessionCookieOptions(req));
 
     // Check if WorkOS access token needs refresh
     if (

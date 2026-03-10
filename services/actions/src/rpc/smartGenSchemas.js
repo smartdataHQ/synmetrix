@@ -10,6 +10,8 @@ export default async (session, input, headers) => {
     array_join_columns: arrayJoinColumns,
     max_map_keys: maxMapKeys,
     merge_strategy: mergeStrategy,
+    profile_data: profileData,
+    dry_run: dryRun,
   } = input || {};
 
   const userId = session?.["x-hasura-user-id"];
@@ -28,6 +30,8 @@ export default async (session, input, headers) => {
       arrayJoinColumns,
       maxMapKeys,
       mergeStrategy,
+      profileData,
+      dryRun,
     });
 
     return result;

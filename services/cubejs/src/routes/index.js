@@ -11,6 +11,8 @@ import profileTable from "./profileTable.js";
 import runSql from "./runSql.js";
 import smartGenerate from "./smartGenerate.js";
 import testConnection from "./testConnection.js";
+import validate from "./validate.js";
+import version from "./version.js";
 
 const router = express.Router();
 
@@ -72,6 +74,15 @@ export default ({ basePath, cubejs }) => {
     checkAuthMiddleware,
     async (req, res) => smartGenerate(req, res, cubejs)
   );
+
+  router.post(
+    `${basePath}/v1/validate`,
+    checkAuthMiddleware,
+    async (req, res) => validate(req, res)
+  );
+
+  // Version endpoint is public — returns only the schema-compiler version string
+  router.get(`${basePath}/v1/version`, (req, res) => version(req, res));
 
   return router;
 };

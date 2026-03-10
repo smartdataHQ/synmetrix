@@ -9,6 +9,8 @@ import { buildCubes } from '../utils/smart-generation/cubeBuilder.js';
 import { generateJs, generateFileName } from '../utils/smart-generation/yamlGenerator.js';
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
 import { mergeModels } from '../utils/smart-generation/merger.js';
+import { deserializeProfile } from '../utils/smart-generation/profileSerializer.js';
+import { diffModels } from '../utils/smart-generation/diffModels.js';
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
@@ -16,10 +18,20 @@ export default async (req, res, cubejs) => {
     table,
     schema,
     branchId,
-    arrayJoinColumns = [],
-    maxMapKeys = 500,
+    arrayJoinColumns: rawArrayJoinColumns,
+    maxMapKeys: rawMaxMapKeys,
     mergeStrategy = 'auto',
+    profileData: rawProfileData,
+    dryRun: rawDryRun,
   } = req.body;
+
+  // Hasura sends {} instead of null for optional fields — normalize
+  const arrayJoinColumns = Array.isArray(rawArrayJoinColumns) ? rawArrayJoinColumns : [];
+  const maxMapKeys = typeof rawMaxMapKeys === 'number' ? rawMaxMapKeys : 500;
+  const profileData = (rawProfileData && typeof rawProfileData === 'object' && rawProfileData.profiledTable)
+    ? rawProfileData
+    : null;
+  const dryRun = rawDryRun === true;
 
   if (!table || !schema || !branchId) {
     return res.status(400).json({
@@ -35,23 +47,33 @@ export default async (req, res, cubejs) => {
     const partition = securityContext.userScope?.dataSource?.partition || null;
     const internalTables = securityContext.userScope?.dataSource?.internalTables || [];
 
-    driver = await cubejs.options.driverFactory({ securityContext });
-
     const emitter = createProgressEmitter(res, req.headers.accept);
 
-    // Step 1: Profile the table
-    emitter.emit('profile', 'Profiling table...', 0.05);
-    const profiledTable = await profileTable(driver, schema, table, {
-      partition,
-      internalTables,
-      emitter,
-    });
+    let profiledTable;
+    let primaryKeys;
 
-    // Step 2: Detect primary keys
-    emitter.emit('primary_keys', 'Detecting primary keys...', 0.5);
-    const primaryKeys = await detectPrimaryKeys(driver, schema, table);
+    if (profileData) {
+      // Use cached profile data from the profile_table step — no ClickHouse queries
+      emitter.emit('building', 'Using cached profile...', 0.5);
+      const deserialized = deserializeProfile(profileData);
+      profiledTable = deserialized.profiledTable;
+      primaryKeys = deserialized.primaryKeys;
+    } else {
+      // Legacy path: profile from scratch (two ClickHouse round-trips)
+      driver = await cubejs.options.driverFactory({ securityContext });
 
-    // Step 3: Build cubes
+      emitter.emit('profile', 'Profiling table...', 0.05);
+      profiledTable = await profileTable(driver, schema, table, {
+        partition,
+        internalTables,
+        emitter,
+      });
+
+      emitter.emit('primary_keys', 'Detecting primary keys...', 0.5);
+      primaryKeys = await detectPrimaryKeys(driver, schema, table);
+    }
+
+    // Build cubes
     emitter.emit('building', 'Building cube definitions...', 0.6);
     const cubeResult = buildCubes(profiledTable, {
       partition,
@@ -61,26 +83,51 @@ export default async (req, res, cubejs) => {
       primaryKeys,
     });
 
-    // Step 4: Generate JS model (JS is a superset of YAML — supports
-    // FILTER_PARAMS callbacks, asyncModule, COMPILE_CONTEXT, extends)
+    // Generate JS model
     emitter.emit('generating', 'Generating JS model...', 0.7);
     const yamlContent = generateJs(cubeResult.cubes);
     const fileName = generateFileName(table, true);
 
-    // Step 5: Fetch existing schemas
+    // Fetch existing schemas
     emitter.emit('versioning', 'Checking existing schemas...', 0.75);
     const existingSchemas = await findDataSchemas({ branchId, authToken });
 
-    // Step 6: Apply merge strategy
+    // Apply merge strategy
     emitter.emit('merging', 'Applying merge strategy...', 0.78);
     const existingFileIndex = existingSchemas.findIndex(
       (f) => f.name === fileName
     );
 
+    const existingCode = existingFileIndex >= 0
+      ? existingSchemas[existingFileIndex].code
+      : null;
+
     let finalYaml = yamlContent;
-    if (existingFileIndex >= 0) {
-      const existingFile = existingSchemas[existingFileIndex];
-      finalYaml = mergeModels(existingFile.code, yamlContent, mergeStrategy);
+    if (existingCode) {
+      finalYaml = mergeModels(existingCode, yamlContent, mergeStrategy);
+    }
+
+    // Compute change preview
+    const changePreview = diffModels(existingCode, yamlContent, mergeStrategy);
+
+    // Dry-run: return preview without saving
+    if (dryRun) {
+      const { summary } = cubeResult;
+      const payload = {
+        code: 'ok',
+        message: changePreview.summary,
+        version_id: null,
+        file_name: fileName,
+        changed: existingCode !== finalYaml,
+        change_preview: changePreview,
+        model_summary: {
+          dimensions_count: summary.dimensions_count,
+          measures_count: summary.measures_count,
+          cubes_count: summary.cubes_count,
+        },
+      };
+      emitter.complete(payload);
+      return;
     }
 
     let files;
@@ -97,14 +144,12 @@ export default async (req, res, cubejs) => {
       ];
     }
 
-    // Step 7: Compute checksum of ALL files
+    // Compute checksum of ALL files
     emitter.emit('versioning', 'Computing checksum...', 0.8);
     const commitChecksum = createMd5Hex(
       files.reduce((acc, f) => acc + f.code, '')
     );
 
-    // Step 8: Check if anything changed
-    // Find the latest version checksum from existing schemas
     const existingChecksum = createMd5Hex(
       existingSchemas.reduce((acc, f) => acc + f.code, '')
     );
@@ -116,6 +161,7 @@ export default async (req, res, cubejs) => {
         version_id: null,
         file_name: fileName,
         changed: false,
+        change_preview: changePreview,
         profile_summary: {
           row_count: profiledTable.row_count,
           columns_profiled: cubeResult.summary.columns_profiled,
@@ -134,7 +180,7 @@ export default async (req, res, cubejs) => {
       return;
     }
 
-    // Step 9: Create new version
+    // Create new version
     emitter.emit('versioning', 'Creating new version...', 0.85);
 
     const dataSourceId = securityContext.userScope?.dataSource?.dataSourceId;
@@ -155,7 +201,7 @@ export default async (req, res, cubejs) => {
       },
     });
 
-    // Step 10: Purge compiler cache
+    // Purge compiler cache
     if (cubejs.compilerCache) {
       cubejs.compilerCache.purgeStale();
     }
@@ -167,6 +213,7 @@ export default async (req, res, cubejs) => {
       version_id: result?.id || null,
       file_name: fileName,
       changed: true,
+      change_preview: changePreview,
       profile_summary: {
         row_count: profiledTable.row_count,
         columns_profiled: summary.columns_profiled,
