@@ -263,6 +263,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL via Hasura (versions, dataschemas, team settings), ClickHouse (profiling target — read-only) (004-dynamic-model-creation)
 - JavaScript (ES modules), Node.js 18+ + Cube.js v1.6.x (CubeJS), Express 4.x (Actions), Hasura v2 (GraphQL), React 18 + Vite + Ant Design 5 (client-v2), URQL (GraphQL client), Zustand (state) (005-simple-access-controls)
 - PostgreSQL (via Hasura), Redis (sessions), CubeStore (query cache) (005-simple-access-controls)
+- TypeScript (client-v2, React 18 + Vite 4), JavaScript ES modules (CubeJS service, Node.js 18+) + Monaco Editor (existing), `yaml` ^2.3.4 (existing in CubeJS, add to client-v2), `@cubejs-backend/schema-compiler` ^1.6.19 (existing in CubeJS), Ant Design 5 (existing in client-v2), URQL (existing GraphQL client) (006-model-authoring)
+- N/A (schema spec is static; cube registry is in-memory from FetchMeta) (006-model-authoring)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

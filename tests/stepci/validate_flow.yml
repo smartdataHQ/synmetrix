@@ -1,0 +1,95 @@
+tests:
+  validate_flow:
+    steps:
+      # T016-1: Valid files return valid: true
+      - name: validate_valid_files
+        http:
+          url: http://cubejs:4000/api/v1/validate
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            files:
+              - fileName: "test_cube.js"
+                content: "cube(`test_cube`, { sql_table: `public.test`, dimensions: { id: { sql: `${CUBE}.id`, type: `number` } } })"
+          check:
+            status: 200
+            jsonpath:
+              $.valid: true
+              $.errors:
+                - isArray: true
+              $.warnings:
+                - isArray: true
+
+      # T016-2: File with invalid property returns error with location
+      - name: validate_invalid_property
+        http:
+          url: http://cubejs:4000/api/v1/validate
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            files:
+              - fileName: "bad_cube.js"
+                content: "cube(`bad_cube`, { sql_table: `public.test`, dimensions: { id: { sql: `${CUBE}.id`, type: `number`, bogus_property: true } } })"
+          check:
+            status: 200
+            jsonpath:
+              $.valid: false
+              $.errors:
+                - isArray: true
+              $.errors[0].severity: "error"
+              $.errors[0].message:
+                - isString: true
+              $.errors[0].fileName: "bad_cube.js"
+
+      # T016-3: File referencing nonexistent cube in join returns semantic error
+      - name: validate_bad_join_reference
+        http:
+          url: http://cubejs:4000/api/v1/validate
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            files:
+              - fileName: "join_cube.js"
+                content: "cube(`join_cube`, { sql_table: `public.test`, joins: { nonexistent_cube: { relationship: `many_to_one`, sql: `${CUBE}.id = ${nonexistent_cube}.id` } }, dimensions: { id: { sql: `${CUBE}.id`, type: `number` } } })"
+          check:
+            status: 200
+            jsonpath:
+              $.valid: false
+              $.errors:
+                - isArray: true
+              $.errors[0].severity: "error"
+              $.errors[0].message:
+                - isString: true
+
+      # T016-4: Request without auth returns 401
+      - name: validate_no_auth
+        http:
+          url: http://cubejs:4000/api/v1/validate
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            files:
+              - fileName: "test_cube.js"
+                content: "cube(`test_cube`, { sql_table: `public.test`, dimensions: { id: { sql: `${CUBE}.id`, type: `number` } } })"
+          check:
+            status: 401
+
+      # T016-5: GET /api/v1/version returns version string
+      - name: get_version
+        http:
+          url: http://cubejs:4000/api/v1/version
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+          check:
+            status: 200
+            jsonpath:
+              $.version:
+                - isString: true
