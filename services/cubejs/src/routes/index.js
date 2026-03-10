@@ -81,11 +81,8 @@ export default ({ basePath, cubejs }) => {
     async (req, res) => validate(req, res)
   );
 
-  router.get(
-    `${basePath}/v1/version`,
-    checkAuthMiddleware,
-    (req, res) => version(req, res)
-  );
+  // Version endpoint is public — returns only the schema-compiler version string
+  router.get(`${basePath}/v1/version`, (req, res) => version(req, res));
 
   return router;
 };
