@@ -16,10 +16,14 @@ export default async (req, res, cubejs) => {
     table,
     schema,
     branchId,
-    arrayJoinColumns = [],
-    maxMapKeys = 500,
+    arrayJoinColumns: rawArrayJoinColumns,
+    maxMapKeys: rawMaxMapKeys,
     mergeStrategy = 'auto',
   } = req.body;
+
+  // Hasura sends {} instead of null for optional fields — normalize
+  const arrayJoinColumns = Array.isArray(rawArrayJoinColumns) ? rawArrayJoinColumns : [];
+  const maxMapKeys = typeof rawMaxMapKeys === 'number' ? rawMaxMapKeys : 500;
 
   if (!table || !schema || !branchId) {
     return res.status(400).json({
