@@ -336,9 +336,57 @@ export async function profileTable(driver, schema, table, options = {}) {
     sampleThreshold = DEFAULT_SAMPLE_THRESHOLD,
   } = options;
 
-  const emit = emitter
-    ? (step, msg, progress, detail) => emitter.emit(step, msg, progress, detail)
-    : () => {};
+  // Step-counted progress tracker — emits accurate progress based on
+  // completed steps rather than hardcoded percentages.
+  const tracker = {
+    completedSteps: 0,
+    totalSteps: 2, // init + initial_profile; recalculated as work becomes known
+    startTime: Date.now(),
+    stepTimes: [],       // durations of real work steps only (for ETA)
+    _lastStepEnd: null,  // timestamp of last markStepTime call
+
+    /**
+     * Emit a progress message WITHOUT counting as a completed step.
+     * Use for headers, info messages, phase announcements.
+     */
+    emit: emitter
+      ? (phase, msg, detail) => {
+          const elapsed = Date.now() - tracker.startTime;
+          const progress = tracker.totalSteps > 0
+            ? Math.min(tracker.completedSteps / tracker.totalSteps, 0.99)
+            : 0;
+          const avgStepMs = tracker.stepTimes.length > 0
+            ? tracker.stepTimes.reduce((a, b) => a + b, 0) / tracker.stepTimes.length
+            : 0;
+          const remainingSteps = Math.max(0, tracker.totalSteps - tracker.completedSteps);
+          const etaMs = avgStepMs > 0 ? Math.round(remainingSteps * avgStepMs) : null;
+          emitter.emit(phase, msg, progress, {
+            ...detail,
+            step: tracker.completedSteps,
+            total_steps: tracker.totalSteps,
+            elapsed_ms: elapsed,
+            eta_ms: etaMs,
+          });
+        }
+      : () => {},
+
+    /**
+     * Mark that a real work step completed. Increments counter and records
+     * duration for ETA calculation. Call AFTER the query/batch finishes.
+     */
+    markStepTime() {
+      this.completedSteps++;
+      const now = Date.now();
+      if (this._lastStepEnd) {
+        this.stepTimes.push(now - this._lastStepEnd);
+        if (this.stepTimes.length > 10) this.stepTimes.shift();
+      }
+      this._lastStepEnd = now;
+    },
+
+    /** Recalculate total steps once we know the work ahead. */
+    setTotalSteps(n) { this.totalSteps = n; },
+  };
 
   const whereClause = buildWhereClause(schema, table, partition, internalTables);
 
@@ -346,7 +394,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   // Pass 0: Schema discovery (parallel)
   // =========================================================================
 
-  emit('init', 'Schema discovery (metadata + DESCRIBE)...', 0.02);
+  tracker.emit('init', 'Querying table metadata, column types, and descriptions...');
 
   // When a partition filter is active, system.parts_columns metadata is
   // unreliable — it reports bytes across ALL partitions, not per-partition.
@@ -406,8 +454,10 @@ export async function profileTable(driver, schema, table, options = {}) {
     if (bytes === 0) emptyColumns.add(row.column);
   }
 
+  tracker.markStepTime(); // Pass 0 complete
+
   if (emptyColumns.size > 0) {
-    emit('metadata', `Found ${emptyColumns.size} columns with zero bytes (will skip)`, 0.04);
+    tracker.emit('init', `Found ${emptyColumns.size} columns with zero bytes — will skip`, { empty_columns: emptyColumns.size });
   }
 
   // Build columns map from DESCRIBE
@@ -440,7 +490,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     });
   }
 
-  emit('schema_analysis', `Found ${columns.size} columns`, 0.06);
+  tracker.emit('init', `Discovered ${columns.size} columns`, { column_count: columns.size });
 
   // =========================================================================
   // Build parent group info (one sentinel per nested group)
@@ -475,7 +525,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   // Pass 1: Initial profile (unsampled — streaming aggregates only)
   // =========================================================================
 
-  emit('initial_profile', 'Running initial profile (ranges, cardinality, group depths)...', 0.08);
+  tracker.emit('initial_profile', 'Running initial profile — row count, ranges, cardinality, group depths...');
 
   const initialParts = buildInitialProfileParts(columns, parentGroupInfo, emptyColumns);
   const initialSql = `SELECT ${initialParts.join(', ')} FROM ${schema}.\`${table}\`${whereClause}`;
@@ -495,16 +545,14 @@ export async function profileTable(driver, schema, table, options = {}) {
     } catch (e) { /* give up */ }
   }
 
-  emit('initial_profile', `Row count: ${rowCount}`, 0.12);
+  tracker.markStepTime(); // Pass 1 complete
+  tracker.emit('initial_profile', `Row count: ${rowCount.toLocaleString()}`, { row_count: rowCount });
 
   // Log group depths
   let skippedGroupColumns = 0;
   for (const [parent, info] of parentGroupInfo) {
     if (info.maxLength === 0) {
       skippedGroupColumns += info.colNames.length;
-      emit('initial_profile', `${parent}: empty (max_length=0), skipping ${info.colNames.length} columns`, 0.13);
-    } else {
-      emit('initial_profile', `${parent}: max_length=${info.maxLength}, ${info.colNames.length} columns`, 0.13);
     }
     // Store maxArrayLength on each column in the group
     for (const colName of info.colNames) {
@@ -514,7 +562,13 @@ export async function profileTable(driver, schema, table, options = {}) {
   }
 
   const totalSkipped = emptyColumns.size + skippedGroupColumns;
-  emit('initial_profile', `Skipped ${totalSkipped} columns (${emptyColumns.size} zero-bytes + ${skippedGroupColumns} empty groups)`, 0.15);
+  if (totalSkipped > 0) {
+    tracker.emit('initial_profile', `Skipping ${totalSkipped} columns (${emptyColumns.size} zero-bytes, ${skippedGroupColumns} empty groups)`, {
+      skipped: totalSkipped,
+      zero_bytes: emptyColumns.size,
+      empty_groups: skippedGroupColumns,
+    });
+  }
 
   // =========================================================================
   // Pass 2: Deep profiling (sampled) — Map keys + nested sub-columns
@@ -532,7 +586,10 @@ export async function profileTable(driver, schema, table, options = {}) {
       samplingMethod = sampling.method;
       profilingFrom = sampling.fromExpr;
       sampleSize = sampling.sampleRows;
-      emit('profiling', `Sampling ${sampleSize} of ${rowCount} rows via ${samplingMethod}`, 0.18);
+      tracker.emit('profiling', `Sampling ${sampleSize.toLocaleString()} of ${rowCount.toLocaleString()} rows (${samplingMethod})`, {
+        sample_size: sampleSize,
+        method: samplingMethod,
+      });
     }
 
     // Build list of columns that need deep profiling:
@@ -558,9 +615,15 @@ export async function profileTable(driver, schema, table, options = {}) {
 
     if (toProfile.length > 0) {
       const fromClause = profilingFrom;
+      const deepBatches = toProfile.length <= SINGLE_QUERY_LIMIT
+        ? 1
+        : Math.ceil(toProfile.length / BATCH_SIZE);
+
+      // Recalculate total: completed + deep batches (map/LC counts refined later)
+      tracker.setTotalSteps(tracker.completedSteps + deepBatches);
 
       if (toProfile.length <= SINGLE_QUERY_LIMIT) {
-        emit('profiling', `Deep-profiling ${toProfile.length} columns (maps + nested) in a single query...`, 0.20);
+        tracker.emit('profiling', `Deep-profiling ${toProfile.length} columns in single query`);
 
         const allByAlias = new Map();
         for (const col of toProfile) allByAlias.set(col.alias, columns.get(col.name));
@@ -573,7 +636,6 @@ export async function profileTable(driver, schema, table, options = {}) {
           try {
             const rows = await driver.query(sql);
             if (rows.length > 0) applyResultRow(rows[0], allByAlias);
-            emit('profiling', 'Deep profiling complete', 0.80);
           } catch (singleErr) {
             console.warn(`[profiler] Single-query deep profile failed, falling back: ${singleErr.message}`);
             for (const col of toProfile) {
@@ -590,18 +652,28 @@ export async function profileTable(driver, schema, table, options = {}) {
             }
           }
         }
+        tracker.markStepTime();
+        tracker.emit('profiling', `Deep-profiled ${toProfile.length} columns`, {
+          columns: toProfile.map(c => c.name),
+        });
       } else {
         const totalBatches = Math.ceil(toProfile.length / BATCH_SIZE);
-        emit('profiling', `Deep-profiling ${toProfile.length} columns in ${totalBatches} batches...`, 0.20);
         for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
           const start = batchIdx * BATCH_SIZE;
           const end = Math.min(start + BATCH_SIZE, toProfile.length);
           const batch = toProfile.slice(start, end);
-          await profileBatch(batch, columns, fromClause, driver, emit, batchIdx, totalBatches);
+          const batchNames = batch.map(c => c.name).join(', ');
+          await profileBatch(batch, columns, fromClause, driver, () => {}, batchIdx, totalBatches);
+          tracker.markStepTime();
+          tracker.emit('profiling', `Batch ${batchIdx + 1}/${totalBatches}: ${batchNames}`, {
+            batch: batchIdx + 1,
+            total_batches: totalBatches,
+            columns: batch.map(c => c.name),
+          });
         }
       }
     } else {
-      emit('profiling', 'No columns need deep profiling', 0.80);
+      tracker.emit('profiling', 'All columns profiled in initial pass — no deep profiling needed');
     }
 
     // =====================================================================
@@ -645,7 +717,15 @@ export async function profileTable(driver, schema, table, options = {}) {
       const numericKeys = mapStatsCandidates.filter(c => !c.isString);
       const stringKeys = mapStatsCandidates.filter(c => c.isString);
 
-      emit('map_stats', `Collecting per-key stats for ${mapStatsCandidates.length} map keys (${numericKeys.length} numeric, ${stringKeys.length} string)...`, 0.82);
+      const mapNumericBatches = Math.ceil(numericKeys.length / 10);
+      const mapStringBatches = Math.ceil(stringKeys.length / 10);
+      // LC count not yet known — will refine after map stats
+      tracker.setTotalSteps(tracker.completedSteps + mapNumericBatches + mapStringBatches);
+
+      tracker.emit('map_stats', `Analyzing ${mapStatsCandidates.length} map keys (${numericKeys.length} numeric, ${stringKeys.length} string)`, {
+        numeric_keys: numericKeys.length,
+        string_keys: stringKeys.length,
+      });
 
       const statsBatchSize = 10;
 
@@ -689,6 +769,14 @@ export async function profileTable(driver, schema, table, options = {}) {
         } catch (err) {
           console.warn(`[profiler] Map numeric range stats failed: ${err.message}`);
         }
+        const batchNum = Math.floor(i / statsBatchSize) + 1;
+        const keyNames = batch.map(c => `${c.name}[${c.key}]`).join(', ');
+        tracker.markStepTime();
+        tracker.emit('map_stats', `Numeric keys batch ${batchNum}/${mapNumericBatches}: ${keyNames}`, {
+          batch: batchNum,
+          total_batches: mapNumericBatches,
+          keys: batch.map(c => `${c.name}[${c.key}]`),
+        });
       }
 
       // String keys: per-key uniq() cardinality check — only LC-probe keys under threshold
@@ -729,14 +817,29 @@ export async function profileTable(driver, schema, table, options = {}) {
         } catch (err) {
           console.warn(`[profiler] Map string cardinality check failed: ${err.message}`);
         }
+        const batchNum = Math.floor(i / statsBatchSize) + 1;
+        const keyNames = batch.map(c => `${c.name}[${c.key}]`).join(', ');
+        tracker.markStepTime();
+        tracker.emit('map_stats', `String keys batch ${batchNum}/${mapStringBatches}: ${keyNames}`, {
+          batch: batchNum,
+          total_batches: mapStringBatches,
+          keys: batch.map(c => `${c.name}[${c.key}]`),
+        });
       }
     }
 
     // --- LC value enumeration for string/categorical columns ---
     if (lcCandidates.length > 0) {
-      emit('lc_probe', `Probing ${lcCandidates.length} low-cardinality candidates...`, 0.88);
-
       const lcBatchSize = 5;
+      const lcTotalBatches = Math.ceil(lcCandidates.length / lcBatchSize);
+      // Refine total steps with exact LC batch count
+      tracker.setTotalSteps(tracker.completedSteps + lcTotalBatches);
+
+      tracker.emit('lc_probe', `Enumerating values for ${lcCandidates.length} low-cardinality columns (${lcTotalBatches} batches)`, {
+        candidates: lcCandidates.length,
+        batches: lcTotalBatches,
+      });
+
       for (let i = 0; i < lcCandidates.length; i += lcBatchSize) {
         const batch = lcCandidates.slice(i, i + lcBatchSize);
         const selectParts = [];
@@ -798,11 +901,19 @@ export async function profileTable(driver, schema, table, options = {}) {
         } catch (lcErr) {
           console.warn(`[profiler] LC probe failed: ${lcErr.message}`);
         }
+        const lcBatchNum = Math.floor(i / lcBatchSize) + 1;
+        const colNames = batch.map(c => c.type === 'map_key' ? `${c.name}[${c.key}]` : c.name).join(', ');
+        tracker.markStepTime();
+        tracker.emit('lc_probe', `LC batch ${lcBatchNum}/${lcTotalBatches}: ${colNames}`, {
+          batch: lcBatchNum,
+          total_batches: lcTotalBatches,
+          columns: batch.map(c => c.type === 'map_key' ? `${c.name}[${c.key}]` : c.name),
+        });
       }
     }
   }
 
-  emit('profiling', 'Profiling complete', 0.95);
+  tracker.emit('profiling', 'Profiling complete');
 
   // =========================================================================
   // Build result

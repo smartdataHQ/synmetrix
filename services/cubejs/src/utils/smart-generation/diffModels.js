@@ -5,6 +5,7 @@
  * Used to preview changes before applying a smart model regeneration.
  */
 
+import { createContext, runInContext } from 'node:vm';
 import YAML from 'yaml';
 import { hasUserContent } from './merger.js';
 
@@ -118,9 +119,11 @@ function diffFields(existingFields, newFields, memberType, cubeName, isReplace) 
       // Check for edited description
       if (field.description && field.description !== (newField.description ?? undefined)) {
         preserved.push({ name, member_type: memberType, cube: cubeName, reason: 'edited_description' });
-      } else {
-        updated.push({ name: newField.name, type: newField.type, member_type: memberType, cube: cubeName });
+      } else if (field.type !== newField.type) {
+        // Type actually changed — mark as updated
+        updated.push({ name: newField.name, type: newField.type, member_type: memberType, cube: cubeName, old_type: field.type });
       }
+      // else: same name, same type — unchanged, skip
     } else {
       // Auto field no longer generated — removed
       removed.push({ name: field.name, type: field.type, member_type: memberType, cube: cubeName });
@@ -194,15 +197,130 @@ function buildSummary(added, updated, removed, preserved, blocksPreserved) {
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// JS cube file parser — evaluates cube(`name`, { ... }) in a sandbox
+// ---------------------------------------------------------------------------
+
 /**
- * Compute a structured diff between existing YAML model and newly generated YAML.
+ * Create a deeply-nested proxy that returns itself for any property access
+ * or function call. Used to mock FILTER_PARAMS and other template globals
+ * so that template literals like `${FILTER_PARAMS.cube.field.filter(...)}`
+ * resolve to a string instead of throwing.
+ */
+function createDeepProxy() {
+  const handler = {
+    get(target, prop) {
+      if (prop === Symbol.toPrimitive) return () => 'PROXY';
+      if (prop === Symbol.iterator) return undefined;
+      if (prop === 'toString' || prop === 'valueOf') return () => 'PROXY';
+      return createDeepProxy();
+    },
+    apply() {
+      return createDeepProxy();
+    },
+  };
+  return new Proxy(function () {}, handler);
+}
+
+/**
+ * Convert JS cube object-format fields to array format for diffing.
+ * JS: dimensions: { field_name: { sql, type, meta } }
+ * Array: [{ name: 'field_name', sql, type, meta }]
+ */
+function objectFieldsToArray(fields) {
+  if (Array.isArray(fields)) return fields;
+  if (!fields || typeof fields !== 'object') return [];
+  return Object.entries(fields).map(([name, def]) => ({ name, ...def }));
+}
+
+/**
+ * Parse cube definitions from a JS cube file string.
+ * Evaluates in a VM sandbox with mock cube() function.
+ */
+function parseCubesFromJs(jsContent) {
+  const cubes = [];
+
+  const mockCube = (name, def) => {
+    cubes.push({
+      name,
+      ...def,
+      dimensions: objectFieldsToArray(def.dimensions),
+      measures: objectFieldsToArray(def.measures),
+      joins: objectFieldsToArray(def.joins),
+      segments: objectFieldsToArray(def.segments),
+      pre_aggregations: objectFieldsToArray(def.pre_aggregations),
+    });
+  };
+
+  try {
+    const context = createContext({
+      cube: mockCube,
+      CUBE: 'CUBE',
+      FILTER_PARAMS: createDeepProxy(),
+      SQL_UTILS: createDeepProxy(),
+    });
+    runInContext(jsContent, context);
+  } catch {
+    return null;
+  }
+
+  return cubes.length > 0 ? cubes : null;
+}
+
+// ---------------------------------------------------------------------------
+// Content parser — YAML, JS, or pre-parsed arrays
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse cube definitions from content — supports YAML strings, JS cube files,
+ * or pre-parsed cube arrays.
  *
- * @param {string|null} existingYaml - Current YAML model content (null if new)
- * @param {string} newYaml - Newly generated YAML content
+ * @param {string|Array|null} content
+ * @returns {{ cubes: Array|null, doc: object|null }} cubes array or null if unparseable
+ */
+function parseCubeContent(content) {
+  if (!content) return { cubes: null, doc: null };
+
+  // Already structured cube array (from cubeBuilder output)
+  if (Array.isArray(content)) {
+    return { cubes: content, doc: { cubes: content } };
+  }
+
+  if (typeof content !== 'string' || content.trim() === '') {
+    return { cubes: null, doc: null };
+  }
+
+  // Try YAML first
+  try {
+    const doc = YAML.parse(content);
+    if (doc && Array.isArray(doc.cubes)) {
+      return { cubes: doc.cubes, doc };
+    }
+  } catch {
+    // Not YAML — continue
+  }
+
+  // Try JS cube format
+  const jsCubes = parseCubesFromJs(content);
+  if (jsCubes) {
+    return { cubes: jsCubes, doc: { cubes: jsCubes } };
+  }
+
+  return { cubes: null, doc: null };
+}
+
+/**
+ * Compute a structured diff between existing and newly generated cube models.
+ *
+ * Accepts YAML strings, JS strings, or pre-parsed cube definition arrays.
+ * When content can't be parsed (e.g. JS format), treats it as empty.
+ *
+ * @param {string|Array|null} existingContent - Current model content or cube array (null if new)
+ * @param {string|Array} newContent - Newly generated content or cube array
  * @param {string} [mergeStrategy="auto"] - "auto", "merge", or "replace"
  * @returns {{ fields_added, fields_updated, fields_removed, fields_preserved, blocks_preserved, summary }}
  */
-export function diffModels(existingYaml, newYaml, mergeStrategy = 'auto') {
+export function diffModels(existingContent, newContent, mergeStrategy = 'auto') {
   const result = {
     fields_added: [],
     fields_updated: [],
@@ -212,19 +330,18 @@ export function diffModels(existingYaml, newYaml, mergeStrategy = 'auto') {
     summary: '',
   };
 
-  // Parse new YAML
-  let newDoc;
-  try {
-    newDoc = YAML.parse(newYaml);
-  } catch {
-    result.summary = 'Cannot parse new YAML.';
+  // Parse new content
+  const { cubes: newCubes } = parseCubeContent(newContent);
+  if (!newCubes) {
+    result.summary = 'Cannot parse new model content.';
     return result;
   }
 
-  const newCubes = Array.isArray(newDoc?.cubes) ? newDoc.cubes : [];
+  // Parse existing content
+  const { cubes: existingCubes, doc: existingDoc } = parseCubeContent(existingContent);
 
-  // No existing model — everything is added
-  if (!existingYaml || typeof existingYaml !== 'string' || existingYaml.trim() === '') {
+  // No existing model (null, empty, or unparseable JS) — everything is added
+  if (!existingCubes) {
     for (const cube of newCubes) {
       const cubeName = cube.name;
       for (const dim of Array.isArray(cube.dimensions) ? cube.dimensions : []) {
@@ -237,27 +354,6 @@ export function diffModels(existingYaml, newYaml, mergeStrategy = 'auto') {
     result.summary = buildSummary(result.fields_added, [], [], [], []);
     return result;
   }
-
-  // Parse existing YAML
-  let existingDoc;
-  try {
-    existingDoc = YAML.parse(existingYaml);
-  } catch {
-    // Can't parse existing — treat as empty, everything is added
-    for (const cube of newCubes) {
-      const cubeName = cube.name;
-      for (const dim of Array.isArray(cube.dimensions) ? cube.dimensions : []) {
-        result.fields_added.push({ name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName });
-      }
-      for (const meas of Array.isArray(cube.measures) ? cube.measures : []) {
-        result.fields_added.push({ name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName });
-      }
-    }
-    result.summary = buildSummary(result.fields_added, [], [], [], []);
-    return result;
-  }
-
-  const existingCubes = Array.isArray(existingDoc?.cubes) ? existingDoc.cubes : [];
 
   // Determine effective strategy
   let isReplace = mergeStrategy === 'replace';

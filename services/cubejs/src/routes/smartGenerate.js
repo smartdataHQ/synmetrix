@@ -107,8 +107,8 @@ export default async (req, res, cubejs) => {
       finalYaml = mergeModels(existingCode, yamlContent, mergeStrategy);
     }
 
-    // Compute change preview
-    const changePreview = diffModels(existingCode, yamlContent, mergeStrategy);
+    // Compute change preview (pass structured cubes for new model — JS strings can't be YAML-parsed)
+    const changePreview = diffModels(existingCode, cubeResult.cubes, mergeStrategy);
 
     // Dry-run: return preview without saving
     if (dryRun) {
