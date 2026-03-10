@@ -274,6 +274,7 @@ type Mutation {
   list_all_teams(
     limit: Int
     offset: Int
+    search: String
   ): ListAllTeamsOutput
 }
 
@@ -313,6 +314,7 @@ type TeamInfo {
   name: String!
   settings: jsonb
   member_count: Int!
+  datasource_count: Int!
   created_at: String!
 }
 
