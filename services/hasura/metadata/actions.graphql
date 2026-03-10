@@ -109,6 +109,8 @@ type Mutation {
     array_join_columns: [ArrayJoinInput]
     max_map_keys: Int
     merge_strategy: String
+    profile_data: jsonb
+    dry_run: Boolean
   ): SmartGenOutput
 }
 
@@ -230,6 +232,7 @@ type ProfileTableOutput {
   array_candidates: [ArrayCandidateOutput]
   primary_keys: [String]
   existing_model: ExistingModelInfo
+  raw_profile: jsonb
 }
 
 type ExistingModelInfo {
@@ -263,6 +266,7 @@ type SmartGenOutput {
   version_id: uuid
   file_name: String
   changed: Boolean!
+  change_preview: jsonb
 }
 
 type UpdateTeamSettingsOutput {

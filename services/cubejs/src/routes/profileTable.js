@@ -4,6 +4,7 @@ import { findDataSchemas } from '../utils/dataSourceHelpers.js';
 import { profileTable } from '../utils/smart-generation/profiler.js';
 import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
+import { serializeProfile } from '../utils/smart-generation/profileSerializer.js';
 import { ColumnType } from '../utils/smart-generation/typeParser.js';
 
 /**
@@ -145,6 +146,10 @@ export default async (req, res, cubejs) => {
       });
     }
 
+    // Serialize the full profile data so the frontend can pass it back to
+    // smart_gen_dataschemas — avoids re-profiling ClickHouse a second time.
+    const rawProfile = serializeProfile(profiledTable, primaryKeys);
+
     const payload = {
       code: 'ok',
       database: schema,
@@ -157,6 +162,7 @@ export default async (req, res, cubejs) => {
       primary_keys: primaryKeys,
       existing_model: existingModel,
       array_candidates: arrayCandidates,
+      raw_profile: rawProfile,
     };
 
     emitter.complete(payload);
