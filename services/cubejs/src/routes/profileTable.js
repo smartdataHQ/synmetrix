@@ -106,16 +106,20 @@ export default async (req, res, cubejs) => {
     // Detect primary keys
     const primaryKeys = await detectPrimaryKeys(driver, schema, table);
 
-    // Look up existing model
+    // Look up existing model (non-fatal — skip if JWT expired or other auth issue)
     let existingModel = null;
     if (branchId) {
-      const dataSchemas = await findDataSchemas({ branchId, authToken });
-      const matchingFile = dataSchemas.find(
-        (f) => f.name === `${table}.yml` || f.name === `${table}.js`
-      );
+      try {
+        const dataSchemas = await findDataSchemas({ branchId, authToken });
+        const matchingFile = dataSchemas.find(
+          (f) => f.name === `${table}.yml` || f.name === `${table}.js`
+        );
 
-      if (matchingFile) {
-        existingModel = analyzeExistingModel(matchingFile.code, matchingFile.name);
+        if (matchingFile) {
+          existingModel = analyzeExistingModel(matchingFile.code, matchingFile.name);
+        }
+      } catch (schemaErr) {
+        console.warn('Could not look up existing model (non-fatal):', schemaErr.message || schemaErr);
       }
     }
 
@@ -131,19 +135,32 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // Build columns response from profiled data
+    // Build columns response from profiled data — include full stats
     const columnsOutput = [];
     for (const [colName, colData] of profiledTable.columns) {
-      columnsOutput.push({
+      const p = colData.profile;
+      const col = {
         name: colName,
         raw_type: colData.rawType,
         column_type: colData.columnType,
         value_type: colData.valueType,
-        has_values: colData.profile.hasValues,
-        unique_values: colData.profile.uniqueValues || null,
-        unique_keys: colData.profile.uniqueKeys.length > 0 ? colData.profile.uniqueKeys : null,
-        lc_values: colData.profile.lcValues || null,
-      });
+        has_values: p.hasValues,
+        value_rows: p.valueRows || null,
+        unique_values: p.uniqueValues || null,
+        min_value: p.minValue ?? null,
+        max_value: p.maxValue ?? null,
+        avg_value: p.avgValue ?? null,
+        max_array_length: p.maxArrayLength || null,
+        unique_keys: p.uniqueKeys?.length > 0 ? p.uniqueKeys : null,
+        lc_values: p.lcValues || null,
+        key_stats: p.keyStats && Object.keys(p.keyStats).length > 0 ? p.keyStats : null,
+      };
+
+      // Add column description from ClickHouse metadata if available
+      const desc = profiledTable.columnDescriptions?.get?.(colName);
+      if (desc) col.description = desc;
+
+      columnsOutput.push(col);
     }
 
     // Serialize the full profile data so the frontend can pass it back to

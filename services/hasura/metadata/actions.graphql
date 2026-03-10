@@ -249,9 +249,16 @@ type ProfiledColumnOutput {
   column_type: String!
   value_type: String!
   has_values: Boolean!
+  value_rows: Int
   unique_values: Int
+  min_value: String
+  max_value: String
+  avg_value: Float
+  max_array_length: Int
   unique_keys: [String]
   lc_values: jsonb
+  key_stats: jsonb
+  description: String
 }
 
 type ArrayCandidateOutput {
