@@ -19,20 +19,20 @@
 
 ### Infrastructure
 
-- [ ] T001 Add `http-proxy-middleware` as a direct dependency in `services/cubejs/package.json` (currently only transitive via api-gateway — see research.md R12). Run `npm install http-proxy-middleware` in `services/cubejs/`.
-- [ ] T002 Create the test directory and harness `services/cubejs/test/` — this directory does not exist yet. Set up a minimal test runner (e.g., Node.js test runner or vitest). Confirm tests can be discovered and run.
+- [x] T001 Add `http-proxy-middleware` as a direct dependency in `services/cubejs/package.json` (currently only transitive via api-gateway — see research.md R12). Run `npm install http-proxy-middleware` in `services/cubejs/`.
+- [x] T002 Create the test directory and harness `services/cubejs/test/` — this directory does not exist yet. Set up a minimal test runner (e.g., Node.js test runner or vitest). Confirm tests can be discovered and run.
 
 ### Tests
 
 > **Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T003 [P] Write unit tests for JWT minting utility — test that `mintHasuraToken(userId)` returns a valid HS256 JWT with correct claims (namespace from `JWT_CLAIMS_NAMESPACE` env var, not hardcoded), correct issuer (`services:cubejs`), audience (`services:hasura`), and expiry matching `JWT_EXPIRES_IN` in `services/cubejs/test/mintHasuraToken.test.js`
-- [ ] T004 [P] Write unit tests for minted token cache — test `get(userId)` returns null on miss, returns cached token when `exp - now > 60s`, returns null when `exp - now <= 60s`, `invalidate(userId)` clears specific entry, `invalidateAll()` clears all entries, max 1000 entries eviction in `services/cubejs/test/mintedTokenCache.test.js`
+- [x] T003 [P] Write unit tests for JWT minting utility — test that `mintHasuraToken(userId)` returns a valid HS256 JWT with correct claims (namespace from `JWT_CLAIMS_NAMESPACE` env var, not hardcoded), correct issuer (`services:cubejs`), audience (`services:hasura`), and expiry matching `JWT_EXPIRES_IN` in `services/cubejs/test/mintHasuraToken.test.js`
+- [x] T004 [P] Write unit tests for minted token cache — test `get(userId)` returns null on miss, returns cached token when `exp - now > 60s`, returns null when `exp - now <= 60s`, `invalidate(userId)` clears specific entry, `invalidateAll()` clears all entries, max 1000 entries eviction in `services/cubejs/test/mintedTokenCache.test.js`
 
 ### Implementation
 
-- [ ] T005 [P] Create JWT minting utility that generates HS256 Hasura JWTs from a userId, using `jose.SignJWT` with claims namespace from `JWT_CLAIMS_NAMESPACE` env var, issuer `services:cubejs`, audience `services:hasura`, and configurable expiry from `JWT_EXPIRES_IN` env var in `services/cubejs/src/utils/mintHasuraToken.js`
-- [ ] T006 [P] Create minted token cache — a per-userId Map cache (max 1000 entries) that stores `{ token, exp }` and returns cached token if `exp - now > 60s`, otherwise returns null. Include `invalidate(userId)` and `invalidateAll()` methods in `services/cubejs/src/utils/mintedTokenCache.js`
+- [x] T005 [P] Create JWT minting utility that generates HS256 Hasura JWTs from a userId, using `jose.SignJWT` with claims namespace from `JWT_CLAIMS_NAMESPACE` env var, issuer `services:cubejs`, audience `services:hasura`, and configurable expiry from `JWT_EXPIRES_IN` env var in `services/cubejs/src/utils/mintHasuraToken.js`
+- [x] T006 [P] Create minted token cache — a per-userId Map cache (max 1000 entries) that stores `{ token, exp }` and returns cached token if `exp - now > 60s`, otherwise returns null. Include `invalidate(userId)` and `invalidateAll()` methods in `services/cubejs/src/utils/mintedTokenCache.js`
 
 **Checkpoint**: T003/T004 tests pass with T005/T006 implementations. Utilities ready.
 
@@ -48,7 +48,7 @@
 
 > **Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T007 Write integration tests for the proxy endpoint in `services/cubejs/test/hasuraProxy.test.js`:
+- [x] T007 Write integration tests for the proxy endpoint in `services/cubejs/test/hasuraProxy.test.js`:
   - WorkOS RS256 token → successful GraphQL response
   - HS256 token → passthrough with unchanged response
   - Missing token → 401 JSON error
@@ -59,7 +59,7 @@
 
 ### Implementation
 
-- [ ] T008 Create the Hasura proxy route handler in `services/cubejs/src/routes/hasuraProxy.js` (file lives in `routes/` for co-location with other route handlers, but is imported and mounted directly in `index.js` before body parsers — NOT via `routes/index.js`):
+- [x] T008 Create the Hasura proxy route handler in `services/cubejs/src/routes/hasuraProxy.js` (file lives in `routes/` for co-location with other route handlers, but is imported and mounted directly in `index.js` before body parsers — NOT via `routes/index.js`):
   - Export a factory function that receives config
   - Create an Express router with `POST /v1/graphql` and `GET /v1/graphql` routes
   - **Malformed token guard**: Before calling `detectTokenType()`, verify the token has 3 dot-separated segments. If not, return 401 JSON error immediately (see research.md R11). This prevents `detectTokenType()` from silently defaulting to "hasura" for garbage tokens.
@@ -68,13 +68,13 @@
   - Proxy middleware: use `createProxyMiddleware()` targeting `HASURA_ENDPOINT`, rewriting the `Authorization` header for WorkOS tokens
   - **JSON error handling**: Wrap all auth logic in try-catch. Map error types to status codes and JSON bodies per contract. Do NOT let errors fall through to the global CubeJS error handler which returns plain text (see research.md R10)
   - Note: FR-006 (identity cache) and FR-007 (singleflight dedup) are satisfied by reusing `provisionUserFromWorkOS()` from `dataSourceHelpers.js` which manages `workosSubCache` and `inflightProvisions` internally
-- [ ] T009 Mount the proxy routes BEFORE the body parsers in `services/cubejs/index.js` — the proxy must receive the raw request body stream, not the parsed `req.body` from `express.json()`. Import `hasuraProxy` factory from `src/routes/hasuraProxy.js` and call `app.use(hasuraProxy({ ... }))` BEFORE the `express.json()` and `express.urlencoded()` middleware calls at lines 32-33 (see research.md R8). The proxy is mounted directly in `index.js`, NOT via `routes/index.js` (which is loaded after body parsers for the REST API). Exact middleware order:
+- [x] T009 Mount the proxy routes BEFORE the body parsers in `services/cubejs/index.js` — the proxy must receive the raw request body stream, not the parsed `req.body` from `express.json()`. Import `hasuraProxy` factory from `src/routes/hasuraProxy.js` and call `app.use(hasuraProxy({ ... }))` BEFORE the `express.json()` and `express.urlencoded()` middleware calls at lines 32-33 (see research.md R8). The proxy is mounted directly in `index.js`, NOT via `routes/index.js` (which is loaded after body parsers for the REST API). Exact middleware order:
   1. `app.use(hasuraProxy({ ... }))` — NEW, before body parsers
   2. `app.use(express.json({ limit: "50mb" }))` — existing line 32
   3. `app.use(express.urlencoded({ ... }))` — existing line 33
   4. `app.use(routes({ ... }))` — existing, REST API routes (receives parsed bodies)
-- [ ] T010 Wire minted token cache invalidation into the existing cache invalidation handler in `services/cubejs/src/routes/index.js` — import `mintedTokenCache` and when `type === "user"` call `mintedTokenCache.invalidate(userId)`, when `type === "all"` call `mintedTokenCache.invalidateAll()`
-- [ ] T011 Update Nginx config in `services/client/nginx/default.conf.template` — add `location = /v1/graphql` block before the existing `location ~ ^/v1` block, routing to `$upstream_cubejs` with WebSocket upgrade headers (`Upgrade`, `Connection`, `proxy_http_version 1.1`)
+- [x] T010 Wire minted token cache invalidation into the existing cache invalidation handler in `services/cubejs/src/routes/index.js` — import `mintedTokenCache` and when `type === "user"` call `mintedTokenCache.invalidate(userId)`, when `type === "all"` call `mintedTokenCache.invalidateAll()`
+- [x] T011 Update Nginx config in `services/client/nginx/default.conf.template` — add `location = /v1/graphql` block before the existing `location ~ ^/v1` block, routing to `$upstream_cubejs` with WebSocket upgrade headers (`Upgrade`, `Connection`, `proxy_http_version 1.1`)
 
 **Checkpoint**: T007 tests pass. GraphQL queries work with both WorkOS and HS256 tokens. Headers are stripped. Errors are JSON. MVP complete.
 
@@ -88,8 +88,8 @@
 
 ### Implementation
 
-- [ ] T012 [US3] Verify and document that the proxy route handler (T008) imports directly from `workosAuth.js` and `dataSourceHelpers.js` — the same modules used by `checkAuth.js`. Add a code comment in `hasuraProxy.js` referencing the shared auth path and noting the provisioning behavior inherited (CubeJS `_eq` team lookup, see research.md R7). No code duplication should exist; if any was introduced in Phase 2, refactor to eliminate it in `services/cubejs/src/routes/hasuraProxy.js`
-- [ ] T013 [US3] Verify CubeJS REST API continues to work by running existing StepCI tests (`./cli.sh tests stepci`) and confirming no regressions from the new routes, middleware ordering changes, or Nginx changes
+- [x] T012 [US3] Verify and document that the proxy route handler (T008) imports directly from `workosAuth.js` and `dataSourceHelpers.js` — the same modules used by `checkAuth.js`. Add a code comment in `hasuraProxy.js` referencing the shared auth path and noting the provisioning behavior inherited (CubeJS `_eq` team lookup, see research.md R7). No code duplication should exist; if any was introduced in Phase 2, refactor to eliminate it in `services/cubejs/src/routes/hasuraProxy.js`
+- [x] T013 [US3] Verify CubeJS REST API continues to work by running existing StepCI tests (`./cli.sh tests stepci`) and confirming no regressions from the new routes, middleware ordering changes, or Nginx changes
 
 **Checkpoint**: Both GraphQL proxy and REST API use identical auth code paths. No duplication.
 
@@ -107,14 +107,14 @@
 
 ### Implementation
 
-- [ ] T014 [US4] Refactor `services/cubejs/index.js` to store the HTTP server handle — change `app.listen(port)` (line 110, currently discards return value) to `const server = app.listen(port)`. This is required to attach the `upgrade` event listener for WebSocket proxying.
-- [ ] T015 [US4] Add WebSocket proxy support to `services/cubejs/src/routes/hasuraProxy.js` — configure `http-proxy-middleware` with `ws: true` option. Export the proxy instance so the server can call `proxy.upgrade(req, socket, head)`.
-- [ ] T016 [US4] Wire the WebSocket upgrade handler in `services/cubejs/index.js` — listen for the `upgrade` event on the stored `server` handle, check if the request path is `/v1/graphql`, and if so:
+- [x] T014 [US4] Refactor `services/cubejs/index.js` to store the HTTP server handle — change `app.listen(port)` (line 110, currently discards return value) to `const server = app.listen(port)`. This is required to attach the `upgrade` event listener for WebSocket proxying.
+- [x] T015 [US4] Add WebSocket proxy support to `services/cubejs/src/routes/hasuraProxy.js` — configure `http-proxy-middleware` with `ws: true` option. Export the proxy instance so the server can call `proxy.upgrade(req, socket, head)`.
+- [x] T016 [US4] Wire the WebSocket upgrade handler in `services/cubejs/index.js` — listen for the `upgrade` event on the stored `server` handle, check if the request path is `/v1/graphql`, and if so:
   - Strip `x-hasura-*` headers from the upgrade request (security consistency with HTTP path)
   - Call `proxy.upgrade(req, socket, head)` to forward the upgrade to Hasura
   - All tokens pass through unchanged (HS256 passthrough; no WorkOS token swap)
   - For non-`/v1/graphql` paths, do not intercept (let default handling apply)
-- [ ] T017 [US4] Verify the Nginx config from T011 already includes WebSocket upgrade headers for the `/v1/graphql` location — confirm `proxy_http_version 1.1`, `Upgrade $http_upgrade`, and `Connection "Upgrade"` are present in `services/client/nginx/default.conf.template`
+- [x] T017 [US4] Verify the Nginx config from T011 already includes WebSocket upgrade headers for the `/v1/graphql` location — confirm `proxy_http_version 1.1`, `Upgrade $http_upgrade`, and `Connection "Upgrade"` are present in `services/client/nginx/default.conf.template`
 
 **Checkpoint**: Existing HS256 WebSocket subscriptions work through the proxy. `x-hasura-*` headers are stripped on upgrade. No regression from Nginx routing change.
 
@@ -124,10 +124,10 @@
 
 **Purpose**: End-to-end validation, StepCI coverage, and regression testing.
 
-- [ ] T018 Create new StepCI workflow tests for the `/v1/graphql` proxy endpoint in `tests/` — test GraphQL query with WorkOS RS256 token returns valid data, GraphQL query with HS256 token returns valid data (passthrough), request with no token returns 401 JSON, request with expired token returns 403 JSON, request with spoofed `x-hasura-user-id` header → header is not seen by Hasura
-- [ ] T019 Validate the full flow end-to-end: start Docker services (`./cli.sh compose up`), test GraphQL query with WorkOS token through Nginx, test with HS256 token through Nginx, test unauthenticated request gets 401 JSON, verify CubeJS REST API still works
-- [ ] T020 [P] Verify error responses match the contract in `specs/008-hasura-proxy/contracts/proxy-endpoints.md` — test expired token (403 JSON), malformed token (401 JSON, not routed to HS256), JWKS unavailable (503 JSON), and Hasura backend unavailable (502 JSON) scenarios. Confirm no errors return plain text.
-- [ ] T021 [P] Run full StepCI integration tests (`./cli.sh tests stepci`) including new proxy tests (T018) to confirm no regressions in Actions RPC, Hasura mutations, or CubeJS REST API
+- [x] T018 Create new StepCI workflow tests for the `/v1/graphql` proxy endpoint in `tests/` — test GraphQL query with WorkOS RS256 token returns valid data, GraphQL query with HS256 token returns valid data (passthrough), request with no token returns 401 JSON, request with expired token returns 403 JSON, request with spoofed `x-hasura-user-id` header → header is not seen by Hasura
+- [ ] T019 Validate the full flow end-to-end (requires Docker services): start Docker services (`./cli.sh compose up`), test GraphQL query with WorkOS token through Nginx, test with HS256 token through Nginx, test unauthenticated request gets 401 JSON, verify CubeJS REST API still works
+- [ ] T020 [P] Verify error responses match the contract (requires Docker services) in `specs/008-hasura-proxy/contracts/proxy-endpoints.md` — test expired token (403 JSON), malformed token (401 JSON, not routed to HS256), JWKS unavailable (503 JSON), and Hasura backend unavailable (502 JSON) scenarios. Confirm no errors return plain text.
+- [ ] T021 [P] Run full StepCI integration tests (requires Docker services) (`./cli.sh tests stepci`) including new proxy tests (T018) to confirm no regressions in Actions RPC, Hasura mutations, or CubeJS REST API
 
 ---
 

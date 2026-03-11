@@ -265,6 +265,10 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL (via Hasura), Redis (sessions), CubeStore (query cache) (005-simple-access-controls)
 - TypeScript (client-v2, React 18 + Vite 4), JavaScript ES modules (CubeJS service, Node.js 18+) + Monaco Editor (existing), `yaml` ^2.3.4 (existing in CubeJS, add to client-v2), `@cubejs-backend/schema-compiler` ^1.6.19 (existing in CubeJS), Ant Design 5 (existing in client-v2), URQL (existing GraphQL client) (006-model-authoring)
 - N/A (schema spec is static; cube registry is in-memory from FetchMeta) (006-model-authoring)
+- JavaScript (ES modules), Node.js 22 + `jose` ^6.x (new for CubeJS), `@workos-inc/node` (existing in Actions, NOT added to CubeJS — use direct fetch), `jsonwebtoken` (existing in CubeJS, kept for HS256 path) (007-workos-jwt-query)
+- PostgreSQL via Hasura GraphQL (existing), In-memory Map caches (existing + new) (007-workos-jwt-query)
+- JavaScript (ES modules), Node.js 22 + `jose` v6.2.1 (JWKS + JWT signing), `http-proxy-middleware` v3.0.0 (HTTP/WS proxy, direct dependency), Express 4.18.2 (008-hasura-proxy)
+- In-memory Map caches only (no DB changes) (008-hasura-proxy)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

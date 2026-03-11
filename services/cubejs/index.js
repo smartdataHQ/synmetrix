@@ -4,6 +4,7 @@ import fs from "fs";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yaml";
 
+import createHasuraProxy from "./src/routes/hasuraProxy.js";
 import routes from "./src/routes/index.js";
 import { logging } from "./src/utils/logging.js";
 
@@ -28,6 +29,10 @@ const {
 
 const port = parseInt(process.env.PORT, 10) || 4000;
 const app = express();
+
+// Hasura auth proxy — mounted BEFORE body parsers for raw body passthrough (R8)
+const hasuraProxy = createHasuraProxy();
+app.use(hasuraProxy);
 
 app.use(express.json({ limit: "50mb", extended: true }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -107,4 +112,17 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).send(err.message);
 });
 
-app.listen(port);
+const server = app.listen(port);
+
+// WebSocket proxy: forward /v1/graphql upgrade requests to Hasura (T016)
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/v1/graphql" && hasuraProxy.proxy) {
+    // Strip x-hasura-* headers on upgrade for security consistency
+    for (const name of Object.keys(req.headers)) {
+      if (/^x-hasura-/i.test(name)) {
+        delete req.headers[name];
+      }
+    }
+    hasuraProxy.proxy.upgrade(req, socket, head);
+  }
+});

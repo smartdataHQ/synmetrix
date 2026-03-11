@@ -29,6 +29,16 @@ server {
     sub_filter_once on;
   }
 
+  # GraphQL proxy (HTTP + WebSocket) → CubeJS auth proxy
+  location = /v1/graphql {
+    proxy_pass http://$upstream_cubejs;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "Upgrade";
+    proxy_set_header Host $host;
+  }
+
+  # Remaining Hasura endpoints (metadata, etc.) → Hasura direct
   location ~ ^/v1 {
     proxy_pass http://$upstream_hasura;
     proxy_http_version 1.1;
