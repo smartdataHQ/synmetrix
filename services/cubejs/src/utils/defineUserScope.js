@@ -10,7 +10,9 @@ export const getDataSourceAccessList = (
   )?.member_roles?.[0];
 
   if (!dataSourceMemberRole) {
-    throw new Error(`403: member role not found`);
+    const error = new Error(`403: member role not found`);
+    error.status = 403;
+    throw error;
   }
 
   const { access_list: accessList } = dataSourceMemberRole;
@@ -35,7 +37,9 @@ const defineUserScope = (
   );
 
   if (!dataSource) {
-    throw new Error(`404: source "${selectedDataSourceId}" not found`);
+    const error = new Error(`404: source "${selectedDataSourceId}" not found`);
+    error.status = 404;
+    throw error;
   }
 
   let selectedBranch;
@@ -47,7 +51,9 @@ const defineUserScope = (
     );
 
     if (!branch) {
-      throw new Error(`404: branch "${selectedBranchId}" not found`);
+      const error = new Error(`404: branch "${selectedBranchId}" not found`);
+      error.status = 404;
+      throw error;
     }
 
     selectedBranch = branch;
@@ -57,7 +63,9 @@ const defineUserScope = (
     );
 
     if (!defaultBranch) {
-      throw new Error(`400: default branch not found`);
+      const error = new Error(`400: default branch not found`);
+      error.status = 400;
+      throw error;
     }
 
     selectedBranch = defaultBranch;
@@ -69,7 +77,9 @@ const defineUserScope = (
     );
 
     if (!version) {
-      throw new Error(`404: version "${selectedVersionId}" not found`);
+      const error = new Error(`404: version "${selectedVersionId}" not found`);
+      error.status = 404;
+      throw error;
     }
 
     selectedVersion = version;

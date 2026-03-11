@@ -1,7 +1,14 @@
-import { findSqlCredentials } from "./dataSourceHelpers.js";
+import {
+  findSqlCredentials,
+  findUser,
+  provisionUserFromWorkOS,
+} from "./dataSourceHelpers.js";
+import { detectTokenType, verifyWorkOSToken } from "./workosAuth.js";
 
 import buildSecurityContext from "./buildSecurityContext.js";
-import { getDataSourceAccessList } from "./defineUserScope.js";
+import defineUserScope, {
+  getDataSourceAccessList,
+} from "./defineUserScope.js";
 
 const buildSqlSecurityContext = (sqlCredentials) => {
   if (!sqlCredentials) {
@@ -27,16 +34,68 @@ const buildSqlSecurityContext = (sqlCredentials) => {
 };
 
 /**
- * Asynchronous function to check the SQL authentication for a user.
+ * Check SQL authentication for a user.
+ * Supports two authentication methods:
+ * 1. WorkOS JWT as password (new): password is a JWT, username is datasource ID
+ * 2. Legacy sql_credentials lookup (existing): username/password from sql_credentials table
  *
  * @param {null} _ - Unused parameter.
- * @param {Object} user - The user object.
- * @returns {Promise} - A promise that resolves to an object containing the password and the security context for the user.
- *
- * @throws {Error} - Throws an error if the SQL credentials for the user are not found.
+ * @param {Object} user - The user object with username and password.
+ * @returns {Promise} - Resolves to { password, securityContext }
  */
 const checkSqlAuth = async (_, user) => {
-  const sqlCredentials = await findSqlCredentials(user);
+  const password = typeof user === "string" ? user : user?.password;
+  const username = typeof user === "string" ? _ : user?.username;
+
+  // Detect if password looks like a JWT (WorkOS RS256)
+  if (password && password.includes(".") && password.split(".").length === 3) {
+    const tokenType = detectTokenType(password);
+
+    if (tokenType === "workos") {
+      // WorkOS JWT path — fail closed on verification failure
+      const payload = await verifyWorkOSToken(password);
+      const userId = await provisionUserFromWorkOS(payload);
+
+      const userData = await findUser({ userId });
+
+      if (!userData.dataSources?.length || !userData.members?.length) {
+        const error = new Error(`404: user "${userId}" not found`);
+        error.status = 404;
+        throw error;
+      }
+
+      // Username is the datasource ID
+      const datasourceId = username;
+      const dataSource = userData.dataSources.find(
+        (ds) => ds.id === datasourceId
+      );
+
+      if (!dataSource) {
+        const error = new Error(
+          `403: access denied for datasource "${datasourceId}"`
+        );
+        error.status = 403;
+        throw error;
+      }
+
+      const userScope = defineUserScope(
+        userData.dataSources,
+        userData.members,
+        datasourceId
+      );
+
+      return {
+        password,
+        securityContext: {
+          userId,
+          userScope,
+        },
+      };
+    }
+  }
+
+  // Legacy sql_credentials path (unchanged)
+  const sqlCredentials = await findSqlCredentials(username || user);
 
   return {
     password: sqlCredentials?.password,

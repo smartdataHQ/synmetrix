@@ -1,7 +1,10 @@
 import express from "express";
 
 import checkAuthMiddleware from "../utils/checkAuth.js";
-import { invalidateUserCache } from "../utils/dataSourceHelpers.js";
+import {
+  invalidateUserCache,
+  invalidateWorkosSubCache,
+} from "../utils/dataSourceHelpers.js";
 import { invalidateRulesCache } from "../utils/queryRewrite.js";
 import generateDataSchema from "./generateDataSchema.js";
 import getSchema from "./getSchema.js";
@@ -23,10 +26,13 @@ export default ({ basePath, cubejs }) => {
 
     if (type === "user") {
       invalidateUserCache(userId || null);
+    } else if (type === "workos") {
+      invalidateWorkosSubCache(req.body.sub || null);
     } else if (type === "rules") {
       invalidateRulesCache();
     } else if (type === "all") {
       invalidateUserCache(null);
+      invalidateWorkosSubCache(null);
       invalidateRulesCache();
     }
 

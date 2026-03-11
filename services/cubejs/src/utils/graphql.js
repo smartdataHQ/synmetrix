@@ -25,7 +25,9 @@ export const fetchGraphQL = async (query, variables, authToken) => {
   const res = await result.json();
 
   if (res.errors) {
-    throw new Error(JSON.stringify(res.errors));
+    const error = new Error(JSON.stringify(res.errors));
+    error.status = 503;
+    throw error;
   }
 
   return res;
