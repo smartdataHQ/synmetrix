@@ -17,6 +17,9 @@ function isTokenExpired(token) {
   }
 }
 
+// Singleflight map: dedup concurrent refresh calls per session
+const inflightRefreshes = new Map();
+
 export default async function tokenHandler(req, res) {
   res.set("Cache-Control", "no-store");
 
@@ -55,32 +58,43 @@ export default async function tokenHandler(req, res) {
       session.workosAccessToken &&
       isTokenExpired(session.workosAccessToken)
     ) {
+      // Singleflight: dedup concurrent refresh calls for the same session
+      let refreshPromise = inflightRefreshes.get(sessionId);
+      if (!refreshPromise) {
+        refreshPromise = (async () => {
+          const refreshResult =
+            await workos.userManagement.authenticateWithRefreshToken({
+              clientId: process.env.WORKOS_CLIENT_ID,
+              refreshToken: session.refreshToken,
+            });
+          const freshJwt = await generateUserAccessToken(session.userId);
+          session.workosAccessToken = refreshResult.accessToken;
+          session.refreshToken = refreshResult.refreshToken;
+          session.accessToken = freshJwt;
+          await updateSession(sessionId, session);
+          return { accessToken: freshJwt, workosAccessToken: refreshResult.accessToken };
+        })();
+        inflightRefreshes.set(sessionId, refreshPromise);
+        refreshPromise.finally(() => inflightRefreshes.delete(sessionId));
+      }
+
       try {
-        const refreshResult =
-          await workos.userManagement.authenticateWithRefreshToken({
-            clientId: process.env.WORKOS_CLIENT_ID,
-            refreshToken: session.refreshToken,
-          });
-
-        // Mint fresh Hasura JWT
-        const freshJwt = await generateUserAccessToken(session.userId);
-
-        // Update session with new tokens
-        session.workosAccessToken = refreshResult.accessToken;
-        session.refreshToken = refreshResult.refreshToken;
-        session.accessToken = freshJwt;
-
-        await updateSession(sessionId, session);
-
+        const refreshed = await refreshPromise;
         return res.json({
-          accessToken: freshJwt,
+          accessToken: refreshed.accessToken,
+          workosAccessToken: refreshed.workosAccessToken || null,
           userId: session.userId,
           teamId: session.teamId || null,
           role: "user",
         });
       } catch (refreshError) {
         logger.warn("[Token] WorkOS token refresh failed:", refreshError);
-        // Fall through to return existing Hasura JWT
+        // Clear stale WorkOS token so frontend doesn't send an expired one
+        session.workosAccessToken = null;
+        updateSession(sessionId, session).catch((err) =>
+          logger.error("[Token] Failed to clear stale WorkOS token:", err)
+        );
+        // Fall through to return existing Hasura JWT (workosAccessToken now null)
       }
     }
 
@@ -98,6 +112,7 @@ export default async function tokenHandler(req, res) {
 
     return res.json({
       accessToken,
+      workosAccessToken: session.workosAccessToken || null,
       userId: session.userId,
       teamId: session.teamId || null,
       role: "user",

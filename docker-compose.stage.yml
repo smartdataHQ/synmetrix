@@ -104,6 +104,10 @@ services:
     env_file:
       - .env
       - .stage.env
+    environment:
+      WORKOS_API_KEY: ${WORKOS_API_KEY}
+      WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
+      WORKOS_ISSUER: ${WORKOS_ISSUER:-}
     networks:
       - synmetrix_default
 

@@ -211,6 +211,8 @@ export async function provisionUser(workosUser, options = {}) {
  * Derive team name from org context.
  * Priority: partition from JWT (e.g. "blue.is") > email domain (business) > full email (consumer).
  * The partition claim in WorkOS is the org's unique identifier/slug.
+ *
+ * NOTE: team derivation logic duplicated in services/{actions,cubejs} — keep in sync
  */
 function deriveTeamName(email, partition) {
   if (partition) {

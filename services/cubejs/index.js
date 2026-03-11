@@ -104,7 +104,7 @@ if (String(CUBEJS_SQL_API) === "true") {
 app.use((err, req, res, next) => {
   console.error(err.stack);
 
-  res.status(500).send(err.message);
+  res.status(err.status || 500).send(err.message);
 });
 
 app.listen(port);
