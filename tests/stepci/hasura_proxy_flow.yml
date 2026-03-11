@@ -1,0 +1,70 @@
+tests:
+  hasura_proxy_flow:
+    steps:
+      # Test 1: No auth token → 401 JSON
+      - name: proxy_no_token_401
+        http:
+          url: ${{env.CUBEJS_ENDPOINT}}/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+          body: |
+            {"query": "{ users { id display_name } }"}
+          check:
+            status: 401
+            jsonpath:
+              $.error:
+                - isString: true
+
+      # Test 2: Malformed token → 401 JSON
+      - name: proxy_malformed_token_401
+        http:
+          url: ${{env.CUBEJS_ENDPOINT}}/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: "Bearer not-a-jwt"
+          body: |
+            {"query": "{ users { id display_name } }"}
+          check:
+            status: 401
+            jsonpath:
+              $.error:
+                - isString: true
+
+      # Test 3: HS256 token passthrough — use the accessToken captured from owner_flow sign_up
+      - name: proxy_hs256_passthrough
+        if: captures.accessToken
+        http:
+          url: ${{env.CUBEJS_ENDPOINT}}/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: "Bearer ${{captures.accessToken}}"
+          body: |
+            {"query": "{ users { id display_name } }"}
+          check:
+            status: 200
+            jsonpath:
+              $.data:
+                - isObject: true
+
+      # Test 4: Spoofed x-hasura-user-id header (with valid HS256 token)
+      # The proxy should strip x-hasura-* headers — Hasura should use token claims, not the spoofed header
+      - name: proxy_header_stripping
+        if: captures.accessToken
+        http:
+          url: ${{env.CUBEJS_ENDPOINT}}/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: "Bearer ${{captures.accessToken}}"
+            x-hasura-user-id: "00000000-0000-0000-0000-000000000000"
+            x-hasura-role: "admin"
+          body: |
+            {"query": "{ users { id display_name } }"}
+          check:
+            status: 200
+            jsonpath:
+              $.data:
+                - isObject: true

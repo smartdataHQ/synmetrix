@@ -5,6 +5,7 @@ import {
   invalidateUserCache,
   invalidateWorkosSubCache,
 } from "../utils/dataSourceHelpers.js";
+import { mintedTokenCache } from "../utils/mintedTokenCache.js";
 import { invalidateRulesCache } from "../utils/queryRewrite.js";
 import generateDataSchema from "./generateDataSchema.js";
 import getSchema from "./getSchema.js";
@@ -26,6 +27,11 @@ export default ({ basePath, cubejs }) => {
 
     if (type === "user") {
       invalidateUserCache(userId || null);
+      if (userId) {
+        mintedTokenCache.invalidate(userId);
+      } else {
+        mintedTokenCache.invalidateAll();
+      }
     } else if (type === "workos") {
       invalidateWorkosSubCache(req.body.sub || null);
     } else if (type === "rules") {
@@ -34,6 +40,7 @@ export default ({ basePath, cubejs }) => {
       invalidateUserCache(null);
       invalidateWorkosSubCache(null);
       invalidateRulesCache();
+      mintedTokenCache.invalidateAll();
     }
 
     res.json({ ok: true });

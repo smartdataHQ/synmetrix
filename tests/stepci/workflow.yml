@@ -16,3 +16,4 @@ include:
   - smart_gen_flow.yml
   - cubesql_flow.yml
   - validate_flow.yml
+  - hasura_proxy_flow.yml
