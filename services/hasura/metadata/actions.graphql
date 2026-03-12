@@ -56,6 +56,7 @@ type Mutation {
 type Mutation {
   gen_sql(
     exploration_id: uuid!
+    limit: Int
   ): GenSQLOutput
 }
 
@@ -200,6 +201,8 @@ type CreateTeamOutput {
 
 type GenSQLOutput {
   result: json
+  column_metadata: json
+  sql_signature: String
 }
 
 type events_create_mutation_response {

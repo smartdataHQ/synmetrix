@@ -7,6 +7,9 @@ import {
 } from "../utils/dataSourceHelpers.js";
 import { mintedTokenCache } from "../utils/mintedTokenCache.js";
 import { invalidateRulesCache } from "../utils/queryRewrite.js";
+import { validateFormat } from "../utils/formatValidator.js";
+import { writeRowsAsCSV } from "../utils/csvSerializer.js";
+import { buildJSONStat } from "../utils/jsonstatBuilder.js";
 import generateDataSchema from "./generateDataSchema.js";
 import getSchema from "./getSchema.js";
 import preAggregationPreview from "./preAggregationPreview.js";
@@ -21,6 +24,140 @@ import version from "./version.js";
 const router = express.Router();
 
 export default ({ basePath, cubejs }) => {
+  // Format-aware middleware for the load endpoint.
+  // When format=csv or format=jsonstat, Cube.js processes the query as normal
+  // but the response is intercepted and re-serialized in the requested format.
+  // When format is absent or "json", the request passes through unchanged.
+  router.use(`${basePath}/v1/load`, (req, res, next) => {
+    if (req.method !== "POST" && req.method !== "GET") return next();
+
+    const rawFormat =
+      req.method === "POST" ? req.body?.format : req.query?.format;
+
+    let format;
+    try {
+      format = validateFormat(rawFormat);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    if (format === "json") return next();
+
+    const abortController = new AbortController();
+    let responseFinished = false;
+    res.on("finish", () => {
+      responseFinished = true;
+    });
+    res.on("close", () => {
+      if (!responseFinished && !abortController.signal.aborted) {
+        abortController.abort();
+      }
+    });
+
+    // For CSV/JSON-Stat, override the query limit to CUBEJS_DB_QUERY_LIMIT so
+    // exports are not capped by CUBEJS_DB_QUERY_DEFAULT_LIMIT (10k).
+    // The user can still set an explicit limit in the query body to cap results.
+    const queryLimit = parseInt(process.env.CUBEJS_DB_QUERY_LIMIT, 10) || 1000000;
+    if (req.method === "POST" && req.body?.query) {
+      if (!req.body.query.limit) {
+        req.body.query.limit = queryLimit;
+      }
+    } else if (req.method === "GET" && req.query?.query) {
+      try {
+        const q = typeof req.query.query === "string"
+          ? JSON.parse(req.query.query)
+          : req.query.query;
+        if (!q.limit) {
+          q.limit = queryLimit;
+          req.query.query = JSON.stringify(q);
+        }
+      } catch { /* leave as-is if unparseable */ }
+    }
+
+    // Wrap response methods to intercept Cube.js output
+    const originalSend = res.send.bind(res);
+
+    // Use originalSend for ALL transformed responses to avoid re-triggering
+    // the override (Express's res.json() internally calls res.send()).
+    const sendJson = (obj) => {
+      res.set("Content-Type", "application/json");
+      originalSend(JSON.stringify(obj));
+    };
+
+    const transform = async (cubeResponse) => {
+      try {
+        // Pass through Cube.js polling responses ("Continue wait") and errors
+        // unchanged — the client handles retry logic
+        if (cubeResponse?.error) {
+          sendJson(cubeResponse);
+          return;
+        }
+
+        const data = cubeResponse?.data
+          || cubeResponse?.results?.[0]?.data
+          || [];
+        const annotation = cubeResponse?.annotation
+          || cubeResponse?.results?.[0]?.annotation
+          || {};
+
+        if (format === "csv") {
+          res.set("Content-Type", "text/csv");
+          res.set("Content-Disposition", 'attachment; filename="query-result.csv"');
+          if (data.length === 0) {
+            res.set("Content-Length", "0");
+            originalSend("");
+            return;
+          }
+          await writeRowsAsCSV(res, data, { signal: abortController.signal });
+          res.end();
+          return;
+        }
+
+        if (format === "jsonstat") {
+          const columns = data.length > 0 ? Object.keys(data[0]) : [];
+          const measures = Object.keys(annotation.measures || {});
+          const timeDimensions = Object.keys(annotation.timeDimensions || {});
+          const dataset = buildJSONStat(data, columns, { measures, timeDimensions });
+
+          if (dataset.error) {
+            res.status(dataset.status || 400);
+            sendJson({ error: dataset.error });
+            return;
+          }
+
+          res.set("Content-Disposition", 'attachment; filename="query-result.json"');
+          sendJson(dataset);
+          return;
+        }
+      } catch (err) {
+        console.error("Format transform error:", err);
+        if (res.headersSent) {
+          if (!res.writableEnded) res.end();
+          return;
+        }
+        res.status(500);
+        sendJson({ error: "Failed to transform response to " + format });
+      }
+    };
+
+    res.json = (data) => {
+      void transform(data);
+      return res;
+    };
+    res.send = (buf) => {
+      try {
+        const str = Buffer.isBuffer(buf) ? buf.toString() : buf;
+        const data = JSON.parse(str);
+        void transform(data);
+        return res;
+      } catch {
+        return originalSend(buf);
+      }
+    };
+
+    next();
+  });
+
   // Internal cache invalidation endpoint (called by Actions service, no auth)
   router.post(`${basePath}/v1/internal/invalidate-cache`, (req, res) => {
     const { type, userId } = req.body || {};
