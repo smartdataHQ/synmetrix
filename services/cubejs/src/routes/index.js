@@ -23,6 +23,59 @@ import version from "./version.js";
 
 const router = express.Router();
 
+function addUniqueColumns(target, names) {
+  if (!Array.isArray(names)) return;
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (typeof name === "string" && !target.includes(name)) {
+      target.push(name);
+    }
+  }
+}
+
+function normalizeLoadQuery(rawQuery) {
+  if (!rawQuery) return null;
+  if (typeof rawQuery === "string") {
+    try {
+      return JSON.parse(rawQuery);
+    } catch {
+      return null;
+    }
+  }
+  return rawQuery;
+}
+
+function deriveJSONStatColumnsFromLoad(req, annotation, data) {
+  if (data.length > 0) {
+    return Object.keys(data[0]);
+  }
+
+  const columns = [];
+  const query = req.method === "POST"
+    ? normalizeLoadQuery(req.body?.query)
+    : normalizeLoadQuery(req.query?.query);
+  const primaryQuery = Array.isArray(query) ? query[0] : query;
+
+  if (primaryQuery) {
+    addUniqueColumns(columns, primaryQuery.dimensions);
+    addUniqueColumns(
+      columns,
+      Array.isArray(primaryQuery.timeDimensions)
+        ? primaryQuery.timeDimensions.map((item) => typeof item === "string" ? item : item?.dimension)
+        : []
+    );
+    addUniqueColumns(columns, primaryQuery.measures);
+  }
+
+  if (columns.length === 0) {
+    addUniqueColumns(columns, Object.keys(annotation.dimensions || {}));
+    addUniqueColumns(columns, Object.keys(annotation.timeDimensions || {}));
+    addUniqueColumns(columns, Object.keys(annotation.measures || {}));
+  }
+
+  return columns;
+}
+
 export default ({ basePath, cubejs }) => {
   // Format-aware middleware for the load endpoint.
   // When format=csv or format=jsonstat, Cube.js processes the query as normal
@@ -114,7 +167,7 @@ export default ({ basePath, cubejs }) => {
         }
 
         if (format === "jsonstat") {
-          const columns = data.length > 0 ? Object.keys(data[0]) : [];
+          const columns = deriveJSONStatColumnsFromLoad(req, annotation, data);
           const measures = Object.keys(annotation.measures || {});
           const timeDimensions = Object.keys(annotation.timeDimensions || {});
           const dataset = buildJSONStat(data, columns, { measures, timeDimensions });

@@ -47,6 +47,29 @@ function normalizeClickHouseCSVLine(line) {
   return normalized + "\r\n";
 }
 
+function addUniqueColumns(target, names) {
+  if (!Array.isArray(names)) return;
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    if (typeof name === "string" && !target.includes(name)) {
+      target.push(name);
+    }
+  }
+}
+
+function deriveJSONStatColumnsFromRunSql(body, rows) {
+  if (rows.length > 0) {
+    return Object.keys(rows[0]);
+  }
+
+  const columns = [];
+  addUniqueColumns(columns, body?.columns);
+  addUniqueColumns(columns, body?.dimensions);
+  addUniqueColumns(columns, body?.timeDimensions);
+  addUniqueColumns(columns, body?.measures);
+  return columns.length > 0 ? columns : null;
+}
+
 /**
  * Asynchronous function to run a SQL query using Cube.js.
  * Blocks access for teams with active query rewrite rules (prevents queryRewrite bypass).
@@ -104,7 +127,7 @@ export default async (req, res, cubejs) => {
     if (format === "jsonstat") {
       const { measures, timeDimensions } = req.body;
       const rows = await driver.query(sql);
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : null;
+      const columns = deriveJSONStatColumnsFromRunSql(req.body, rows);
       const dataset = buildJSONStat(rows, columns, { measures, timeDimensions });
 
       if (dataset.error) {
