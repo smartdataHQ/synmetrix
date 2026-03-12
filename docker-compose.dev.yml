@@ -61,6 +61,7 @@ services:
       - .dev.env
     environment:
       CUBEJS_SCHEDULED_REFRESH: false
+      CUBEJS_DB_QUERY_LIMIT: 1000000
       WORKOS_API_KEY: ${WORKOS_API_KEY}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
       WORKOS_ISSUER: ${WORKOS_ISSUER:-}

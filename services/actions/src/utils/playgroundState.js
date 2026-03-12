@@ -3,7 +3,7 @@ import fromPairs from "./fromPairs.js";
 export const replaceQueryParams = (query, paramsValues) => {
   let index = -1;
 
-  return query.replace(/(\$\d+)|\(\?[\w\d ]*\)/g, (match) => {
+  return query.replace(/(\$\d+)|\(\?[\w\d ]*\)|\?/g, (match) => {
     index += 1;
 
     return match.replace(/\?|\$\d+/, `'${paramsValues[index]}'`);
