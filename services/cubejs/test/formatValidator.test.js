@@ -15,6 +15,10 @@ describe("validateFormat", () => {
     assert.equal(validateFormat("jsonstat"), "jsonstat");
   });
 
+  it('returns "arrow" for format "arrow"', () => {
+    assert.equal(validateFormat("arrow"), "arrow");
+  });
+
   it('returns "json" when format is undefined', () => {
     assert.equal(validateFormat(undefined), "json");
   });
@@ -32,7 +36,7 @@ describe("validateFormat", () => {
       validateFormat("xml");
       assert.fail("Expected an error to be thrown");
     } catch (err) {
-      assert.match(err.message, /Supported formats: json, csv, jsonstat/);
+      assert.match(err.message, /Supported formats: json, csv, jsonstat, arrow/);
       assert.equal(err.status, 400);
     }
   });
@@ -42,7 +46,7 @@ describe("validateFormat", () => {
       validateFormat("CSV");
       assert.fail("Expected an error to be thrown");
     } catch (err) {
-      assert.match(err.message, /Supported formats: json, csv, jsonstat/);
+      assert.match(err.message, /Supported formats: json, csv, jsonstat, arrow/);
       assert.equal(err.status, 400);
     }
   });

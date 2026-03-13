@@ -269,6 +269,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL via Hasura GraphQL (existing), In-memory Map caches (existing + new) (007-workos-jwt-query)
 - JavaScript (ES modules), Node.js 22 + `jose` v6.2.1 (JWKS + JWT signing), `http-proxy-middleware` v3.0.0 (HTTP/WS proxy, direct dependency), Express 4.18.2 (008-hasura-proxy)
 - In-memory Map caches only (no DB changes) (008-hasura-proxy)
+- JavaScript (ES modules), Node.js 22+ + Express 4.18.2 (CubeJS routes), `@cubejs-backend/clickhouse-driver` (wraps `@clickhouse/client` ^1.12.0), `smartdataHQ/toolkit` (jsonstat-toolkit fork, zero deps), React 18 + Vite + Ant Design 5 (client-v2) (009-query-output)
+- N/A — no database schema changes. Query results are transient. (009-query-output)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)
