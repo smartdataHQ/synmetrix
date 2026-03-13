@@ -50,7 +50,10 @@ export const rawSql = async (exploration, args, authToken) => {
 
   if (limit !== undefined && limit !== null) {
     if (limit === 0) {
-      delete updatedPlaygroundState.limit;
+      // "Unlimited" export: use CUBEJS_DB_QUERY_LIMIT (default 1M).
+      // Deleting the limit causes Cube.js to apply CUBEJS_DB_QUERY_DEFAULT_LIMIT (10k).
+      updatedPlaygroundState.limit =
+        parseInt(process.env.CUBEJS_DB_QUERY_LIMIT, 10) || 1_000_000;
     } else {
       updatedPlaygroundState.limit = limit;
     }
