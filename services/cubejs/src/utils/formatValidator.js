@@ -1,4 +1,4 @@
-const SUPPORTED_FORMATS = ["json", "csv", "jsonstat"];
+const SUPPORTED_FORMATS = ["json", "csv", "jsonstat", "arrow"];
 
 export function validateFormat(format) {
   if (!format) return "json";

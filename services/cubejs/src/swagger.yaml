@@ -48,6 +48,13 @@ components:
       properties:
         query:
           type: string
+        format:
+          type: string
+          enum:
+            - json
+            - csv
+            - jsonstat
+            - arrow
       required:
         - query
   parameters:

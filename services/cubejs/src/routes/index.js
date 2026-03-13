@@ -7,6 +7,7 @@ import {
 } from "../utils/dataSourceHelpers.js";
 import { mintedTokenCache } from "../utils/mintedTokenCache.js";
 import { invalidateRulesCache } from "../utils/queryRewrite.js";
+import { serializeRowsToArrow } from "../utils/arrowSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import { writeRowsAsCSV } from "../utils/csvSerializer.js";
 import { buildJSONStat } from "../utils/jsonstatBuilder.js";
@@ -45,7 +46,7 @@ function normalizeLoadQuery(rawQuery) {
   return rawQuery;
 }
 
-function deriveJSONStatColumnsFromLoad(req, annotation, data) {
+function deriveExportColumnsFromLoad(req, annotation, data) {
   if (data.length > 0) {
     return Object.keys(data[0]);
   }
@@ -78,7 +79,7 @@ function deriveJSONStatColumnsFromLoad(req, annotation, data) {
 
 export default ({ basePath, cubejs }) => {
   // Format-aware middleware for the load endpoint.
-  // When format=csv or format=jsonstat, Cube.js processes the query as normal
+  // When format=csv, format=jsonstat, or format=arrow, Cube.js processes the query as normal
   // but the response is intercepted and re-serialized in the requested format.
   // When format is absent or "json", the request passes through unchanged.
   router.use(`${basePath}/v1/load`, (req, res, next) => {
@@ -107,7 +108,7 @@ export default ({ basePath, cubejs }) => {
       }
     });
 
-    // For CSV/JSON-Stat, override the query limit to CUBEJS_DB_QUERY_LIMIT so
+    // For CSV/JSON-Stat/Arrow, override the query limit to CUBEJS_DB_QUERY_LIMIT so
     // exports are not capped by CUBEJS_DB_QUERY_DEFAULT_LIMIT (10k).
     // The user can still set an explicit limit in the query body to cap results.
     const queryLimit = parseInt(process.env.CUBEJS_DB_QUERY_LIMIT, 10) || 1000000;
@@ -167,7 +168,7 @@ export default ({ basePath, cubejs }) => {
         }
 
         if (format === "jsonstat") {
-          const columns = deriveJSONStatColumnsFromLoad(req, annotation, data);
+          const columns = deriveExportColumnsFromLoad(req, annotation, data);
           const measures = Object.keys(annotation.measures || {});
           const timeDimensions = Object.keys(annotation.timeDimensions || {});
           const dataset = buildJSONStat(data, columns, { measures, timeDimensions });
@@ -180,6 +181,14 @@ export default ({ basePath, cubejs }) => {
 
           res.set("Content-Disposition", 'attachment; filename="query-result.json"');
           sendJson(dataset);
+          return;
+        }
+
+        if (format === "arrow") {
+          const columns = deriveExportColumnsFromLoad(req, annotation, data);
+          res.set("Content-Type", "application/vnd.apache.arrow.stream");
+          res.set("Content-Disposition", 'attachment; filename="query-result.arrow"');
+          originalSend(serializeRowsToArrow(data, { columns }));
           return;
         }
       } catch (err) {

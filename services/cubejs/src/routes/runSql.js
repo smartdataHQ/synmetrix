@@ -1,6 +1,7 @@
 import crypto from "crypto";
 
 import { loadRules } from "../utils/queryRewrite.js";
+import { serializeRowsToArrow } from "../utils/arrowSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import { writeRowsAsCSV, writeTextChunk } from "../utils/csvSerializer.js";
 import { buildJSONStat } from "../utils/jsonstatBuilder.js";
@@ -27,6 +28,10 @@ function isSignedSql(sql, signature) {
 const CSV_HEADERS = {
   "Content-Type": "text/csv",
   "Content-Disposition": 'attachment; filename="query-result.csv"',
+};
+const ARROW_HEADERS = {
+  "Content-Type": "application/vnd.apache.arrow.stream",
+  "Content-Disposition": 'attachment; filename="query-result.arrow"',
 };
 const CSV_STREAM_CHUNK_SIZE = 128 * 1024;
 const CLICKHOUSE_NULL_TOKEN_RE = /(?<=,|^)\\N(?=,|\r?\n|$)/g;
@@ -57,7 +62,21 @@ function addUniqueColumns(target, names) {
   }
 }
 
-function deriveJSONStatColumnsFromRunSql(body, rows) {
+function removeTrailingSemicolon(query) {
+  const trimmed = String(query ?? "").trimEnd();
+  let lastNonSemiIdx = trimmed.length;
+  for (let i = lastNonSemiIdx; i > 0; i--) {
+    if (trimmed[i - 1] !== ";") {
+      lastNonSemiIdx = i;
+      break;
+    }
+  }
+  return lastNonSemiIdx !== trimmed.length
+    ? trimmed.slice(0, lastNonSemiIdx)
+    : trimmed;
+}
+
+function deriveExportColumnsFromRunSql(body, rows) {
   if (rows.length > 0) {
     return Object.keys(rows[0]);
   }
@@ -67,7 +86,48 @@ function deriveJSONStatColumnsFromRunSql(body, rows) {
   addUniqueColumns(columns, body?.dimensions);
   addUniqueColumns(columns, body?.timeDimensions);
   addUniqueColumns(columns, body?.measures);
-  return columns.length > 0 ? columns : null;
+  return columns;
+}
+
+async function writeBinaryChunk(writable, chunk, signal) {
+  if (!chunk || chunk.length === 0) return;
+  if (signal?.aborted) {
+    throw signal.reason ?? new Error("Arrow output aborted.");
+  }
+  if (writable.destroyed || writable.writableEnded) {
+    throw new Error("Arrow output stream is not writable.");
+  }
+  if (writable.write(chunk)) return;
+
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      writable.off("drain", onDrain);
+      writable.off("close", onClose);
+      writable.off("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("Arrow output stream closed before it drained."));
+    };
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Arrow output aborted."));
+    };
+
+    writable.once("drain", onDrain);
+    writable.once("close", onClose);
+    writable.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -123,11 +183,22 @@ export default async (req, res, cubejs) => {
       return;
     }
 
-    // --- JSON-Stat ---
+    // --- CSV / Arrow ClickHouse fast paths ---
+    const abortController = new AbortController();
+    let responseFinished = false;
+    res.on("finish", () => {
+      responseFinished = true;
+    });
+    res.on("close", () => {
+      if (!responseFinished && !abortController.signal.aborted) {
+        abortController.abort();
+      }
+    });
+
     if (format === "jsonstat") {
       const { measures, timeDimensions } = req.body;
       const rows = await driver.query(sql);
-      const columns = deriveJSONStatColumnsFromRunSql(req.body, rows);
+      const columns = deriveExportColumnsFromRunSql(req.body, rows);
       const dataset = buildJSONStat(rows, columns, { measures, timeDimensions });
 
       if (dataset.error) {
@@ -141,19 +212,33 @@ export default async (req, res, cubejs) => {
       return;
     }
 
-    // --- CSV ---
-    const abortController = new AbortController();
-    let responseFinished = false;
-    res.on("finish", () => {
-      responseFinished = true;
-    });
-    res.on("close", () => {
-      if (!responseFinished && !abortController.signal.aborted) {
-        abortController.abort();
-      }
-    });
+    if (format === "arrow" && isClickHouse(securityContext)) {
+      const clickhouseQuery = `${removeTrailingSemicolon(sql)}\nFORMAT ArrowStream`;
+      const result = await driver.client.exec({
+        query: clickhouseQuery,
+        clickhouse_settings: {
+          ...driver.config?.clickhouseSettings,
+          output_format_arrow_compression_method: "none",
+        },
+        abort_signal: abortController.signal,
+      });
 
-    if (isClickHouse(securityContext)) {
+      res.set(ARROW_HEADERS);
+
+      try {
+        for await (const chunk of result.stream) {
+          await writeBinaryChunk(res, chunk, abortController.signal);
+        }
+      } catch (streamErr) {
+        if (abortController.signal.aborted) return;
+        throw streamErr;
+      }
+
+      res.end();
+      return;
+    }
+
+    if (format === "csv" && isClickHouse(securityContext)) {
       // ClickHouse fast path: stream CSV directly from the server (constant memory)
 
       const resultSet = await driver.client.query({
@@ -189,21 +274,28 @@ export default async (req, res, cubejs) => {
       }
 
       res.end();
-    } else {
-      // Generic fallback: query rows then serialize
-      const rows = await driver.query(sql);
-
-      if (!rows || rows.length === 0) {
-        res.set(CSV_HEADERS);
-        res.set("Content-Length", "0");
-        res.send("");
-        return;
-      }
-
-      res.set(CSV_HEADERS);
-      await writeRowsAsCSV(res, rows, { signal: abortController.signal });
-      res.end();
+      return;
     }
+
+    const rows = await driver.query(sql);
+
+    if (format === "arrow") {
+      const columns = deriveExportColumnsFromRunSql(req.body, rows);
+      res.set(ARROW_HEADERS);
+      res.send(serializeRowsToArrow(rows, { columns }));
+      return;
+    }
+
+    if (!rows || rows.length === 0) {
+      res.set(CSV_HEADERS);
+      res.set("Content-Length", "0");
+      res.send("");
+      return;
+    }
+
+    res.set(CSV_HEADERS);
+    await writeRowsAsCSV(res, rows, { signal: abortController.signal });
+    res.end();
   } catch (err) {
     console.error(err);
 
