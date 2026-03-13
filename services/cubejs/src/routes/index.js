@@ -185,6 +185,13 @@ export default ({ basePath, cubejs }) => {
         }
 
         if (format === "arrow") {
+          // Load path buffers all rows in memory; apply safety limit to
+          // prevent OOM from the 4x memory amplification in Arrow serialization.
+          const ARROW_SAFETY_LIMIT = 100_000;
+          if (data.length > ARROW_SAFETY_LIMIT) {
+            console.warn(`Arrow /load response truncated: ${data.length} rows exceeded safety limit of ${ARROW_SAFETY_LIMIT}`);
+            data.length = ARROW_SAFETY_LIMIT;
+          }
           const columns = deriveExportColumnsFromLoad(req, annotation, data);
           res.set("Content-Type", "application/vnd.apache.arrow.stream");
           res.set("Content-Disposition", 'attachment; filename="query-result.arrow"');

@@ -280,6 +280,14 @@ export default async (req, res, cubejs) => {
     const rows = await driver.query(sql);
 
     if (format === "arrow") {
+      // Generic (non-ClickHouse) Arrow path buffers all rows + 4x memory
+      // amplification in serializeRowsToArrow.  Apply the same safety limit
+      // as JSON to prevent OOM / V8 string-size crashes.
+      const ARROW_SAFETY_LIMIT = 100_000;
+      if (rows.length > ARROW_SAFETY_LIMIT) {
+        console.warn(`Arrow response truncated: ${rows.length} rows exceeded safety limit of ${ARROW_SAFETY_LIMIT}`);
+        rows.length = ARROW_SAFETY_LIMIT;
+      }
       const columns = deriveExportColumnsFromRunSql(req.body, rows);
       res.set(ARROW_HEADERS);
       res.send(serializeRowsToArrow(rows, { columns }));
