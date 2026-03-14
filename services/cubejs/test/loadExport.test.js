@@ -5,6 +5,10 @@ import { tableFromIPC } from "apache-arrow";
 
 import { maybeHandleLoadExport } from "../src/routes/loadExport.js";
 
+function decodeArrowFieldMappingHeader(value) {
+  return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+}
+
 describe("maybeHandleLoadExport", () => {
   it("streams CSV through the semantic export path when native passthrough is unavailable", async () => {
     const req = createRequest({
@@ -99,7 +103,7 @@ describe("maybeHandleLoadExport", () => {
     );
   });
 
-  it("streams Arrow through the semantic export path when native passthrough is unsafe", async () => {
+  it("streams Arrow through the native ClickHouse path even when aliases are not semantic member names", async () => {
     const req = createRequest({
       format: "arrow",
       query: {
@@ -145,7 +149,7 @@ describe("maybeHandleLoadExport", () => {
         values: [],
       },
       driver: createClickHouseDriver({
-        arrowChunks: [Buffer.from("native-arrow-should-not-be-used")],
+        arrowChunks: [Buffer.from("native-arrow-stream-binary")],
       }),
     });
 
@@ -157,15 +161,25 @@ describe("maybeHandleLoadExport", () => {
       res.headers["Content-Type"],
       "application/vnd.apache.arrow.stream"
     );
-
-    const parsed = tableFromIPC(res.binaryOutput);
-    assert.deepEqual(parsed.toArray().map((row) => row.toJSON()), [
+    assert.deepEqual(
+      decodeArrowFieldMappingHeader(
+        res.headers["X-Synmetrix-Arrow-Field-Mapping"]
+      ),
       {
-        "Orders.city": "Reykjavik",
-        "Orders.count": 2,
-        "Orders.createdAt.day": Date.parse("2024-01-01T00:00:00.000Z"),
-      },
-    ]);
+        city_alias: "Orders.city",
+        count_alias: "Orders.count",
+        created_day_alias: "Orders.createdAt.day",
+      }
+    );
+    assert.equal(
+      res.headers["X-Synmetrix-Arrow-Field-Mapping-Encoding"],
+      "base64url-json"
+    );
+    assert.match(
+      res.headers["Access-Control-Expose-Headers"],
+      /X-Synmetrix-Arrow-Field-Mapping/
+    );
+    assert.deepEqual(res.binaryOutput, Buffer.from("native-arrow-stream-binary"));
   });
 
   it("streams Arrow through the native ClickHouse path when aliases are already semantic", async () => {
@@ -208,7 +222,85 @@ describe("maybeHandleLoadExport", () => {
       res.headers["Content-Type"],
       "application/vnd.apache.arrow.stream"
     );
+    assert.equal(res.headers["X-Synmetrix-Arrow-Field-Mapping"], undefined);
     assert.deepEqual(res.binaryOutput, nativeArrowBuffer);
+  });
+
+  it("streams Arrow through the semantic export path when native ClickHouse export is unavailable", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"],
+        measures: ["Orders.count"],
+        timeDimensions: [{ dimension: "Orders.createdAt", granularity: "day" }],
+      },
+    });
+    const res = new MockResponse();
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      sqlQuery: {
+        sql: ["SELECT city_alias, count_alias, created_day_alias FROM orders", []],
+        aliasNameToMember: {
+          city_alias: "Orders.city",
+          count_alias: "Orders.count",
+          created_day_alias: "Orders.createdAt.day",
+        },
+      },
+      metaConfig: createMetaConfig({
+        measures: [{ name: "Orders.count", type: "count" }],
+        dimensions: [
+          { name: "Orders.city", type: "string" },
+          {
+            name: "Orders.createdAt",
+            type: "time",
+            granularities: [{ name: "day", title: "day", interval: "1 day" }],
+          },
+          { name: "Orders.createdAt.day", type: "time" },
+        ],
+      }),
+      streamRows: [
+        {
+          "Orders.city": "Reykjavik",
+          "Orders.count": "2",
+          "Orders.createdAt.day": "2024-01-01T00:00:00.000Z",
+        },
+      ],
+      nativePreAggs: {
+        preAggregationsTablesToTempTables: [
+          [
+            "orders_rollup",
+            {
+              lambdaTable: { name: "orders_lambda" },
+            },
+          ],
+        ],
+        values: [],
+      },
+      driver: createClickHouseDriver({
+        arrowChunks: [Buffer.from("native-arrow-should-not-be-used")],
+      }),
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      throw new Error("next should not be called");
+    }, cubejs);
+
+    assert.equal(
+      res.headers["Content-Type"],
+      "application/vnd.apache.arrow.stream"
+    );
+    assert.equal(res.headers["X-Synmetrix-Arrow-Field-Mapping"], undefined);
+
+    const parsed = tableFromIPC(res.binaryOutput);
+    assert.deepEqual(parsed.toArray().map((row) => row.toJSON()), [
+      {
+        "Orders.city": "Reykjavik",
+        "Orders.count": 2,
+        "Orders.createdAt.day": Date.parse("2024-01-01T00:00:00.000Z"),
+      },
+    ]);
   });
 
   it("falls through to the buffered path when semantic streaming is unavailable", async () => {
