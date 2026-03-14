@@ -11,8 +11,15 @@ import { serializeRowsToArrow } from "../utils/arrowSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import { writeRowsAsCSV } from "../utils/csvSerializer.js";
 import { buildJSONStat } from "../utils/jsonstatBuilder.js";
+import {
+  applyLoadExportQueryLimit,
+  deriveExportColumnsFromLoad,
+  getLoadRequestFormat,
+  getLoadRequestQuery,
+} from "../utils/loadExportUtils.js";
 import generateDataSchema from "./generateDataSchema.js";
 import getSchema from "./getSchema.js";
+import maybeHandleLoadExport from "./loadExport.js";
 import preAggregationPreview from "./preAggregationPreview.js";
 import preAggregations from "./preAggregations.js";
 import profileTable from "./profileTable.js";
@@ -24,60 +31,14 @@ import version from "./version.js";
 
 const router = express.Router();
 
-function addUniqueColumns(target, names) {
-  if (!Array.isArray(names)) return;
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i];
-    if (typeof name === "string" && !target.includes(name)) {
-      target.push(name);
-    }
-  }
-}
-
-function normalizeLoadQuery(rawQuery) {
-  if (!rawQuery) return null;
-  if (typeof rawQuery === "string") {
-    try {
-      return JSON.parse(rawQuery);
-    } catch {
-      return null;
-    }
-  }
-  return rawQuery;
-}
-
-function deriveExportColumnsFromLoad(req, annotation, data) {
-  if (data.length > 0) {
-    return Object.keys(data[0]);
-  }
-
-  const columns = [];
-  const query = req.method === "POST"
-    ? normalizeLoadQuery(req.body?.query)
-    : normalizeLoadQuery(req.query?.query);
-  const primaryQuery = Array.isArray(query) ? query[0] : query;
-
-  if (primaryQuery) {
-    addUniqueColumns(columns, primaryQuery.dimensions);
-    addUniqueColumns(
-      columns,
-      Array.isArray(primaryQuery.timeDimensions)
-        ? primaryQuery.timeDimensions.map((item) => typeof item === "string" ? item : item?.dimension)
-        : []
-    );
-    addUniqueColumns(columns, primaryQuery.measures);
-  }
-
-  if (columns.length === 0) {
-    addUniqueColumns(columns, Object.keys(annotation.dimensions || {}));
-    addUniqueColumns(columns, Object.keys(annotation.timeDimensions || {}));
-    addUniqueColumns(columns, Object.keys(annotation.measures || {}));
-  }
-
-  return columns;
-}
-
 export default ({ basePath, cubejs }) => {
+  router.get(`${basePath}/v1/load`, (req, res, next) =>
+    maybeHandleLoadExport(req, res, next, cubejs)
+  );
+  router.post(`${basePath}/v1/load`, (req, res, next) =>
+    maybeHandleLoadExport(req, res, next, cubejs)
+  );
+
   // Format-aware middleware for the load endpoint.
   // When format=csv, format=jsonstat, or format=arrow, Cube.js processes the query as normal
   // but the response is intercepted and re-serialized in the requested format.
@@ -85,12 +46,9 @@ export default ({ basePath, cubejs }) => {
   router.use(`${basePath}/v1/load`, (req, res, next) => {
     if (req.method !== "POST" && req.method !== "GET") return next();
 
-    const rawFormat =
-      req.method === "POST" ? req.body?.format : req.query?.format;
-
     let format;
     try {
-      format = validateFormat(rawFormat);
+      format = validateFormat(getLoadRequestFormat(req));
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -111,22 +69,7 @@ export default ({ basePath, cubejs }) => {
     // For CSV/JSON-Stat/Arrow, override the query limit to CUBEJS_DB_QUERY_LIMIT so
     // exports are not capped by CUBEJS_DB_QUERY_DEFAULT_LIMIT (10k).
     // The user can still set an explicit limit in the query body to cap results.
-    const queryLimit = parseInt(process.env.CUBEJS_DB_QUERY_LIMIT, 10) || 1000000;
-    if (req.method === "POST" && req.body?.query) {
-      if (!req.body.query.limit) {
-        req.body.query.limit = queryLimit;
-      }
-    } else if (req.method === "GET" && req.query?.query) {
-      try {
-        const q = typeof req.query.query === "string"
-          ? JSON.parse(req.query.query)
-          : req.query.query;
-        if (!q.limit) {
-          q.limit = queryLimit;
-          req.query.query = JSON.stringify(q);
-        }
-      } catch { /* leave as-is if unparseable */ }
-    }
+    applyLoadExportQueryLimit(req);
 
     // Wrap response methods to intercept Cube.js output
     const originalSend = res.send.bind(res);
@@ -168,7 +111,11 @@ export default ({ basePath, cubejs }) => {
         }
 
         if (format === "jsonstat") {
-          const columns = deriveExportColumnsFromLoad(req, annotation, data);
+          const columns = deriveExportColumnsFromLoad(
+            getLoadRequestQuery(req),
+            annotation,
+            data
+          );
           const measures = Object.keys(annotation.measures || {});
           const timeDimensions = Object.keys(annotation.timeDimensions || {});
           const dataset = buildJSONStat(data, columns, { measures, timeDimensions });
@@ -192,7 +139,11 @@ export default ({ basePath, cubejs }) => {
             console.warn(`Arrow /load response truncated: ${data.length} rows exceeded safety limit of ${ARROW_SAFETY_LIMIT}`);
             data.length = ARROW_SAFETY_LIMIT;
           }
-          const columns = deriveExportColumnsFromLoad(req, annotation, data);
+          const columns = deriveExportColumnsFromLoad(
+            getLoadRequestQuery(req),
+            annotation,
+            data
+          );
           res.set("Content-Type", "application/vnd.apache.arrow.stream");
           res.set("Content-Disposition", 'attachment; filename="query-result.arrow"');
           originalSend(serializeRowsToArrow(data, { columns }));
