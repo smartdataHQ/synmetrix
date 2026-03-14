@@ -171,3 +171,56 @@ export async function writeRowsAsCSV(writable, rows, options = {}) {
     await writeTextChunk(writable, chunkParts.join(""), options.signal);
   }
 }
+
+/**
+ * Write an async iterable of row objects as CSV to a writable stream.
+ *
+ * The header is emitted lazily when the first row arrives so empty result
+ * sets keep the current export behavior of returning an empty body.
+ *
+ * @param {{ write(chunk: string): boolean }} writable
+ * @param {AsyncIterable<Record<string, *>>} rows
+ * @param {Object} [options]
+ * @param {string[]} [options.columns]
+ * @param {number} [options.chunkSize]
+ * @param {AbortSignal} [options.signal]
+ * @returns {Promise<void>}
+ */
+export async function writeRowStreamAsCSV(writable, rows, options = {}) {
+  const chunkSize = options.chunkSize ?? DEFAULT_CSV_CHUNK_SIZE;
+  let columns = Array.isArray(options.columns) && options.columns.length > 0
+    ? options.columns
+    : null;
+  let wroteHeader = false;
+  let chunkParts = [];
+  let chunkLength = 0;
+
+  const flush = async () => {
+    if (chunkLength === 0) return;
+    await writeTextChunk(writable, chunkParts.join(""), options.signal);
+    chunkParts = [];
+    chunkLength = 0;
+  };
+
+  for await (const row of rows) {
+    if (!wroteHeader) {
+      if (!columns) {
+        columns = Object.keys(row);
+      }
+
+      chunkParts.push(headerToCSV(columns), "\r\n");
+      chunkLength += chunkParts[0].length + 2;
+      wroteHeader = true;
+    }
+
+    const line = rowToCSV(row, columns);
+    chunkParts.push(line, "\r\n");
+    chunkLength += line.length + 2;
+
+    if (chunkLength >= chunkSize) {
+      await flush();
+    }
+  }
+
+  await flush();
+}
