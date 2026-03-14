@@ -40,6 +40,10 @@ const ARROW_HEADERS = {
   "Content-Type": "application/vnd.apache.arrow.stream",
   "Content-Disposition": 'attachment; filename="query-result.arrow"',
 };
+const ARROW_FIELD_MAPPING_HEADER = "X-Synmetrix-Arrow-Field-Mapping";
+const ARROW_FIELD_MAPPING_ENCODING_HEADER =
+  "X-Synmetrix-Arrow-Field-Mapping-Encoding";
+const ARROW_FIELD_MAPPING_ENCODING = "base64url-json";
 const CSV_STREAM_CHUNK_SIZE = 128 * 1024;
 const CLICKHOUSE_NULL_TOKEN_RE = /(?<=,|^)\\N(?=,|\r?\n|$)/g;
 
@@ -167,15 +171,71 @@ function getAliasNameToMember(plan) {
   return plan?.streamingQuery?.aliasNameToMember || null;
 }
 
-function canUseNativeArrowPassthrough(plan) {
+function getChangedAliasNameToMember(plan) {
   const aliasNameToMember = getAliasNameToMember(plan);
-  if (!aliasNameToMember || Object.keys(aliasNameToMember).length === 0) {
-    return true;
+  if (!aliasNameToMember) return null;
+
+  const changedAliasNameToMember = Object.fromEntries(
+    Object.entries(aliasNameToMember).filter(([alias, member]) => alias !== member)
+  );
+
+  return Object.keys(changedAliasNameToMember).length > 0
+    ? changedAliasNameToMember
+    : null;
+}
+
+function getResponseHeader(res, name) {
+  if (typeof res.getHeader === "function") {
+    const value = res.getHeader(name);
+    if (value != null) return value;
   }
 
-  return Object.entries(aliasNameToMember).every(
-    ([alias, member]) => alias === member
+  if (typeof res.get === "function") {
+    const value = res.get(name);
+    if (value != null) return value;
+  }
+
+  return res.headers?.[name] ?? res.headers?.[name.toLowerCase()];
+}
+
+function appendResponseHeaderValues(res, name, values) {
+  const existing = getResponseHeader(res, name);
+  const currentValues = Array.isArray(existing)
+    ? existing.flatMap((value) => String(value).split(","))
+    : typeof existing === "string"
+      ? existing.split(",")
+      : [];
+  const normalized = new Set(
+    currentValues.map((value) => value.trim()).filter(Boolean).map((value) => value.toLowerCase())
   );
+  const mergedValues = currentValues.map((value) => value.trim()).filter(Boolean);
+
+  for (const value of values) {
+    const normalizedValue = value.toLowerCase();
+    if (!normalized.has(normalizedValue)) {
+      normalized.add(normalizedValue);
+      mergedValues.push(value);
+    }
+  }
+
+  res.set(name, mergedValues.join(", "));
+}
+
+function setNativeArrowFieldMappingHeaders(res, plan) {
+  const aliasNameToMember = getChangedAliasNameToMember(plan);
+  if (!aliasNameToMember) return;
+
+  const encodedMapping = Buffer.from(
+    JSON.stringify(aliasNameToMember),
+    "utf8"
+  ).toString("base64url");
+
+  res.set(ARROW_FIELD_MAPPING_HEADER, encodedMapping);
+  res.set(ARROW_FIELD_MAPPING_ENCODING_HEADER, ARROW_FIELD_MAPPING_ENCODING);
+  appendResponseHeaderValues(res, "Access-Control-Expose-Headers", [
+    ARROW_FIELD_MAPPING_HEADER,
+    ARROW_FIELD_MAPPING_ENCODING_HEADER,
+  ]);
 }
 
 function rewriteNativeCsvHeader(line, aliasNameToMember) {
@@ -416,7 +476,6 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     if (
       format === "arrow"
       && plan.capabilities.nativeArrowPassthrough
-      && canUseNativeArrowPassthrough(plan)
       && isClickHouseContext(plan.context.securityContext)
     ) {
       const nativeQuery = await prepareNativeClickHouseExport(plan);
@@ -425,6 +484,7 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
           securityContext: plan.context.securityContext,
         });
         res.set(ARROW_HEADERS);
+        setNativeArrowFieldMappingHeaders(res, plan);
         await executeNativeClickHouseArrow(
           res,
           nativeQuery.query,
