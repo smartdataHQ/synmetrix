@@ -38,8 +38,14 @@ export default async (session, input) => {
     const teamRes = await fetchGraphQL(getTeamQuery, { team_id });
     const currentSettings = teamRes?.data?.teams_by_pk?.settings || {};
 
-    // Merge properties: null values delete keys
+    // Merge properties: null values delete keys.
+    // Also delete keys omitted from payload (UI remove action).
     const merged = { ...currentSettings };
+    for (const key of Object.keys(currentSettings)) {
+      if (!(key in properties)) {
+        delete merged[key];
+      }
+    }
     for (const [key, value] of Object.entries(properties)) {
       if (value === null) {
         delete merged[key];
