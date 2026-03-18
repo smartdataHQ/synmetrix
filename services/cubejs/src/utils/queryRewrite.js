@@ -75,7 +75,7 @@ function extractCubeNames(query) {
  */
 const queryRewrite = async (query, { securityContext }) => {
   const { userScope } = securityContext;
-  const { dataSourceAccessList, role, teamProperties, memberProperties } = userScope;
+  const { dataSourceAccessList, hasAccessList, role, teamProperties, memberProperties } = userScope;
 
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
   const rules = await loadRules();
@@ -139,6 +139,14 @@ const queryRewrite = async (query, { securityContext }) => {
     return query;
   }
 
+  // No access list assigned (access_list_id is NULL) → no restrictions configured.
+  // Auto-provisioned members start without an access list and get full access
+  // until an admin explicitly assigns one to scope their permissions.
+  if (!hasAccessList) {
+    return query;
+  }
+
+  // Access list IS assigned but has no entry for this datasource → deny.
   if (!dataSourceAccessList) {
     throw new Error("403: You have no access to the datasource");
   }

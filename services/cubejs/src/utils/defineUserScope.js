@@ -16,11 +16,13 @@ export const getDataSourceAccessList = (
   }
 
   const { access_list: accessList } = dataSourceMemberRole;
+  const hasAccessList = accessList != null;
   const dataSourceAccessList =
     accessList?.config?.datasources?.[selectedDataSourceId]?.cubes;
 
   return {
     role: dataSourceMemberRole?.team_role,
+    hasAccessList,
     dataSourceAccessList,
   };
 };
