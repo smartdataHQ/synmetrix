@@ -3,6 +3,14 @@ import { invalidateAllUserCaches } from "../utils/cubeCache.js";
 import { fetchGraphQL } from "../utils/graphql.js";
 import { isPortalAdmin } from "../utils/portalAdmin.js";
 
+const getTeamQuery = `
+  query GetTeamSettings($team_id: uuid!) {
+    teams_by_pk(id: $team_id) {
+      settings
+    }
+  }
+`;
+
 const updateTeamSettingsMutation = `
   mutation ($team_id: uuid!, $settings: jsonb!) {
     update_teams_by_pk(pk_columns: {id: $team_id}, _set: {settings: $settings}) {
@@ -94,10 +102,22 @@ export default async (session, input, headers) => {
       };
     }
 
+    // Read current settings and merge to avoid overwriting existing keys
+    const currentRes = await fetchGraphQL(getTeamQuery, { team_id: teamId });
+    const currentSettings = currentRes?.data?.teams_by_pk?.settings || {};
+    const merged = { ...currentSettings };
+    for (const [key, value] of Object.entries(settings)) {
+      if (value === null) {
+        delete merged[key];
+      } else {
+        merged[key] = value;
+      }
+    }
+
     // Update team settings
     const res = await fetchGraphQL(
       updateTeamSettingsMutation,
-      { team_id: teamId, settings },
+      { team_id: teamId, settings: merged },
       headers?.authorization
     );
 
