@@ -155,7 +155,7 @@ export class BasicFieldProcessor {
   /**
    * @param {object} columnDetails
    * @param {object|null} profile
-   * @returns {object|null} CubeField or null on error
+   * @returns {object|object[]|null} CubeField, array of CubeFields (timestamps), or null
    */
   process(columnDetails, profile) {
     try {
@@ -163,12 +163,34 @@ export class BasicFieldProcessor {
       const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails, profile);
       const sql = generateSqlExpression(columnDetails, profile);
 
-      return cubeField({
+      const dim = cubeField({
         name: columnDetails.name,
         sql,
         type: cubeType,
         fieldType,
       });
+
+      // Columns named "timestamp" also get min/max measures (earliest/latest)
+      if (columnDetails.valueType === ValueType.DATE
+        && (columnDetails.name || '').toLowerCase() === 'timestamp') {
+        return [
+          dim,
+          cubeField({
+            name: `${columnDetails.name}_min`,
+            sql,
+            type: 'min',
+            fieldType: 'measure',
+          }),
+          cubeField({
+            name: `${columnDetails.name}_max`,
+            sql,
+            type: 'max',
+            fieldType: 'measure',
+          }),
+        ];
+      }
+
+      return dim;
     } catch {
       return null;
     }
@@ -352,7 +374,7 @@ export class NestedFieldProcessor {
   /**
    * @param {object} columnDetails
    * @param {object|null} profile
-   * @returns {object|null} CubeField
+   * @returns {object|object[]|null} CubeField, array of CubeFields (timestamps), or null
    */
   process(columnDetails, profile) {
     try {

@@ -117,21 +117,63 @@ function detectNestedLookupKeys(columns) {
 // -- Core builder -----------------------------------------------------------
 
 /**
+ * Build a SQL WHERE clause fragment from filter descriptors.
+ *
+ * @param {Array<{ column: string, operator: string, value: * }>} filters
+ * @returns {string} SQL conditions joined by AND (no WHERE keyword)
+ */
+function filtersToSqlConditions(filters) {
+  const conditions = [];
+  for (const f of filters) {
+    const op = String(f.operator).toUpperCase();
+    if (op === 'IS NULL' || op === 'IS NOT NULL') {
+      conditions.push(`${f.column} ${op}`);
+    } else if (op === 'IN' || op === 'NOT IN') {
+      const vals = (Array.isArray(f.value) ? f.value : [f.value])
+        .map((v) => typeof v === 'number' ? v : `'${String(v).replace(/'/g, "''")}'`)
+        .join(', ');
+      conditions.push(`${f.column} ${op} (${vals})`);
+    } else {
+      const val = typeof f.value === 'number' ? f.value : `'${String(f.value).replace(/'/g, "''")}'`;
+      conditions.push(`${f.column} ${op} ${val}`);
+    }
+  }
+  return conditions.join(' AND ');
+}
+
+/**
  * Build the SQL expression for the cube source.
+ *
+ * When filters are provided, the cube uses `sql:` with a SELECT…WHERE
+ * so queries always return the same subset that was profiled.
+ * Cube.js composes its own security-context filters (partition, etc.)
+ * on top by wrapping this as a subquery.
  *
  * @param {string} schema - Database/schema name
  * @param {string} table - Table name
  * @param {string|null} partition - Partition value
  * @param {boolean} isInternal - Whether the table is in internalTables
+ * @param {Array<{ column: string, operator: string, value: * }>} [filters]
  * @returns {{ sql_table?: string, sql?: string }}
  */
-function buildCubeSource(schema, table, partition, isInternal) {
+function buildCubeSource(schema, table, partition, isInternal, filters) {
+  const qualifiedTable = schema ? `${schema}.${table}` : table;
+  const conditions = [];
+
   if (isInternal && partition) {
+    conditions.push(`partition = '${partition}'`);
+  }
+
+  if (filters && filters.length > 0) {
+    conditions.push(filtersToSqlConditions(filters));
+  }
+
+  if (conditions.length > 0) {
     return {
-      sql: `SELECT * FROM ${schema}.${table} WHERE partition = '${partition}'`,
+      sql: `SELECT * FROM ${qualifiedTable} WHERE ${conditions.join(' AND ')}`,
     };
   }
-  return { sql_table: `${schema}.${table}` };
+  return { sql_table: qualifiedTable };
 }
 
 /**
@@ -158,6 +200,62 @@ function toJsonFieldType(valueType, rawType) {
     default:
       return 'string';
   }
+}
+
+/**
+ * Extract the value type from a Map(...) raw type string.
+ * e.g. "Map(LowCardinality(String), Float32)" → "Float32"
+ *
+ * @param {string} rawType
+ * @returns {string|null} The unwrapped value type, or null if not a Map
+ */
+function extractMapValueType(rawType) {
+  const m = rawType.match(/^Map\s*\((.+)\)\s*$/i);
+  if (!m) return null;
+  // Split on top-level comma (respecting parentheses depth)
+  let depth = 0;
+  let splitIdx = -1;
+  for (let i = 0; i < m[1].length; i++) {
+    if (m[1][i] === '(') depth++;
+    else if (m[1][i] === ')') depth--;
+    else if (m[1][i] === ',' && depth === 0) { splitIdx = i; break; }
+  }
+  if (splitIdx === -1) return null;
+  let valPart = m[1].slice(splitIdx + 1).trim();
+  // Unwrap Nullable / LowCardinality wrappers
+  valPart = valPart.replace(/^(Nullable|LowCardinality)\s*\(\s*/gi, '').replace(/\s*\)\s*$/, '');
+  return valPart || null;
+}
+
+/**
+ * Build a range object from min/max/avg values.
+ * For numbers: coerces strings to numbers, includes avg.
+ * For timestamps: keeps as strings, min/max only (avg is meaningless).
+ *
+ * @param {*} min
+ * @param {*} max
+ * @param {*} avg
+ * @returns {{ min: number|string, max: number|string, avg?: number }|null}
+ */
+function buildRange(min, max, avg) {
+  const parts = {};
+  // Try numeric first
+  if (min != null) {
+    const n = Number(min);
+    if (!isNaN(n)) parts.min = n;
+    else if (typeof min === 'string' && min.length > 0) parts.min = min; // timestamp
+  }
+  if (max != null) {
+    const n = Number(max);
+    if (!isNaN(n)) parts.max = n;
+    else if (typeof max === 'string' && max.length > 0) parts.max = max; // timestamp
+  }
+  // avg only for numerics
+  if (avg != null) {
+    const n = Number(avg);
+    if (!isNaN(n)) parts.avg = n;
+  }
+  return Object.keys(parts).length > 0 ? parts : null;
 }
 
 /**
@@ -209,6 +307,19 @@ function processColumns(columns, options) {
       continue;
     }
 
+    // Skip string/UUID columns with 0 unique non-empty values
+    // (applies to basic, grouped, and array columns — not maps, which use key expansion)
+    if (
+      profile &&
+      (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
+      details.columnType !== ColumnType.MAP
+    ) {
+      if ((profile.uniqueValues ?? 0) === 0) {
+        columnsSkipped++;
+        continue;
+      }
+    }
+
     columnsProfiled++;
 
     // ---------------------------------------------------------------
@@ -246,6 +357,16 @@ function processColumns(columns, options) {
           }
           allFields.push(field);
         } else {
+          // Skip nested sub-columns with no non-empty values
+          if (
+            profile &&
+            (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
+            (profile.uniqueValues ?? 0) === 0
+          ) {
+            columnsSkipped++;
+            continue;
+          }
+
           // This is a data sub-column → emit FILTER_PARAMS-resolved dimension
           const fieldName = `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}`;
           const filterDimRef = `${cubeName}.${sanitizeFieldName(parentName)}_type`;
@@ -261,33 +382,14 @@ function processColumns(columns, options) {
           const cubeFieldType = (details.valueType === ValueType.NUMBER && !isCoordinate) ? 'measure' : 'dimension';
           const cubeType = cubeFieldType === 'measure' ? 'sum' : fieldType;
 
-          // FILTER_PARAMS-resolved field (requires selector)
+          // FILTER_PARAMS-resolved field — returns the selected element as
+          // a string when a filter is set; otherwise stringifies the full array.
+          const arrRef = `{CUBE}.\`${parentName}.${childName}\``;
+          const idxExpr = `indexOf({CUBE}.\`${parentName}.${lookup.lookupChildName}\`, toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)}))`;
+          const elemExpr = `arrayElementOrNull(${arrRef}, ${idxExpr})`;
           const field = {
             name: fieldName,
-            sql: `arrayElementOrNull({CUBE}.\`${parentName}.${childName}\`, indexOf({CUBE}.\`${parentName}.${lookup.lookupChildName}\`, toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)})))`,
-            type: cubeType,
-            fieldType: cubeFieldType,
-            _sourceColumn: columnName,
-            meta: {
-              auto_generated: true,
-              source_column: columnName,
-              raw_type: details.rawType,
-              field_type: jsonFieldType,
-              resolved_by: `${sanitizeFieldName(parentName)}_type`,
-            },
-          };
-          if (colDescription) field.meta.description = colDescription;
-          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
-            field.meta.max_array_length = profile.maxArrayLength;
-          }
-          allFields.push(field);
-
-          // Also emit a native array dimension (full array when no selector)
-          // This lets queries access the complete array without FILTER_PARAMS
-          const arrayFieldName = `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}_all`;
-          const arrayField = {
-            name: arrayFieldName,
-            sql: `toString({CUBE}.\`${parentName}.${childName}\`)`,
+            sql: `if(${idxExpr} > 0, toString(${elemExpr}), toString(${arrRef}))`,
             type: 'string',
             fieldType: 'dimension',
             _sourceColumn: columnName,
@@ -295,15 +397,14 @@ function processColumns(columns, options) {
               auto_generated: true,
               source_column: columnName,
               raw_type: details.rawType,
-              field_type: `array<${jsonFieldType}>`,
-              full_array: true,
+              field_type: jsonFieldType,
             },
           };
-          if (colDescription) arrayField.meta.description = colDescription;
+          if (colDescription) field.meta.description = colDescription;
           if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
-            arrayField.meta.max_array_length = profile.maxArrayLength;
+            field.meta.max_array_length = profile.maxArrayLength;
           }
-          allFields.push(arrayField);
+          allFields.push(field);
         }
         continue; // skip normal processing for this column
       }
@@ -346,7 +447,15 @@ function processColumns(columns, options) {
       // Add auto-generated meta with source info
       field.meta = { auto_generated: true };
       field.meta.source_column = columnName;
-      field.meta.raw_type = details.rawType;
+
+      // For map-expanded fields, use the map's value type (e.g. "Float32"),
+      // not the full Map(...) container type
+      if (field._mapKey) {
+        const mapValueType = extractMapValueType(details.rawType);
+        if (mapValueType) field.meta.raw_type = mapValueType;
+      } else {
+        field.meta.raw_type = details.rawType;
+      }
 
       // Add JSON-friendly field_type
       const isBoolField = isInt8Boolean(details.rawType, profile);
@@ -371,17 +480,10 @@ function processColumns(columns, options) {
           field.meta.unique_values = profile.uniqueValues;
         }
 
-        // Don't add min/max/avg for boolean fields — they are meaningless
+        // Numeric range: combine min/max/avg into a single "range" field
         if (!isBoolField) {
-          if (profile.minValue != null) {
-            field.meta.min_value = profile.minValue;
-          }
-          if (profile.maxValue != null) {
-            field.meta.max_value = profile.maxValue;
-          }
-          if (profile.avgValue != null) {
-            field.meta.avg_value = profile.avgValue;
-          }
+          const range = buildRange(profile.minValue, profile.maxValue, profile.avgValue);
+          if (range) field.meta.range = range;
         }
 
         if (profile.maxArrayLength != null && profile.maxArrayLength > 0) {
@@ -396,9 +498,8 @@ function processColumns(columns, options) {
         // Per-key stats from profiler (numeric: min/max/avg, string: unique_values)
         if (profile && profile.keyStats && profile.keyStats[field._mapKey]) {
           const stats = profile.keyStats[field._mapKey];
-          if (stats.min != null) field.meta.min_value = stats.min;
-          if (stats.max != null) field.meta.max_value = stats.max;
-          if (stats.avg != null) field.meta.avg_value = stats.avg;
+          const range = buildRange(stats.min, stats.max, stats.avg);
+          if (range) field.meta.range = range;
           if (stats.unique_values != null) field.meta.unique_values = stats.unique_values;
         }
 
@@ -412,6 +513,21 @@ function processColumns(columns, options) {
         // Non-map fields: attach LC values for categorical data
         if (profile && profile.lcValues != null && Array.isArray(profile.lcValues)) {
           field.meta.lc_values = profile.lcValues;
+        }
+      }
+
+      // Skip map-expanded fields with no useful data (only when keyStats was populated by profiler)
+      if (field._mapKey && profile?.keyStats) {
+        const stats = profile.keyStats[field._mapKey];
+        if (stats) {
+          // Numeric keys: skip if min/max/avg are all null (no non-null values)
+          if (field.fieldType === 'measure' && stats.min == null && stats.max == null && stats.avg == null) {
+            continue;
+          }
+          // String keys: skip if 0 unique non-empty values
+          if (field.fieldType === 'dimension' && (stats.unique_values ?? 0) === 0) {
+            continue;
+          }
         }
       }
 
@@ -486,14 +602,16 @@ function buildRawCube(profiledTable, options) {
     arrayJoinColumns = [],
     maxMapKeys = 500,
     primaryKeys = [],
+    cubeName: cubeNameOverride,
+    filters = [],
   } = options;
 
   const schema = profiledTable.database;
   const table = profiledTable.table;
-  const cubeName = sanitizeCubeName(table);
+  const cubeName = cubeNameOverride || sanitizeCubeName(table);
   const isInternal = internalTables.includes(table);
 
-  const source = buildCubeSource(schema, table, partition, isInternal);
+  const source = buildCubeSource(schema, table, partition, isInternal, filters);
 
   const { dimensions, measures, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     processColumns(profiledTable.columns, {
@@ -644,6 +762,8 @@ function buildArrayJoinCube(profiledTable, arrayJoinDef, rawCube, options) {
  *   }
  * }}
  */
+export { mergeAIMetrics };
+
 export function buildCubes(profiledTable, options = {}) {
   const {
     arrayJoinColumns = [],
@@ -682,4 +802,79 @@ export function buildCubes(profiledTable, options = {}) {
       columns_skipped: columnsSkipped,
     },
   };
+}
+
+// -- AI metric merging ------------------------------------------------------
+
+/** Default model identifier used for AI metric attribution. */
+const AI_MODEL = 'gpt-5.4';
+
+/**
+ * Merge validated AI-generated metrics into the first cube's
+ * dimensions / measures arrays.
+ *
+ * Each AI metric receives full provenance metadata so consumers
+ * can distinguish AI-generated fields from profiler-generated ones.
+ *
+ * Metrics whose names already exist in the target cube (across both
+ * dimensions and measures) are silently skipped to preserve uniqueness.
+ *
+ * @param {object[]} cubes - Cube definition array from buildCubes()
+ * @param {object[]} aiMetrics - Validated AI metrics, each with:
+ *   { name, sql, type, fieldType, description, ai_generation_context, source_columns }
+ * @returns {object[]} The same cubes array (mutated in-place)
+ */
+function mergeAIMetrics(cubes, aiMetrics) {
+  if (!cubes || cubes.length === 0 || !aiMetrics || aiMetrics.length === 0) {
+    return cubes;
+  }
+
+  const targetCube = cubes[0];
+
+  // Build a set of all existing field names in the target cube
+  const existingNames = new Set();
+  for (const dim of targetCube.dimensions || []) {
+    existingNames.add(dim.name);
+  }
+  for (const measure of targetCube.measures || []) {
+    existingNames.add(measure.name);
+  }
+
+  for (const metric of aiMetrics) {
+    // Skip if name already exists (across both dimensions and measures)
+    if (existingNames.has(metric.name)) {
+      continue;
+    }
+
+    const field = {
+      name: metric.name,
+      sql: metric.sql,
+      type: metric.type,
+      description: metric.description,
+      meta: {
+        ai_generated: true,
+        ai_model: AI_MODEL,
+        ai_generation_context: metric.ai_generation_context,
+        ai_generated_at: new Date().toISOString(),
+        source_columns: metric.source_columns || [],
+      },
+    };
+
+    // Pass through advanced Cube.js properties
+    if (metric.rollingWindow) field.rollingWindow = metric.rollingWindow;
+    if (metric.multiStage) field.multiStage = true;
+    if (metric.timeShift) field.timeShift = metric.timeShift;
+
+    if (metric.fieldType === 'dimension') {
+      if (!targetCube.dimensions) targetCube.dimensions = [];
+      targetCube.dimensions.push(field);
+    } else {
+      if (!targetCube.measures) targetCube.measures = [];
+      targetCube.measures.push(field);
+    }
+
+    existingNames.add(metric.name);
+  }
+
+  return cubes;
 }

@@ -17,6 +17,10 @@ function isAutoField(field) {
   return field?.meta?.auto_generated === true;
 }
 
+function isAIField(field) {
+  return field?.meta?.ai_generated === true;
+}
+
 function isAutoCube(cube) {
   return cube?.meta?.auto_generated === true;
 }
@@ -86,46 +90,40 @@ function diffFields(existingFields, newFields, memberType, cubeName, isReplace) 
   const removed = [];
   const preserved = [];
 
-  if (isReplace) {
-    // Replace strategy: everything existing is removed, everything new is added
-    for (const field of existing) {
-      removed.push({ name: field.name, type: field.type, member_type: memberType, cube: cubeName });
-    }
-    for (const field of incoming) {
-      added.push({ name: field.name, type: field.type, member_type: memberType, cube: cubeName });
-    }
-    return { added, updated, removed, preserved };
-  }
-
-  // Merge strategy
+  // Always compute a meaningful diff — even under replace strategy.
+  // The strategy affects what the merger DOES (overwrite vs preserve),
+  // but the preview should show what actually CHANGES.
   const newMap = fieldsByName(incoming);
-  const existingMap = fieldsByName(existing);
   const handledNames = new Set();
 
   for (const field of existing) {
     const name = field.name;
     handledNames.add(name);
 
-    if (!isAutoField(field)) {
-      // User-created field — always preserved
+    const newField = newMap.get(name);
+
+    if (!isReplace && isAIField(field)) {
+      // AI-generated field under merge — preserved as distinct category
+      preserved.push({ name, member_type: memberType, cube: cubeName, reason: 'ai_generated' });
+      continue;
+    }
+
+    if (!isReplace && !isAutoField(field)) {
+      // User-created field under merge — always preserved
       preserved.push({ name, member_type: memberType, cube: cubeName, reason: 'user_created' });
       continue;
     }
 
-    // Auto-generated field
-    const newField = newMap.get(name);
-
     if (newField) {
-      // Check for edited description
-      if (field.description && field.description !== (newField.description ?? undefined)) {
+      // Field exists in both — check if it actually changed
+      if (!isReplace && field.description && field.description !== (newField.description ?? undefined)) {
         preserved.push({ name, member_type: memberType, cube: cubeName, reason: 'edited_description' });
       } else if (field.type !== newField.type) {
-        // Type actually changed — mark as updated
         updated.push({ name: newField.name, type: newField.type, member_type: memberType, cube: cubeName, old_type: field.type });
       }
-      // else: same name, same type — unchanged, skip
+      // else: same name, same type — unchanged, not shown
     } else {
-      // Auto field no longer generated — removed
+      // Field no longer generated — removed
       removed.push({ name: field.name, type: field.type, member_type: memberType, cube: cubeName });
     }
   }
@@ -143,6 +141,55 @@ function diffFields(existingFields, newFields, memberType, cubeName, isReplace) 
 // ---------------------------------------------------------------------------
 // Preserved blocks detection
 // ---------------------------------------------------------------------------
+
+/**
+ * Build an AI metric entry for the ai_metrics_* arrays.
+ */
+function aiMetricEntry(field, cubeName) {
+  return {
+    name: field.name,
+    type: field.type,
+    member_type: field.fieldType || (field.sql && /count|sum|avg|min|max/i.test(field.type) ? 'measure' : 'dimension'),
+    cube: cubeName,
+    ai_generation_context: field.ai_generation_context || null,
+  };
+}
+
+/**
+ * Categorize AI fields from a field list diff.
+ * Returns { added, retained, removed } AI metric arrays.
+ */
+function categorizeAIFields(existingFields, newFields, cubeName) {
+  const existing = Array.isArray(existingFields) ? existingFields : [];
+  const incoming = Array.isArray(newFields) ? newFields : [];
+
+  const newMap = fieldsByName(incoming);
+  const existingMap = fieldsByName(existing);
+
+  const added = [];
+  const retained = [];
+  const handledNames = new Set();
+
+  // Check existing AI fields
+  for (const field of existing) {
+    if (!isAIField(field)) continue;
+    handledNames.add(field.name);
+
+    // AI field in existing — retained (merger always preserves AI fields)
+    retained.push(aiMetricEntry(field, cubeName));
+  }
+
+  // Check new AI fields
+  for (const field of incoming) {
+    if (!isAIField(field)) continue;
+    if (handledNames.has(field.name)) continue;
+
+    // AI field only in new — added
+    added.push(aiMetricEntry(field, cubeName));
+  }
+
+  return { added, retained, removed: [] };
+}
 
 function getPreservedBlocks(cube, cubeName) {
   const blocks = [];
@@ -162,7 +209,7 @@ function getPreservedBlocks(cube, cubeName) {
 // Summary builder
 // ---------------------------------------------------------------------------
 
-function buildSummary(added, updated, removed, preserved, blocksPreserved) {
+function buildSummary(added, updated, removed, preserved, blocksPreserved, aiAdded = [], aiRetained = [], aiRemoved = []) {
   const parts = [];
 
   if (added.length > 0) {
@@ -188,6 +235,21 @@ function buildSummary(added, updated, removed, preserved, blocksPreserved) {
 
   if (preservedParts.length > 0) {
     summary += ` Preserving ${preservedParts.join(' and ')}.`;
+  }
+
+  // AI metrics summary
+  const aiParts = [];
+  if (aiAdded.length > 0) {
+    aiParts.push(`${aiAdded.length} added`);
+  }
+  if (aiRetained.length > 0) {
+    aiParts.push(`${aiRetained.length} retained`);
+  }
+  if (aiRemoved.length > 0) {
+    aiParts.push(`${aiRemoved.length} removed`);
+  }
+  if (aiParts.length > 0) {
+    summary += ` AI metrics: ${aiParts.join(', ')}.`;
   }
 
   return summary;
@@ -237,7 +299,7 @@ function objectFieldsToArray(fields) {
  * Parse cube definitions from a JS cube file string.
  * Evaluates in a VM sandbox with mock cube() function.
  */
-function parseCubesFromJs(jsContent) {
+export function parseCubesFromJs(jsContent) {
   const cubes = [];
 
   const mockCube = (name, def) => {
@@ -255,7 +317,7 @@ function parseCubesFromJs(jsContent) {
   try {
     const context = createContext({
       cube: mockCube,
-      CUBE: 'CUBE',
+      CUBE: '{CUBE}',
       FILTER_PARAMS: createDeepProxy(),
       SQL_UTILS: createDeepProxy(),
     });
@@ -327,6 +389,9 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
     fields_removed: [],
     fields_preserved: [],
     blocks_preserved: [],
+    ai_metrics_added: [],
+    ai_metrics_retained: [],
+    ai_metrics_removed: [],
     summary: '',
   };
 
@@ -346,12 +411,21 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
       const cubeName = cube.name;
       for (const dim of Array.isArray(cube.dimensions) ? cube.dimensions : []) {
         result.fields_added.push({ name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName });
+        if (isAIField(dim)) {
+          result.ai_metrics_added.push(aiMetricEntry(dim, cubeName));
+        }
       }
       for (const meas of Array.isArray(cube.measures) ? cube.measures : []) {
         result.fields_added.push({ name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName });
+        if (isAIField(meas)) {
+          result.ai_metrics_added.push(aiMetricEntry(meas, cubeName));
+        }
       }
     }
-    result.summary = buildSummary(result.fields_added, [], [], [], []);
+    result.summary = buildSummary(
+      result.fields_added, [], [], [], [],
+      result.ai_metrics_added, [], [],
+    );
     return result;
   }
 
@@ -417,6 +491,15 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
     result.fields_removed.push(...dimDiff.removed, ...measDiff.removed);
     result.fields_preserved.push(...dimDiff.preserved, ...measDiff.preserved);
 
+    // AI metric categorization
+    if (!isReplace) {
+      const dimAI = categorizeAIFields(existingCube.dimensions, newCube.dimensions, cubeName);
+      const measAI = categorizeAIFields(existingCube.measures, newCube.measures, cubeName);
+      result.ai_metrics_added.push(...dimAI.added, ...measAI.added);
+      result.ai_metrics_retained.push(...dimAI.retained, ...measAI.retained);
+      result.ai_metrics_removed.push(...dimAI.removed, ...measAI.removed);
+    }
+
     // Preserved blocks (only relevant for merge)
     if (!isReplace) {
       result.blocks_preserved.push(...getPreservedBlocks(existingCube, cubeName));
@@ -429,13 +512,23 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
       const cubeName = newCube.name;
       for (const dim of Array.isArray(newCube.dimensions) ? newCube.dimensions : []) {
         result.fields_added.push({ name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName });
+        if (isAIField(dim)) {
+          result.ai_metrics_added.push(aiMetricEntry(dim, cubeName));
+        }
       }
       for (const meas of Array.isArray(newCube.measures) ? newCube.measures : []) {
         result.fields_added.push({ name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName });
+        if (isAIField(meas)) {
+          result.ai_metrics_added.push(aiMetricEntry(meas, cubeName));
+        }
       }
     }
   }
 
-  result.summary = buildSummary(result.fields_added, result.fields_updated, result.fields_removed, result.fields_preserved, result.blocks_preserved);
+  result.summary = buildSummary(
+    result.fields_added, result.fields_updated, result.fields_removed,
+    result.fields_preserved, result.blocks_preserved,
+    result.ai_metrics_added, result.ai_metrics_retained, result.ai_metrics_removed,
+  );
   return result;
 }

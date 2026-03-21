@@ -6,9 +6,11 @@ import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
 import { serializeProfile } from '../utils/smart-generation/profileSerializer.js';
 import { ColumnType } from '../utils/smart-generation/typeParser.js';
+import { parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
 
 /**
  * Analyze an existing data schema file for user content and reprofile support.
+ * Supports both YAML and JS model files.
  *
  * @param {string} code - The YAML/JS source code of the schema file
  * @param {string} fileName - The file name
@@ -21,62 +23,77 @@ function analyzeExistingModel(code, fileName) {
 
   let hasUserContent = false;
   let supportsReprofile = false;
+  let hasAIMetrics = false;
+
+  let cubes = [];
 
   if (fileFormat === 'yml') {
     try {
       const parsed = YAML.parse(code);
-      const cubes = parsed?.cubes || [];
-
-      for (const cube of cubes) {
-        // Check cube-level auto_generated meta
-        if (cube?.meta?.auto_generated) {
-          supportsReprofile = true;
-        }
-
-        // Check for joins, pre_aggregations, segments — these indicate user content
-        if (cube.joins || cube.pre_aggregations || cube.segments) {
-          hasUserContent = true;
-        }
-
-        // Check dimensions for fields without auto_generated meta
-        for (const dim of cube.dimensions || []) {
-          if (!dim?.meta?.auto_generated) {
-            hasUserContent = true;
-            break;
-          }
-        }
-
-        // Check measures for fields without auto_generated meta
-        for (const measure of cube.measures || []) {
-          if (!measure?.meta?.auto_generated) {
-            hasUserContent = true;
-            break;
-          }
-        }
-      }
+      cubes = parsed?.cubes || [];
     } catch {
-      // If we can't parse the YAML, treat as user content
       hasUserContent = true;
     }
   } else {
-    // JS files are assumed to have user content
-    hasUserContent = true;
+    // Parse JS model file using VM sandbox
+    const jsCubes = parseCubesFromJs(code);
+    if (jsCubes) {
+      cubes = jsCubes;
+    } else {
+      // Can't parse JS — treat as user content
+      hasUserContent = true;
+    }
   }
 
-  const suggestedMergeStrategy = hasUserContent ? 'merge' : 'replace';
+  for (const cube of cubes) {
+    // Check cube-level auto_generated meta
+    if (cube?.meta?.auto_generated) {
+      supportsReprofile = true;
+    }
+
+    // Check for joins, pre_aggregations, segments — these indicate user content
+    if (cube.joins?.length || cube.pre_aggregations?.length || cube.segments?.length) {
+      hasUserContent = true;
+    }
+
+    // Check dimensions and measures for field categories
+    for (const field of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+      if (field?.meta?.ai_generated) {
+        hasAIMetrics = true;
+      } else if (!field?.meta?.auto_generated) {
+        hasUserContent = true;
+      }
+    }
+  }
+
+  const suggestedMergeStrategy = (hasUserContent || hasAIMetrics) ? 'merge' : 'replace';
+
+  // Extract generation_filters from cube meta (if any)
+  let previousFilters = null;
+  for (const cube of cubes) {
+    if (cube.meta?.generation_filters) {
+      previousFilters = cube.meta.generation_filters;
+      break;
+    }
+  }
 
   return {
     file_name: fileName,
     file_format: fileFormat,
     has_user_content: hasUserContent,
+    has_ai_metrics: hasAIMetrics,
     supports_reprofile: supportsReprofile,
     suggested_merge_strategy: suggestedMergeStrategy,
+    previous_filters: previousFilters,
   };
 }
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const { table, schema, branchId } = req.body;
+  const { table, schema, branchId, filters: rawFilters } = req.body;
+
+  // Normalize filters: default to empty array if missing/invalid
+  const filters = Array.isArray(rawFilters) ? rawFilters : [];
 
   if (!table || !schema) {
     return res.status(400).json({
@@ -88,7 +105,6 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    const { authToken } = securityContext;
     const partition = securityContext.userScope?.dataSource?.partition || null;
     const internalTables = securityContext.userScope?.dataSource?.internalTables || [];
 
@@ -100,6 +116,7 @@ export default async (req, res, cubejs) => {
     const profiledTable = await profileTable(driver, schema, table, {
       partition,
       internalTables,
+      filters,
       emitter,
     });
 
@@ -110,7 +127,9 @@ export default async (req, res, cubejs) => {
     let existingModel = null;
     if (branchId) {
       try {
-        const dataSchemas = await findDataSchemas({ branchId, authToken });
+        // Use admin secret (no authToken) — the user's JWT may expire
+        // during the long-running profiling flow.
+        const dataSchemas = await findDataSchemas({ branchId });
         const matchingFile = dataSchemas.find(
           (f) => f.name === `${table}.yml` || f.name === `${table}.js`
         );

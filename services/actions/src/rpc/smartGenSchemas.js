@@ -12,6 +12,11 @@ export default async (session, input, headers) => {
     merge_strategy: mergeStrategy,
     profile_data: profileData,
     dry_run: dryRun,
+    filters,
+    file_name: fileName,
+    cube_name: cubeName,
+    selected_ai_metrics: selectedAIMetrics,
+    selected_columns: selectedColumns,
   } = input || {};
 
   const userId = session?.["x-hasura-user-id"];
@@ -32,6 +37,11 @@ export default async (session, input, headers) => {
       mergeStrategy,
       profileData,
       dryRun,
+      filters,
+      file_name: fileName,
+      cube_name: cubeName,
+      selected_ai_metrics: selectedAIMetrics,
+      selected_columns: selectedColumns,
     });
 
     return result;

@@ -899,7 +899,7 @@ describe('profileTable — generated SQL', () => {
     await profileTable(driver, 'db', 'tbl');
 
     const initialSql = driver.calls.find((s) => s.includes('count() as row_count'));
-    assert.ok(initialSql.includes('uniq(`status`) as status__count'), 'String should use uniq()');
+    assert.ok(initialSql.includes("uniqIf(`status`, `status` != '') as status__count"), 'String should use uniqIf() excluding empty strings');
   });
 
   it('generates initial profile SQL with correct aggregates for NUMBER column', async () => {
