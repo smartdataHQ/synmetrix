@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractCubes, buildDiscoverResponse } from "../discover.js";
+import {
+  extractCubes,
+  buildDiscoverResponse,
+  resolvePartitionTeamIds,
+} from "../discover.js";
 
 // --- Helpers ---
 
@@ -235,5 +239,72 @@ describe("buildDiscoverResponse", () => {
     assert.equal(result[0].branch_id, "br-1");
     assert.equal(result[0].version_id, null);
     assert.deepEqual(result[0].cubes, []);
+  });
+
+  it("filters datasources by partition team IDs", () => {
+    const dataSources = [
+      makeDatasource("ds-a", "match", [yamlSchema("a.yml", [{ name: "A" }])], {
+        team_id: "team-1",
+      }),
+      makeDatasource("ds-b", "other", [yamlSchema("b.yml", [{ name: "B" }])], {
+        team_id: "team-2",
+      }),
+    ];
+    const partitionTeamIds = new Set(["team-1"]);
+    const result = buildDiscoverResponse(dataSources, partitionTeamIds);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].id, "ds-a");
+  });
+
+  it("returns all datasources when no partitionTeamIds provided", () => {
+    const dataSources = [
+      makeDatasource("ds-a", "a", [], { team_id: "team-1" }),
+      makeDatasource("ds-b", "b", [], { team_id: "team-2" }),
+    ];
+    const result = buildDiscoverResponse(dataSources, null);
+    assert.equal(result.length, 2);
+  });
+});
+
+// --- resolvePartitionTeamIds ---
+
+describe("resolvePartitionTeamIds", () => {
+  it("returns team IDs matching the partition", () => {
+    const members = [
+      { team_id: "t1", team: { settings: { partition: "blue.is" } } },
+      { team_id: "t2", team: { settings: { partition: "other.co" } } },
+      { team_id: "t3", team: { settings: { partition: "blue.is" } } },
+    ];
+    const ids = resolvePartitionTeamIds(members, "blue.is");
+    assert.equal(ids.size, 2);
+    assert.ok(ids.has("t1"));
+    assert.ok(ids.has("t3"));
+    assert.ok(!ids.has("t2"));
+  });
+
+  it("returns null when no partition in token", () => {
+    const members = [
+      { team_id: "t1", team: { settings: { partition: "blue.is" } } },
+    ];
+    assert.equal(resolvePartitionTeamIds(members, undefined), null);
+    assert.equal(resolvePartitionTeamIds(members, null), null);
+  });
+
+  it("returns empty set when no teams match", () => {
+    const members = [
+      { team_id: "t1", team: { settings: { partition: "other.co" } } },
+    ];
+    const ids = resolvePartitionTeamIds(members, "blue.is");
+    assert.equal(ids.size, 0);
+  });
+
+  it("handles teams with no settings", () => {
+    const members = [
+      { team_id: "t1", team: { settings: null } },
+      { team_id: "t2", team: {} },
+      { team_id: "t3" },
+    ];
+    const ids = resolvePartitionTeamIds(members, "blue.is");
+    assert.equal(ids.size, 0);
   });
 });
