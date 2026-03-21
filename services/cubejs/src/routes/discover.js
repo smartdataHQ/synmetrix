@@ -37,10 +37,28 @@ export function extractCubes(schema) {
 }
 
 /**
- * Build the datasources response from findUser result.
+ * Build a set of team IDs whose partition matches the JWT partition claim.
  */
-export function buildDiscoverResponse(dataSources) {
-  return dataSources.map((ds) => {
+export function resolvePartitionTeamIds(members, partition) {
+  if (!partition) return null; // no filtering if no partition in token
+  const ids = new Set();
+  for (const member of members) {
+    if (member.team?.settings?.partition === partition) {
+      ids.add(member.team_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Build the datasources response from findUser result.
+ * When partitionTeamIds is provided, only include datasources from those teams.
+ */
+export function buildDiscoverResponse(dataSources, partitionTeamIds) {
+  const filtered = partitionTeamIds
+    ? dataSources.filter((ds) => partitionTeamIds.has(ds.team_id))
+    : dataSources;
+  return filtered.map((ds) => {
     const activeBranch =
       ds.branches?.find((b) => b.status === "active") || ds.branches?.[0];
     const latestVersion = activeBranch?.versions?.[0] || null;
@@ -103,7 +121,15 @@ export default async function discover(req, res) {
       return res.json({ datasources: [] });
     }
 
-    res.json({ datasources: buildDiscoverResponse(user.dataSources) });
+    // Only return datasources from the team matching the JWT partition claim
+    const partitionTeamIds = resolvePartitionTeamIds(
+      user.members,
+      payload.partition
+    );
+
+    res.json({
+      datasources: buildDiscoverResponse(user.dataSources, partitionTeamIds),
+    });
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) {

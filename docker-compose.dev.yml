@@ -23,7 +23,7 @@ services:
     image: redis:7.0.0
     restart: always
     ports:
-      - 6379:6379
+      - 6381:6379
     networks:
       - synmetrix_default
 
@@ -36,7 +36,7 @@ services:
       - ./services/actions/src:/app/src
       - ./services/actions/index.js:/app/index.js
     ports:
-      - 3000:3000
+      - 3001:3000
     env_file:
       - .env
       - .dev.env
