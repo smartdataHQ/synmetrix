@@ -104,6 +104,7 @@ const membersFragment = `
 
 const versionsFragment = `
   versions (limit: 1, order_by: {created_at: desc}) {
+    id
     dataschemas {
       ${modelsFragment}
     }

@@ -271,6 +271,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - In-memory Map caches only (no DB changes) (008-hasura-proxy)
 - JavaScript (ES modules), Node.js 22+ + Express 4.18.2 (CubeJS routes), `@cubejs-backend/clickhouse-driver` (wraps `@clickhouse/client` ^1.12.0), `smartdataHQ/toolkit` (jsonstat-toolkit fork, zero deps), React 18 + Vite + Ant Design 5 (client-v2) (009-query-output)
 - N/A — no database schema changes. Query results are transient. (009-query-output)
+- JavaScript (ES modules), Node.js 22+ + Cube.js v1.6.x (CubeJS service), Express 4.18.2, `openai` npm v6.x (NEW), React 18 + Vite + Ant Design 5 (client-v2), URQL (GraphQL client) (010-dynamic-models-ii)
+- PostgreSQL via Hasura (versions, dataschemas), ClickHouse (profiling target — read-only) (010-dynamic-models-ii)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

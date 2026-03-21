@@ -112,6 +112,11 @@ type Mutation {
     merge_strategy: String
     profile_data: jsonb
     dry_run: Boolean
+    filters: [FilterConditionInput]
+    file_name: String
+    cube_name: String
+    selected_ai_metrics: [String]
+    selected_columns: [String]
   ): SmartGenOutput
 }
 
@@ -134,6 +139,12 @@ type Mutation {
 input ArrayJoinInput {
   column: String!
   alias: String!
+}
+
+input FilterConditionInput {
+  column: String!
+  operator: String!
+  value: jsonb
 }
 
 input SourceTable {
@@ -242,8 +253,10 @@ type ExistingModelInfo {
   file_name: String!
   file_format: String!
   has_user_content: Boolean!
+  has_ai_metrics: Boolean!
   supports_reprofile: Boolean!
   suggested_merge_strategy: String!
+  previous_filters: jsonb
 }
 
 type ProfiledColumnOutput {
@@ -277,6 +290,9 @@ type SmartGenOutput {
   file_name: String
   changed: Boolean!
   change_preview: jsonb
+  ai_enrichment: jsonb
+  model_validation: jsonb
+  previous_filters: jsonb
 }
 
 type UpdateTeamSettingsOutput {

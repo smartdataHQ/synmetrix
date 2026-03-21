@@ -5,7 +5,9 @@
  * See specs/004-dynamic-model-creation/data-model.md for full merge rules.
  */
 
+import { createContext, runInContext } from 'node:vm';
 import YAML from 'yaml';
+import { generateJs } from './yamlGenerator.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,6 +18,13 @@ import YAML from 'yaml';
  */
 function isAutoField(field) {
   return field?.meta?.auto_generated === true;
+}
+
+/**
+ * Check whether a single field is AI-generated.
+ */
+function isAIField(field) {
+  return field?.meta?.ai_generated === true;
 }
 
 /**
@@ -86,6 +95,11 @@ function cubeHasUserContent(cube) {
   ];
 
   for (const field of allFields) {
+    if (isAIField(field)) {
+      // AI-generated field — not user content, but a distinct category
+      // Treated as "has user content" for merge purposes to ensure preservation
+      return true;
+    }
     if (!isAutoField(field)) {
       // User-created field (no auto_generated tag)
       return true;
@@ -106,14 +120,12 @@ function cubeHasUserContent(cube) {
  * @param {string} yamlString - YAML model content to inspect
  * @returns {boolean}
  */
-export function hasUserContent(yamlString) {
-  if (!yamlString || typeof yamlString !== 'string') return false;
+export function hasUserContent(content) {
+  if (!content || typeof content !== 'string') return false;
 
-  let doc;
-  try {
-    doc = YAML.parse(yamlString);
-  } catch {
-    // Malformed YAML — treat as having user content (safest default)
+  const doc = parseContent(content);
+  if (!doc) {
+    // Cannot parse — treat as having user content (safest default)
     return true;
   }
 
@@ -152,6 +164,14 @@ function mergeFields(existingFields, newFields, keepStale) {
 
   for (const field of existing) {
     const name = field.name;
+
+    if (isAIField(field)) {
+      // AI-generated field — always preserve (superset guarantee)
+      // User description edits are preserved
+      merged.push(field);
+      handledNames.add(name);
+      continue;
+    }
 
     if (!isAutoField(field)) {
       // User-created field — always preserve unchanged
@@ -247,6 +267,9 @@ function mergeCube(existingCube, newCube, keepStale) {
       'source_table',
       'source_partition',
       'generated_at',
+      'generation_filters',
+      'ai_enrichment_status',
+      'ai_metrics_count',
     ]);
 
     for (const [key, value] of Object.entries(existingMeta)) {
@@ -364,7 +387,7 @@ function isSmartGenerated(doc) {
  * @param {object} newDoc - Parsed new YAML
  * @returns {string} Resulting YAML string
  */
-function autoStrategy(existingDoc, newYaml, newDoc) {
+function autoStrategy(existingDoc, newYaml, newDoc, outputJs = false) {
   if (!isSmartGenerated(existingDoc)) {
     // Standard-generated or hand-written model — replace entirely
     return newYaml;
@@ -381,7 +404,112 @@ function autoStrategy(existingDoc, newYaml, newDoc) {
 
   // Has user content — merge (preserving user work)
   const merged = mergeDocuments(existingDoc, newDoc, false);
-  return YAML.stringify(merged);
+  return outputJs ? generateJs(merged.cubes || []) : YAML.stringify(merged);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// JS cube file parser (mirrors diffModels.js parseCubesFromJs)
+// ---------------------------------------------------------------------------
+
+function createDeepProxy() {
+  const handler = {
+    get(target, prop) {
+      if (prop === Symbol.toPrimitive) return () => 'PROXY';
+      if (prop === Symbol.iterator) return undefined;
+      if (prop === 'toString' || prop === 'valueOf') return () => 'PROXY';
+      return createDeepProxy();
+    },
+    apply() {
+      return createDeepProxy();
+    },
+  };
+  return new Proxy(function () {}, handler);
+}
+
+function objectFieldsToArray(fields) {
+  if (Array.isArray(fields)) return fields;
+  if (!fields || typeof fields !== 'object') return [];
+  return Object.entries(fields).map(([name, def]) => ({ name, ...def }));
+}
+
+function parseCubesFromJs(jsContent) {
+  const cubes = [];
+  const mockCube = (name, def) => {
+    cubes.push({
+      name,
+      ...def,
+      dimensions: objectFieldsToArray(def.dimensions),
+      measures: objectFieldsToArray(def.measures),
+      joins: objectFieldsToArray(def.joins),
+      segments: objectFieldsToArray(def.segments),
+      pre_aggregations: objectFieldsToArray(def.pre_aggregations),
+    });
+  };
+  try {
+    const context = createContext({
+      cube: mockCube,
+      CUBE: '{CUBE}',
+      FILTER_PARAMS: createDeepProxy(),
+      SQL_UTILS: createDeepProxy(),
+    });
+    runInContext(jsContent, context);
+  } catch {
+    return null;
+  }
+  return cubes.length > 0 ? cubes : null;
+}
+
+/**
+ * Parse content as YAML or JS cubes.
+ */
+function parseContent(content) {
+  if (!content || typeof content !== 'string') return null;
+
+  // Try YAML first
+  try {
+    const doc = YAML.parse(content);
+    if (doc && typeof doc === 'object') return doc;
+  } catch {
+    // Not YAML
+  }
+
+  // Try JS
+  const jsCubes = parseCubesFromJs(content);
+  if (jsCubes) return { cubes: jsCubes };
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Extract AI metrics from a model
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract all AI-generated metrics from an existing model.
+ *
+ * @param {string} existingContent - YAML or JS model content
+ * @returns {object[]} Array of fields with `meta.ai_generated === true`
+ */
+export function extractAIMetrics(existingContent) {
+  const doc = parseContent(existingContent);
+  if (!doc || !Array.isArray(doc.cubes)) return [];
+
+  const aiMetrics = [];
+  for (const cube of doc.cubes) {
+    for (const field of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+      if (isAIField(field)) {
+        aiMetrics.push({
+          ...field,
+          _cubeName: cube.name,
+        });
+      }
+    }
+  }
+  return aiMetrics;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,43 +517,43 @@ function autoStrategy(existingDoc, newYaml, newDoc) {
 // ---------------------------------------------------------------------------
 
 /**
- * Merge an existing YAML model with a newly generated one using the specified strategy.
+ * Merge an existing model with a newly generated one using the specified strategy.
+ * Supports both YAML and JS model formats.
  *
- * @param {string} existingYaml - Current YAML model content
- * @param {string} newYaml - Newly generated YAML content
+ * @param {string} existingContent - Current YAML or JS model content
+ * @param {string} newContent - Newly generated YAML or JS content
  * @param {string} [strategy="auto"] - "auto", "merge", "replace", or "merge_keep_stale"
- * @returns {string} Merged YAML content
+ * @returns {string} Merged content
  */
-export function mergeModels(existingYaml, newYaml, strategy = 'auto') {
-  // --- Replace: return new YAML as-is ---
+export function mergeModels(existingContent, newContent, strategy = 'auto') {
+  // --- Replace: return new content as-is ---
   if (strategy === 'replace') {
-    return newYaml;
+    return newContent;
   }
 
-  // Parse both documents
-  let existingDoc;
-  try {
-    existingDoc = YAML.parse(existingYaml);
-  } catch {
+  // Detect output format from new content — JS if it contains cube() calls
+  const outputJs = /\bcube\s*\(/.test(newContent);
+
+  // Parse both documents (supports YAML and JS)
+  const existingDoc = parseContent(existingContent);
+  if (!existingDoc) {
     // Cannot parse existing — fall back to replacement
-    return newYaml;
+    return newContent;
   }
 
-  let newDoc;
-  try {
-    newDoc = YAML.parse(newYaml);
-  } catch {
-    // Cannot parse new YAML — should not happen, but return it raw
-    return newYaml;
+  const newDoc = parseContent(newContent);
+  if (!newDoc) {
+    // Cannot parse new content — should not happen, but return it raw
+    return newContent;
   }
 
   // --- Auto strategy ---
   if (strategy === 'auto') {
-    return autoStrategy(existingDoc, newYaml, newDoc);
+    return autoStrategy(existingDoc, newContent, newDoc, outputJs);
   }
 
   // --- Merge / Merge-keep-stale ---
   const keepStale = strategy === 'merge_keep_stale';
   const merged = mergeDocuments(existingDoc, newDoc, keepStale);
-  return YAML.stringify(merged);
+  return outputJs ? generateJs(merged.cubes || []) : YAML.stringify(merged);
 }

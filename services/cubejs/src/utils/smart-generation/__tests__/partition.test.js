@@ -55,14 +55,14 @@ describe('buildWhereClause', () => {
     assert.strictEqual(result, '');
   });
 
-  it('should return empty string when internalTables is empty', () => {
+  it('should apply partition when internalTables is empty (all tables internal)', () => {
     const result = buildWhereClause('test_db', 'events', '2024-01', []);
-    assert.strictEqual(result, '');
+    assert.strictEqual(result, " WHERE partition IN ('2024-01')");
   });
 
-  it('should return empty string when internalTables is not an array', () => {
+  it('should apply partition when internalTables is not an array (all tables internal)', () => {
     const result = buildWhereClause('test_db', 'events', '2024-01', null);
-    assert.strictEqual(result, '');
+    assert.strictEqual(result, " WHERE partition IN ('2024-01')");
   });
 
   it('should return WHERE clause when partition is set and table is internal', () => {

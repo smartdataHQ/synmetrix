@@ -121,6 +121,21 @@ describe('BasicFieldProcessor', () => {
     });
   });
 
+  it('"timestamp" column -> dimension + min/max measures', () => {
+    const col = {
+      name: 'timestamp',
+      rawType: 'DateTime',
+      columnType: ColumnType.BASIC,
+      valueType: ValueType.DATE,
+    };
+    const result = processor.process(col, null);
+    assert.deepEqual(result, [
+      { name: 'timestamp', sql: '{CUBE}.timestamp', type: 'time', fieldType: 'dimension' },
+      { name: 'timestamp_min', sql: '{CUBE}.timestamp', type: 'min', fieldType: 'measure' },
+      { name: 'timestamp_max', sql: '{CUBE}.timestamp', type: 'max', fieldType: 'measure' },
+    ]);
+  });
+
   it('UUID column -> dimension with type "string" and toString SQL', () => {
     const col = {
       name: 'id',

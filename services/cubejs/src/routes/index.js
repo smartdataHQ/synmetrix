@@ -25,6 +25,8 @@ import preAggregations from "./preAggregations.js";
 import profileTable from "./profileTable.js";
 import runSql from "./runSql.js";
 import smartGenerate from "./smartGenerate.js";
+import columnValues from "./columnValues.js";
+import discover from "./discover.js";
 import testConnection from "./testConnection.js";
 import validate from "./validate.js";
 import version from "./version.js";
@@ -246,10 +248,20 @@ export default ({ basePath, cubejs }) => {
   );
 
   router.post(
+    `${basePath}/v1/column-values`,
+    checkAuthMiddleware,
+    async (req, res) => columnValues(req, res, cubejs)
+  );
+
+
+  router.post(
     `${basePath}/v1/validate`,
     checkAuthMiddleware,
     async (req, res) => validate(req, res)
   );
+
+  // Discovery endpoint — WorkOS auth only, no datasource selection required
+  router.get(`${basePath}/v1/discover`, async (req, res) => discover(req, res));
 
   // Version endpoint is public — returns only the schema-compiler version string
   router.get(`${basePath}/v1/version`, (req, res) => version(req, res));

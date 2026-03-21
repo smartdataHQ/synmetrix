@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { generateYaml, generateFileName } from '../yamlGenerator.js';
+import { generateYaml, generateFileName, generateJs } from '../yamlGenerator.js';
 
 describe('yamlGenerator – generateYaml', () => {
   function makeCube(overrides = {}) {
@@ -139,5 +139,108 @@ describe('yamlGenerator – generateYaml', () => {
       const cubesMatches = yaml.match(/^cubes:/gm);
       assert.strictEqual(cubesMatches.length, 1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateJs — advanced measure properties
+// ---------------------------------------------------------------------------
+
+describe('yamlGenerator – generateJs advanced properties', () => {
+  function makeCubeWithMeasure(measureOverrides = {}) {
+    return {
+      name: 'events',
+      sql_table: 'analytics.events',
+      meta: { auto_generated: true },
+      dimensions: [],
+      measures: [{
+        name: 'total',
+        sql: '{CUBE}.amount',
+        type: 'sum',
+        meta: { auto_generated: true },
+        ...measureOverrides,
+      }],
+    };
+  }
+
+  it('serializes rollingWindow with to_date type', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'ytd_amount',
+      rollingWindow: { type: 'to_date', granularity: 'year' },
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes('rollingWindow:'), 'should include rollingWindow');
+    assert.ok(js.includes("type: 'to_date'"), 'should include to_date type');
+    assert.ok(js.includes("granularity: 'year'"), 'should include year granularity');
+  });
+
+  it('serializes rollingWindow with fixed type and trailing', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'rolling_7d',
+      rollingWindow: { type: 'fixed', trailing: '7 days' },
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes("type: 'fixed'"));
+    assert.ok(js.includes("trailing: '7 days'"));
+  });
+
+  it('serializes multiStage: true', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'yoy_amount',
+      sql: '{total_amount}',
+      type: 'number',
+      multiStage: true,
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes('multiStage: true,'), 'should include multiStage: true');
+  });
+
+  it('serializes timeShift array', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'yoy_amount',
+      sql: '{total_amount}',
+      type: 'number',
+      multiStage: true,
+      timeShift: [{ interval: '1 year', type: 'prior' }],
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes('timeShift:'), 'should include timeShift');
+    assert.ok(js.includes("interval: '1 year'"), 'should include interval');
+    assert.ok(js.includes("type: 'prior'"), 'should include type prior');
+  });
+
+  it('serializes multiple timeShift entries', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'comparison',
+      sql: '{total_amount}',
+      type: 'number',
+      multiStage: true,
+      timeShift: [
+        { interval: '1 year', type: 'prior' },
+        { interval: '1 month', type: 'prior' },
+      ],
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes("interval: '1 year'"));
+    assert.ok(js.includes("interval: '1 month'"));
+  });
+
+  it('does not serialize properties when not present', () => {
+    const cube = makeCubeWithMeasure();
+    const js = generateJs([cube]);
+    assert.ok(!js.includes('rollingWindow'));
+    assert.ok(!js.includes('multiStage'));
+    assert.ok(!js.includes('timeShift'));
+  });
+
+  it('converts {measure_name} to ${measure_name} in JS template', () => {
+    const cube = makeCubeWithMeasure({
+      name: 'yoy_amount',
+      sql: '{total_amount}',
+      type: 'number',
+      multiStage: true,
+    });
+    const js = generateJs([cube]);
+    assert.ok(js.includes('${total_amount}'), 'should convert {measure} to ${measure}');
   });
 });

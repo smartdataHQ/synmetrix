@@ -17,6 +17,7 @@
  */
 
 import { parseType, ColumnType, ValueType } from './typeParser.js';
+import { buildFilterWhereClause } from './filterBuilder.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,12 +35,46 @@ const LC_THRESHOLD = 60;
 // ---------------------------------------------------------------------------
 
 /**
- * Build a WHERE clause for partition filtering.
+ * Build a WHERE clause combining partition filtering and user-specified filters.
+ *
+ * @param {string}  schema          Database / schema name
+ * @param {string}  table           Table name
+ * @param {string|null}  partition  Partition value
+ * @param {string[]}     internalTables  Tables that support partition filtering
+ * @param {Array}   [filters]       Optional filter descriptors from the user
+ * @param {string[]} [tableColumns] Valid column names (required when filters are provided)
+ * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
-export function buildWhereClause(schema, table, partition, internalTables) {
-  if (!partition) return '';
-  if (!Array.isArray(internalTables) || !internalTables.includes(table)) return '';
-  return ` WHERE partition IN ('${partition}')`;
+export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns) {
+  // Partition clause — apply when partition is set and either:
+  //  (a) internalTables explicitly lists this table, OR
+  //  (b) internalTables is not configured (empty/missing) — all tables are internal
+  let partitionClause = '';
+  if (partition) {
+    const hasExplicitList = Array.isArray(internalTables) && internalTables.length > 0;
+    if (!hasExplicitList || internalTables.includes(table)) {
+      partitionClause = `partition IN ('${partition}')`;
+    }
+  }
+
+  // Filter clause — normalize missing/invalid to empty
+  let filterClause = '';
+  if (Array.isArray(filters) && filters.length > 0) {
+    const filterWhere = buildFilterWhereClause(filters, tableColumns);
+    // Strip leading " WHERE " to get bare conditions
+    filterClause = filterWhere.replace(/^\s*WHERE\s+/, '');
+  }
+
+  if (partitionClause && filterClause) {
+    return ` WHERE ${partitionClause} AND ${filterClause}`;
+  }
+  if (partitionClause) {
+    return ` WHERE ${partitionClause}`;
+  }
+  if (filterClause) {
+    return ` WHERE ${filterClause}`;
+  }
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -101,9 +136,12 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
       parts.push(`max(\`${name}\`) as ${alias}__max`);
       parts.push(`avg(\`${name}\`) as ${alias}__avg`);
     } else if (col.valueType === ValueType.STRING) {
+      // Exclude empty strings from unique count — they add no analytical value
+      parts.push(`uniqIf(\`${name}\`, \`${name}\` != '') as ${alias}__count`);
+    } else if (col.valueType === ValueType.UUID) {
       parts.push(`uniq(\`${name}\`) as ${alias}__count`);
     }
-    // UUID, OTHER: skip — UUID is always unique, OTHER is unprofilable
+    // OTHER: skip — unprofilable
   }
 
   // One sentinel per nested parent group
@@ -151,7 +189,7 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
       profile.avgValue = avg != null ? Math.round(Number(avg) * 1000) / 1000 : null;
       profile.hasValues = profile.minValue != null;
       profile.valueRows = profile.hasValues ? rowCount : 0;
-    } else if (col.valueType === ValueType.STRING) {
+    } else if (col.valueType === ValueType.STRING || col.valueType === ValueType.UUID) {
       const count = Number(row[`${alias}__count`]) || 0;
       profile.uniqueValues = count;
       profile.hasValues = count > 0;
@@ -180,7 +218,7 @@ function basicColumnSql(colExpr, valueType, alias) {
     parts.push(`max(\`${colExpr}\`) as ${alias}__max_value`);
     parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
   } else if (valueType === ValueType.STRING) {
-    parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
+    parts.push(`uniqIf(\`${colExpr}\`, \`${colExpr}\` != '') as ${alias}__distinct_count`);
     parts.push(`countIf(\`${colExpr}\` IS NOT NULL and \`${colExpr}\` != '') as ${alias}__value_rows`);
   } else {
     parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
@@ -197,6 +235,14 @@ function mapColumnSql(colExpr, alias) {
 }
 
 function arrayColumnSql(colExpr, valueType, alias) {
+  if (valueType === ValueType.STRING) {
+    // For string arrays: exclude arrays that only contain empty strings
+    // arrayFilter removes empty elements; length check ensures at least one non-empty
+    return [
+      `countIf(length(arrayFilter(x -> x != '', \`${colExpr}\`)) > 0) as ${alias}__value_rows`,
+      `uniq(arrayFilter(x -> x != '', \`${colExpr}\`)) as ${alias}__distinct_count`,
+    ];
+  }
   return [
     `countIf(length(\`${colExpr}\`) > 0) as ${alias}__value_rows`,
     `uniq(\`${colExpr}\`) as ${alias}__distinct_count`,
@@ -324,6 +370,7 @@ async function profileBatch(batch, columns, fromClause, driver, emit, batchIdx, 
  * @param {Object}  [options]
  * @param {string|null}  [options.partition=null]
  * @param {string[]}     [options.internalTables=[]]
+ * @param {Array}        [options.filters=[]]       User-specified column filters
  * @param {Object|null}  [options.emitter=null]
  * @param {number}       [options.sampleThreshold=1000000]
  * @returns {Promise<Object>} ProfiledTable
@@ -332,6 +379,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   const {
     partition = null,
     internalTables = [],
+    filters = [],
     emitter = null,
     sampleThreshold = DEFAULT_SAMPLE_THRESHOLD,
   } = options;
@@ -388,7 +436,12 @@ export async function profileTable(driver, schema, table, options = {}) {
     setTotalSteps(n) { this.totalSteps = n; },
   };
 
-  const whereClause = buildWhereClause(schema, table, partition, internalTables);
+  // Build partition-only clause first (filters need column names from DESCRIBE).
+  // The full clause (partition + filters) is computed after DESCRIBE completes.
+  const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables);
+
+  // Normalize filters — anything non-array becomes empty
+  const normalizedFilters = Array.isArray(filters) ? filters : [];
 
   // =========================================================================
   // Pass 0: Schema discovery (parallel)
@@ -396,10 +449,11 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   tracker.emit('init', 'Querying table metadata, column types, and descriptions...');
 
-  // When a partition filter is active, system.parts_columns metadata is
-  // unreliable — it reports bytes across ALL partitions, not per-partition.
-  // A column may be empty table-wide but populated in the target partition.
-  const useMetadata = !whereClause;
+  // When a partition filter or user filter is active, system.parts_columns
+  // metadata is unreliable — it reports bytes across ALL partitions, not
+  // per-partition. A column may be empty table-wide but populated in the
+  // target partition/filtered subset.
+  const useMetadata = !partitionOnlyClause && normalizedFilters.length === 0;
 
   const metaPromise = useMetadata
     ? driver.query(
@@ -492,6 +546,13 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   tracker.emit('init', `Discovered ${columns.size} columns`, { column_count: columns.size });
 
+  // Now that we have column names from DESCRIBE, build the full WHERE clause
+  // combining partition filtering with any user-specified filters.
+  const tableColumnNames = [...columns.keys()];
+  const whereClause = normalizedFilters.length > 0
+    ? buildWhereClause(schema, table, partition, internalTables, normalizedFilters, tableColumnNames)
+    : partitionOnlyClause;
+
   // =========================================================================
   // Build parent group info (one sentinel per nested group)
   // =========================================================================
@@ -547,6 +608,29 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   tracker.markStepTime(); // Pass 1 complete
   tracker.emit('initial_profile', `Row count: ${rowCount.toLocaleString()}`, { row_count: rowCount });
+
+  // If user-specified filters produced zero rows, return early with a
+  // descriptive error so the caller can surface it to the user.
+  if (rowCount === 0 && normalizedFilters.length > 0) {
+    const filterDesc = normalizedFilters
+      .map(f => `${f.column} ${f.operator} ${JSON.stringify(f.value)}`)
+      .join(', ');
+    tracker.emit('error', `No rows match the applied filters: ${filterDesc}`);
+    return {
+      database: schema,
+      table,
+      partition,
+      row_count: 0,
+      sampled: false,
+      sample_size: null,
+      sampling_method: 'none',
+      columns,
+      tableDescription: null,
+      columnDescriptions: new Map(),
+      filters: normalizedFilters,
+      error: `No rows match the applied filters: ${filterDesc}`,
+    };
+  }
 
   // Log group depths
   let skippedGroupColumns = 0;
@@ -788,7 +872,7 @@ export async function profileTable(driver, schema, table, options = {}) {
           const alias = candidate.name.replace(/\./g, '_');
           const keyAlias = `${alias}_k_${candidate.key.replace(/[^a-zA-Z0-9]/g, '_')}`;
           const expr = `\`${candidate.name}\`['${candidate.key}']`;
-          selectParts.push(`uniq(${expr}) as ${keyAlias}__uniq`);
+          selectParts.push(`uniqIf(${expr}, ${expr} != '') as ${keyAlias}__uniq`);
         }
 
         const sql = `SELECT ${selectParts.join(', ')} FROM ${lcFrom}`;
@@ -921,6 +1005,15 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   const needsSampling = rowCount > sampleThreshold;
 
+  // Warn when filters produced a very small dataset — AI metrics may be less reliable
+  const warnings = [];
+  if (normalizedFilters.length > 0 && rowCount > 0 && rowCount < 100) {
+    warnings.push(
+      `The profiled data subset has only ${rowCount} rows after filtering. ` +
+      'AI-generated metrics may be less reliable with fewer than 100 rows.'
+    );
+  }
+
   return {
     database: schema,
     table,
@@ -932,5 +1025,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     columns,
     tableDescription,
     columnDescriptions,
+    filters: normalizedFilters.length > 0 ? normalizedFilters : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
   };
 }

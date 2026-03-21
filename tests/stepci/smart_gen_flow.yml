@@ -181,6 +181,59 @@ tests:
                 - isString: true
               $.data.profile_table.existing_model.supports_reprofile: true
 
+      # Smart generate with filters and AI enrichment
+      - name: smart_gen_with_filters
+        retries:
+          count: 2
+          interval: 3s
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation (
+                $datasource_id: uuid!
+                $branch_id: uuid!
+                $table_name: String!
+                $table_schema: String!
+                $filters: [FilterConditionInput]
+              ) {
+                smart_gen_dataschemas(
+                  datasource_id: $datasource_id
+                  branch_id: $branch_id
+                  table_name: $table_name
+                  table_schema: $table_schema
+                  filters: $filters
+                ) {
+                  code
+                  message
+                  changed
+                  ai_enrichment
+                }
+              }
+            variables:
+              datasource_id: ${{captures.datasourceId}}
+              branch_id: ${{captures.branchId}}
+              table_name: cell_towers
+              table_schema: default
+              filters:
+                - column: radio
+                  operator: "="
+                  value: GSM
+          check:
+            status: 200
+            jsonpath:
+              $.data.smart_gen_dataschemas.code: "ok"
+              $.data.smart_gen_dataschemas.changed: true
+              # AI enrichment is a jsonb object; status may be "failed" in CI
+              # if OPENAI_API_KEY is unset — assert it exists but accept any value
+              $.data.smart_gen_dataschemas.ai_enrichment:
+                - isObject: true
+
       # Update team settings (partition + internal tables)
       - name: update_team_settings
         http:

@@ -42,13 +42,13 @@ export function generateFileName(tableName, js = true) {
  */
 function formatField(field) {
   const meta = {
-    auto_generated: true,
     ...field.meta,
   };
 
-  // Clean internal-only properties
-  delete meta.auto_generated;
-  meta.auto_generated = true;
+  // AI-generated fields keep their own metadata — don't stamp auto_generated
+  if (!meta.ai_generated) {
+    meta.auto_generated = true;
+  }
 
   const entry = {
     name: field.name,
@@ -56,6 +56,16 @@ function formatField(field) {
     type: field.type,
     meta,
   };
+
+  // Preserve description for AI-generated fields
+  if (field.description) {
+    entry.description = field.description;
+  }
+
+  // Pass through advanced Cube.js measure properties
+  if (field.rollingWindow) entry.rollingWindow = field.rollingWindow;
+  if (field.multiStage) entry.multiStage = true;
+  if (field.timeShift) entry.timeShift = field.timeShift;
 
   if (field.primary_key) {
     entry.primary_key = true;
@@ -140,8 +150,10 @@ function escapeTemplateLiteral(str) {
 function sqlToJsTemplate(sql) {
   // First escape backticks for the template literal
   let js = escapeTemplateLiteral(sql);
-  // Convert {FILTER_PARAMS...} and {CUBE} to ${...}
-  js = js.replace(/\{(FILTER_PARAMS\.|CUBE)/g, '${$1');
+  // Convert all {…} Cube.js template vars to ${…} in one pass.
+  // Handles {CUBE}, {CUBE}.col, {FILTER_PARAMS.…}, and {measure_name}.
+  // Uses a negative lookbehind to skip already-converted ${…} patterns.
+  js = js.replace(/(?<!\$)\{([^}]+)\}/g, '${$1}');
   return js;
 }
 
@@ -162,6 +174,8 @@ function metaToJs(meta, indent) {
       lines.push(`${inner}${key}: ${JSON.stringify(value)},`);
     } else if (typeof value === 'boolean' || typeof value === 'number') {
       lines.push(`${inner}${key}: ${value},`);
+    } else if (value && typeof value === 'object') {
+      lines.push(`${inner}${key}: ${JSON.stringify(value)},`);
     }
   }
   lines.push(`${pad}},`);
@@ -205,6 +219,9 @@ export function generateJs(cubeDefinitions) {
         lines.push(`    ${dim.name}: {`);
         lines.push(`      sql: \`${sqlToJsTemplate(dim.sql)}\`,`);
         lines.push(`      type: \`${dim.type}\`,`);
+        if (dim.description) {
+          lines.push(`      description: ${JSON.stringify(dim.description)},`);
+        }
         if (dim.primary_key) {
           lines.push('      primary_key: true,');
           lines.push('      public: true,');
@@ -225,6 +242,25 @@ export function generateJs(cubeDefinitions) {
         lines.push(`    ${m.name}: {`);
         lines.push(`      sql: \`${sqlToJsTemplate(m.sql)}\`,`);
         lines.push(`      type: \`${m.type}\`,`);
+        if (m.description) {
+          lines.push(`      description: ${JSON.stringify(m.description)},`);
+        }
+        if (m.multiStage) {
+          lines.push('      multiStage: true,');
+        }
+        if (m.rollingWindow) {
+          const rwParts = [];
+          rwParts.push(`type: '${m.rollingWindow.type}'`);
+          if (m.rollingWindow.granularity) rwParts.push(`granularity: '${m.rollingWindow.granularity}'`);
+          if (m.rollingWindow.trailing) rwParts.push(`trailing: '${m.rollingWindow.trailing}'`);
+          if (m.rollingWindow.leading) rwParts.push(`leading: '${m.rollingWindow.leading}'`);
+          if (m.rollingWindow.offset) rwParts.push(`offset: '${m.rollingWindow.offset}'`);
+          lines.push(`      rollingWindow: { ${rwParts.join(', ')} },`);
+        }
+        if (m.timeShift && Array.isArray(m.timeShift)) {
+          const items = m.timeShift.map((ts) => `{ interval: '${ts.interval}', type: '${ts.type}' }`);
+          lines.push(`      timeShift: [${items.join(', ')}],`);
+        }
         if (m.meta) {
           lines.push(metaToJs(m.meta, 6));
         }
