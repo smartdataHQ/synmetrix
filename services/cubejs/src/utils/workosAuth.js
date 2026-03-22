@@ -1,6 +1,6 @@
 import * as jose from "jose";
 
-const { WORKOS_CLIENT_ID, WORKOS_API_KEY, WORKOS_ISSUER } = process.env;
+const { WORKOS_CLIENT_ID, WORKOS_API_KEY, WORKOS_ISSUER, TOKEN_SECRET } = process.env;
 
 // JWKS endpoint: use custom issuer if provided, otherwise default WorkOS URL
 const jwksBaseUrl = WORKOS_ISSUER || "https://api.workos.com";
@@ -16,14 +16,24 @@ const jwks = jose.createRemoteJWKSet(JWKS_URL);
 /**
  * Detect token type by decoding the JWT header without verification.
  * @param {string} token - Raw JWT string
- * @returns {"workos" | "hasura"} Token type
+ * @returns {"workos" | "fraios" | "hasura"} Token type
  */
 export function detectTokenType(token) {
   try {
     const header = jose.decodeProtectedHeader(token);
-    return header.alg === "RS256" ? "workos" : "hasura";
+    if (header.alg === "RS256") return "workos";
+
+    // HS256 — distinguish FraiOS from Hasura by payload claims
+    const parts = token.split(".");
+    if (parts.length === 3) {
+      const payload = JSON.parse(
+        Buffer.from(parts[1], "base64url").toString()
+      );
+      if (payload.accountId) return "fraios";
+    }
+    return "hasura";
   } catch {
-    return "hasura"; // Default to existing path on decode failure
+    return "hasura";
   }
 }
 
@@ -63,6 +73,47 @@ export async function verifyWorkOSToken(token) {
     ) {
       error.message = "503: Unable to verify token";
       error.status = 503;
+    } else {
+      error.message = `JsonWebTokenError: ${err.message}`;
+      error.status = 403;
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Verify a FraiOS HS256 JWT using the shared TOKEN_SECRET.
+ * @param {string} token - Raw JWT string
+ * @returns {Promise<Object>} Decoded JWT payload
+ * @throws {Error} With `status` property (403 for auth errors)
+ */
+export async function verifyFraiOSToken(token) {
+  if (!TOKEN_SECRET) {
+    const error = new Error("503: TOKEN_SECRET not configured");
+    error.status = 503;
+    throw error;
+  }
+
+  const secret = new TextEncoder().encode(TOKEN_SECRET);
+
+  try {
+    const { payload } = await jose.jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+    });
+    return payload;
+  } catch (err) {
+    const error = new Error(err.message);
+
+    if (err.code === "ERR_JWT_EXPIRED") {
+      error.message = "TokenExpiredError: jwt expired";
+      error.status = 403;
+    } else if (
+      err.code === "ERR_JWS_SIGNATURE_VERIFICATION_FAILED" ||
+      err.code === "ERR_JWT_CLAIM_VALIDATION_FAILED"
+    ) {
+      error.message = "JsonWebTokenError: invalid signature";
+      error.status = 403;
     } else {
       error.message = `JsonWebTokenError: ${err.message}`;
       error.status = 403;
