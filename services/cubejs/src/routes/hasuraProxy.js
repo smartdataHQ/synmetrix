@@ -1,8 +1,8 @@
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
-import { detectTokenType, verifyWorkOSToken } from "../utils/workosAuth.js";
-import { provisionUserFromWorkOS } from "../utils/dataSourceHelpers.js";
+import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "../utils/workosAuth.js";
+import { provisionUserFromWorkOS, provisionUserFromFraiOS } from "../utils/dataSourceHelpers.js";
 import { mintHasuraToken } from "../utils/mintHasuraToken.js";
 import { mintedTokenCache } from "../utils/mintedTokenCache.js";
 
@@ -74,10 +74,16 @@ export default function createHasuraProxy(config = {}) {
 
       const tokenType = detectTokenType(token);
 
-      if (tokenType === "workos") {
-        // RS256 WorkOS token → verify, provision, mint HS256
-        const payload = await verifyWorkOSToken(token);
-        const userId = await provisionUserFromWorkOS(payload);
+      if (tokenType === "workos" || tokenType === "fraios") {
+        // WorkOS RS256 or FraiOS HS256 → verify, provision, mint Hasura HS256
+        let userId;
+        if (tokenType === "workos") {
+          const payload = await verifyWorkOSToken(token);
+          userId = await provisionUserFromWorkOS(payload);
+        } else {
+          const payload = await verifyFraiOSToken(token);
+          userId = await provisionUserFromFraiOS(payload);
+        }
 
         // Check minted token cache
         let hasuraToken = mintedTokenCache.get(userId);
@@ -94,7 +100,7 @@ export default function createHasuraProxy(config = {}) {
         // Swap the Authorization header for Hasura
         req.headers.authorization = `Bearer ${hasuraToken}`;
       }
-      // HS256 tokens pass through unchanged
+      // HS256 Hasura tokens pass through unchanged
 
       next();
     } catch (err) {
