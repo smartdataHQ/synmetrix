@@ -3,8 +3,9 @@ import jwt from "jsonwebtoken";
 import {
   findUser,
   provisionUserFromWorkOS,
+  provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
-import { detectTokenType, verifyWorkOSToken } from "./workosAuth.js";
+import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "./workosAuth.js";
 import defineUserScope from "./defineUserScope.js";
 
 const { JWT_KEY, JWT_ALGORITHM } = process.env;
@@ -50,6 +51,10 @@ const checkAuth = async (req) => {
     // WorkOS RS256 path
     const payload = await verifyWorkOSToken(authToken);
     userId = await provisionUserFromWorkOS(payload);
+  } else if (tokenType === "fraios") {
+    // FraiOS HS256 path
+    const payload = await verifyFraiOSToken(authToken);
+    userId = await provisionUserFromFraiOS(payload);
   } else {
     // Hasura HS256 path (existing)
     let jwtDecoded;

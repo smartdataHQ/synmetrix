@@ -655,3 +655,130 @@ async function _provisionUserFromWorkOS(sub, partition) {
   }
 }
 
+/**
+ * Provision a user from a FraiOS JWT payload.
+ * Identity resolution chain (simplified vs WorkOS — email is in JWT):
+ * 1. Check identity cache keyed by FraiOS userId
+ * 2. DB lookup by email
+ * 3. If found → ensure team membership using partition → cache and return
+ * 4. If not found → JIT provision: create user, account, team, membership, role
+ *
+ * @param {Object} fraiosPayload - Verified FraiOS JWT payload
+ * @returns {Promise<string>} Synmetrix userId (UUID)
+ */
+export async function provisionUserFromFraiOS(fraiosPayload) {
+  const externalId = fraiosPayload.userId;
+  const email = fraiosPayload.email;
+  const partition = fraiosPayload.partition;
+
+  // Step 1: Check identity cache (reuses workosSubCache)
+  const cached = getWorkosSubCacheEntry(externalId);
+  if (cached) return cached.userId;
+
+  // Singleflight dedup
+  let inflight = inflightProvisions.get(externalId);
+  if (inflight) return inflight;
+
+  const provision = _provisionUserFromFraiOS(externalId, email, partition);
+  inflightProvisions.set(externalId, provision);
+  provision.finally(() => inflightProvisions.delete(externalId));
+  return provision;
+}
+
+async function _provisionUserFromFraiOS(externalId, email, partition) {
+  // Re-check cache after acquiring singleflight
+  const cached = getWorkosSubCacheEntry(externalId);
+  if (cached) return cached.userId;
+
+  // Step 2: DB lookup by email
+  const account = await findAccountByEmail(email);
+  if (account) {
+    await ensureTeamMembership(account.user_id, email, partition);
+    setWorkosSubCacheEntry(externalId, account.user_id, true);
+    return account.user_id;
+  }
+
+  // Step 3: JIT provision — create user, account, team, membership, role
+  try {
+    const displayName = email.split("@")[0] || email;
+
+    const userResult = await fetchGraphQL(createUserMutation, {
+      display_name: displayName,
+      avatar_url: null,
+    });
+    const userId = userResult.data?.insert_users_one?.id;
+    if (!userId) {
+      const error = new Error("503: Unable to provision user");
+      error.status = 503;
+      throw error;
+    }
+
+    // Create account (on_conflict: accounts_email_key)
+    await fetchGraphQL(createAccountMutation, {
+      user_id: userId,
+      email,
+      workos_user_id: `fraios:${externalId}`,
+    });
+
+    // Find or create team using partition
+    const teamName = deriveTeamName(email, partition);
+    let team = await findTeamByName(teamName);
+    let isTeamCreator = false;
+
+    if (!team) {
+      const initialSettings = partition ? { partition } : {};
+      const teamResult = await fetchGraphQL(createTeamMutation, {
+        name: teamName,
+        user_id: userId,
+        settings:
+          Object.keys(initialSettings).length > 0 ? initialSettings : null,
+      });
+
+      const teamId = teamResult.data?.insert_teams_one?.id;
+      if (teamId) {
+        team = { id: teamId };
+        isTeamCreator = true;
+      } else {
+        team = await findTeamByName(teamName);
+      }
+    }
+
+    if (!team) {
+      const error = new Error("503: Unable to provision user");
+      error.status = 503;
+      throw error;
+    }
+
+    const memberResult = await fetchGraphQL(createMemberMutation, {
+      user_id: userId,
+      team_id: team.id,
+    });
+    let memberId = memberResult.data?.insert_members_one?.id;
+
+    if (!memberId) {
+      const existing = await fetchGraphQL(findMemberByUserAndTeamQuery, {
+        user_id: userId,
+        team_id: team.id,
+      });
+      const member = existing.data?.members?.[0];
+      memberId = member?.id;
+      if (member?.member_roles?.length > 0) memberId = null;
+    }
+
+    if (memberId) {
+      await fetchGraphQL(createMemberRoleMutation, {
+        member_id: memberId,
+        team_role: isTeamCreator ? "owner" : "member",
+      });
+    }
+
+    setWorkosSubCacheEntry(externalId, userId, true);
+    return userId;
+  } catch (err) {
+    if (err.status) throw err;
+    const error = new Error("503: Unable to provision user");
+    error.status = 503;
+    throw error;
+  }
+}
+

@@ -2,8 +2,9 @@ import {
   findSqlCredentials,
   findUser,
   provisionUserFromWorkOS,
+  provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
-import { detectTokenType, verifyWorkOSToken } from "./workosAuth.js";
+import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "./workosAuth.js";
 
 import buildSecurityContext from "./buildSecurityContext.js";
 import defineUserScope, {
@@ -65,6 +66,45 @@ const checkSqlAuth = async (_, user) => {
       }
 
       // Username is the datasource ID
+      const datasourceId = username;
+      const dataSource = userData.dataSources.find(
+        (ds) => ds.id === datasourceId
+      );
+
+      if (!dataSource) {
+        const error = new Error(
+          `403: access denied for datasource "${datasourceId}"`
+        );
+        error.status = 403;
+        throw error;
+      }
+
+      const userScope = defineUserScope(
+        userData.dataSources,
+        userData.members,
+        datasourceId
+      );
+
+      return {
+        password,
+        securityContext: {
+          userId,
+          userScope,
+        },
+      };
+    } else if (tokenType === "fraios") {
+      // FraiOS JWT path — same flow, different verification
+      const payload = await verifyFraiOSToken(password);
+      const userId = await provisionUserFromFraiOS(payload);
+
+      const userData = await findUser({ userId });
+
+      if (!userData.dataSources?.length || !userData.members?.length) {
+        const error = new Error(`404: user "${userId}" not found`);
+        error.status = 404;
+        throw error;
+      }
+
       const datasourceId = username;
       const dataSource = userData.dataSources.find(
         (ds) => ds.id === datasourceId

@@ -65,6 +65,7 @@ services:
       WORKOS_API_KEY: ${WORKOS_API_KEY}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
       WORKOS_ISSUER: ${WORKOS_ISSUER:-}
+      TOKEN_SECRET: ${TOKEN_SECRET:-}
     networks:
       - synmetrix_default
 
