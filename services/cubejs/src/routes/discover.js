@@ -1,7 +1,7 @@
 import YAML from "yaml";
 
-import { verifyWorkOSToken } from "../utils/workosAuth.js";
-import { findUser, provisionUserFromWorkOS } from "../utils/dataSourceHelpers.js";
+import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "../utils/workosAuth.js";
+import { findUser, provisionUserFromWorkOS, provisionUserFromFraiOS } from "../utils/dataSourceHelpers.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 
 /**
@@ -82,7 +82,7 @@ export function buildDiscoverResponse(dataSources, partitionTeamIds) {
  * GET /api/v1/discover
  *
  * Returns all datasources and cubes available to the authenticated user.
- * Requires a WorkOS Bearer token. The user is auto-provisioned (JIT) if
+ * Requires a WorkOS or FraiOS Bearer token. The user is auto-provisioned (JIT) if
  * this is their first request.
  *
  * Response:
@@ -97,7 +97,7 @@ export function buildDiscoverResponse(dataSources, partitionTeamIds) {
  */
 export default async function discover(req, res) {
   try {
-    // --- Auth: WorkOS JWT only ---
+    // --- Auth: WorkOS or FraiOS JWT ---
     const authHeader = req.headers.authorization;
     if (!authHeader) {
       return res.status(403).json({ error: "Authorization header required" });
@@ -111,8 +111,18 @@ export default async function discover(req, res) {
       return res.status(403).json({ error: "Bearer token required" });
     }
 
-    const payload = await verifyWorkOSToken(token);
-    const userId = await provisionUserFromWorkOS(payload);
+    const tokenType = detectTokenType(token);
+    let payload, userId;
+
+    if (tokenType === "workos") {
+      payload = await verifyWorkOSToken(token);
+      userId = await provisionUserFromWorkOS(payload);
+    } else if (tokenType === "fraios") {
+      payload = await verifyFraiOSToken(token);
+      userId = await provisionUserFromFraiOS(payload);
+    } else {
+      return res.status(403).json({ error: "WorkOS or FraiOS token required" });
+    }
 
     // --- Fetch user's datasources across all team memberships ---
     const user = await findUser({ userId });
