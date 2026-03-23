@@ -1,4 +1,8 @@
+import YAML from "yaml";
+
 import { fetchGraphQL } from "./graphql.js";
+import { findDataSchemasByIds } from "./dataSourceHelpers.js";
+import { parseCubesFromJs } from "./smart-generation/diffModels.js";
 
 const getColumnsArray = (cube) => [
   ...(cube?.dimensions || []),
@@ -10,6 +14,10 @@ const getColumnsArray = (cube) => [
 let rulesCache = null;
 let rulesCacheTime = 0;
 const RULES_CACHE_TTL = 60_000;
+
+// --- Cube-to-table mapping cache, keyed by schemaVersion ---
+const cubeTableMapCache = new Map();
+const CUBE_TABLE_MAP_MAX_SIZE = 50;
 
 const rulesQuery = `
   query {
@@ -53,6 +61,65 @@ export async function loadRules() {
 }
 
 /**
+ * Build a Map of cubeName → sourceTable by parsing all active dataschema files.
+ * Cached by schemaVersion since the mapping only changes when models change.
+ */
+async function buildCubeToTableMap(schemaVersion, fileIds) {
+  if (cubeTableMapCache.has(schemaVersion)) {
+    return cubeTableMapCache.get(schemaVersion);
+  }
+
+  // Maps cubeName → { sourceTable, dimensions: Set<string> }
+  const mapping = new Map();
+
+  try {
+    const schemas = await findDataSchemasByIds({ ids: fileIds });
+
+    for (const schema of schemas) {
+      const { code, name } = schema;
+      if (!code) continue;
+
+      const isYaml = name?.endsWith(".yml") || name?.endsWith(".yaml");
+      let cubes;
+
+      if (isYaml) {
+        try {
+          const parsed = YAML.parse(code);
+          cubes = parsed?.cubes;
+        } catch {
+          continue;
+        }
+      } else {
+        cubes = parseCubesFromJs(code);
+      }
+
+      if (!Array.isArray(cubes)) continue;
+
+      for (const cube of cubes) {
+        const sourceTable = cube.meta?.source_table;
+        if (cube.name && sourceTable) {
+          const dims = new Set(
+            (cube.dimensions || []).map((d) => d.name).filter(Boolean)
+          );
+          mapping.set(cube.name, { sourceTable, dimensions: dims });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[queryRewrite] Failed to build cube-to-table map:", err.message);
+  }
+
+  // Evict oldest entry if cache is full
+  if (cubeTableMapCache.size >= CUBE_TABLE_MAP_MAX_SIZE) {
+    const oldest = cubeTableMapCache.keys().next().value;
+    cubeTableMapCache.delete(oldest);
+  }
+  cubeTableMapCache.set(schemaVersion, mapping);
+
+  return mapping;
+}
+
+/**
  * Extract cube names from query dimensions and measures.
  * Cube.js query members are formatted as "CubeName.memberName".
  */
@@ -71,6 +138,8 @@ function extractCubeNames(query) {
 /**
  * Rewrite a query based on the user's permissions.
  * 1. Apply rule-based row filtering (all roles, including owner/admin)
+ *    Rules are defined by source table name — they apply to ALL cubes
+ *    backed by that table, not just cubes with a matching name.
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
 const queryRewrite = async (query, { securityContext }) => {
@@ -82,25 +151,50 @@ const queryRewrite = async (query, { securityContext }) => {
 
   if (rules.length > 0) {
     const queryCubeNames = extractCubeNames(query);
+
+    // Build cube → source table mapping from active schemas
+    const { schemaVersion, files } = userScope.dataSource;
+    const cubeToTable = await buildCubeToTableMap(schemaVersion, files);
+
+    // Index rules by table name for fast lookup
+    const rulesByTable = new Map();
+    for (const rule of rules) {
+      const tableName = rule.cube_name; // cube_name column stores the table name
+      if (!rulesByTable.has(tableName)) {
+        rulesByTable.set(tableName, []);
+      }
+      rulesByTable.get(tableName).push(rule);
+    }
+
     let blocked = false;
 
     if (!query.filters) {
       query.filters = [];
     }
 
-    // Rules are table-level: apply each unique dimension filter once per cube.
     // Deduplicate by tracking which cube.dimension pairs are already filtered.
     const appliedFilters = new Set();
 
-    for (const rule of rules) {
-      const source = rule.property_source === "team" ? teamProperties : memberProperties;
-      const value = source?.[rule.property_key];
+    for (const cubeName of queryCubeNames) {
+      // Resolve the source table and available dimensions for this cube.
+      // Fall back to the cube name itself for cubes without meta.source_table
+      // (e.g. hand-written schemas where cube name matches table name).
+      const cubeInfo = cubeToTable.get(cubeName);
+      const sourceTable = cubeInfo?.sourceTable || cubeName;
+      const cubeDimensions = cubeInfo?.dimensions;
+      const tableRules = rulesByTable.get(sourceTable);
+      if (!tableRules) continue;
 
-      for (const cubeName of queryCubeNames) {
+      for (const rule of tableRules) {
+        // Only apply the rule if the cube actually has this dimension
+        if (cubeDimensions && !cubeDimensions.has(rule.dimension)) continue;
+
         const filterKey = `${cubeName}.${rule.dimension}`;
 
-        // Skip if already applied for this cube+dimension
         if (appliedFilters.has(filterKey)) continue;
+
+        const source = rule.property_source === "team" ? teamProperties : memberProperties;
+        const value = source?.[rule.property_key];
 
         if (value === undefined || value === null) {
           blocked = true;
