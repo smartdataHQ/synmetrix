@@ -163,6 +163,7 @@ custom_types:
     - name: SourceTable
     - name: events_create_input
     - name: ArrayJoinInput
+    - name: FilterConditionInput
   objects:
     - name: CheckSourceOutput
     - name: GenSourceSchemaOutput
