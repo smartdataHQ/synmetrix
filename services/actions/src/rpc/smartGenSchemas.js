@@ -1,5 +1,6 @@
 import apiError from "../utils/apiError.js";
 import cubejsApi from "../utils/cubejsApi.js";
+import { invalidateUserCache } from "../utils/cubeCache.js";
 
 export default async (session, input, headers) => {
   const {
@@ -43,6 +44,12 @@ export default async (session, input, headers) => {
       selected_ai_metrics: selectedAIMetrics,
       selected_columns: selectedColumns,
     });
+
+    // Ensure subsequent Explore/Meta requests resolve the latest branch version
+    // immediately after model generation instead of waiting for cache TTL expiry.
+    if (userId) {
+      invalidateUserCache(userId);
+    }
 
     return result;
   } catch (err) {

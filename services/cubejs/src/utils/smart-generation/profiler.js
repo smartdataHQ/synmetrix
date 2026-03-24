@@ -483,11 +483,20 @@ export async function profileTable(driver, schema, table, options = {}) {
     return [];
   });
 
-  const [metaResult, describeRows, tableCommentRows, columnCommentRows] = await Promise.all([
+  // Fetch DDL column positions from system.columns to preserve true table order
+  const columnOrderPromise = driver.query(
+    `SELECT name, position FROM system.columns WHERE database = '${schema}' AND table = '${table}' ORDER BY position`
+  ).catch(err => {
+    console.warn(`[profiler] Column order fetch failed (non-fatal): ${err.message}`);
+    return [];
+  });
+
+  const [metaResult, describeRows, tableCommentRows, columnCommentRows, columnOrderRows] = await Promise.all([
     metaPromise,
     driver.query(`DESCRIBE TABLE ${schema}.\`${table}\``),
     tableCommentPromise,
     columnCommentsPromise,
+    columnOrderPromise,
   ]);
 
   // Build column descriptions map
@@ -514,9 +523,29 @@ export async function profileTable(driver, schema, table, options = {}) {
     tracker.emit('init', `Found ${emptyColumns.size} columns with zero bytes — will skip`, { empty_columns: emptyColumns.size });
   }
 
-  // Build columns map from DESCRIBE
+  // Build a stable DDL order map from system.columns.position
+  const ddlPositionByName = new Map();
+  for (const row of columnOrderRows) {
+    if (row?.name != null && row?.position != null) {
+      ddlPositionByName.set(row.name, Number(row.position));
+    }
+  }
+
+  // Order DESCRIBE rows by DDL position when available (fallback: original order)
+  const describeRowsWithIndex = describeRows.map((row, index) => ({ row, index }));
+  describeRowsWithIndex.sort((a, b) => {
+    const aPos = ddlPositionByName.get(a.row.name);
+    const bPos = ddlPositionByName.get(b.row.name);
+    const aOrder = Number.isFinite(aPos) ? aPos : Number.MAX_SAFE_INTEGER;
+    const bOrder = Number.isFinite(bPos) ? bPos : Number.MAX_SAFE_INTEGER;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return a.index - b.index;
+  });
+  const columnOrder = describeRowsWithIndex.map(({ row }) => row.name);
+
+  // Build columns map from ordered DESCRIBE rows
   const columns = new Map();
-  for (const row of describeRows) {
+  for (const { row } of describeRowsWithIndex) {
     const colName = row.name;
     const parsed = parseType(row.type, colName);
     columns.set(colName, {
@@ -625,6 +654,7 @@ export async function profileTable(driver, schema, table, options = {}) {
       sample_size: null,
       sampling_method: 'none',
       columns,
+      columnOrder,
       tableDescription: null,
       columnDescriptions: new Map(),
       filters: normalizedFilters,
@@ -1023,6 +1053,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     sample_size: needsSampling ? Math.min(Math.round(rowCount / SAMPLE_RATIO), SUBQUERY_LIMIT_MAX) : null,
     sampling_method: needsSampling ? 'subquery_limit' : 'none',
     columns,
+    columnOrder,
     tableDescription,
     columnDescriptions,
     filters: normalizedFilters.length > 0 ? normalizedFilters : undefined,

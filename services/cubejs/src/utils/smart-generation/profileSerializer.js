@@ -21,13 +21,34 @@ export function serializeProfile(profiledTable, primaryKeys) {
   }
 
   const columns = {};
+  const columnOrder = [];
+  const preferredOrder = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : null;
+
+  if (preferredOrder && profiledTable.columns && typeof profiledTable.columns === 'object') {
+    for (const key of preferredOrder) {
+      const value = profiledTable.columns instanceof Map
+        ? profiledTable.columns.get(key)
+        : profiledTable.columns[key];
+      if (value !== undefined) {
+        columns[key] = value;
+        columnOrder.push(key);
+      }
+    }
+  }
+
   if (profiledTable.columns instanceof Map) {
     for (const [key, value] of profiledTable.columns) {
+      if (Object.prototype.hasOwnProperty.call(columns, key)) continue;
       columns[key] = value;
+      columnOrder.push(key);
     }
   } else if (profiledTable.columns && typeof profiledTable.columns === 'object') {
     // Already a plain object — pass through
-    Object.assign(columns, profiledTable.columns);
+    for (const [key, value] of Object.entries(profiledTable.columns)) {
+      if (Object.prototype.hasOwnProperty.call(columns, key)) continue;
+      columns[key] = value;
+      columnOrder.push(key);
+    }
   }
 
   const columnDescriptions = {};
@@ -47,6 +68,7 @@ export function serializeProfile(profiledTable, primaryKeys) {
       sampled: profiledTable.sampled,
       sample_size: profiledTable.sample_size,
       columns,
+      columnOrder,
       columnDescriptions,
     },
     primaryKeys: primaryKeys || [],
@@ -68,7 +90,20 @@ export function deserializeProfile(serialized) {
 
   const columns = new Map();
   if (src.columns && typeof src.columns === 'object') {
+    const preferredOrder = Array.isArray(src.columnOrder) ? src.columnOrder : [];
+    const seen = new Set();
+
+    // Reconstruct in preserved DDL order first.
+    for (const key of preferredOrder) {
+      if (Object.prototype.hasOwnProperty.call(src.columns, key)) {
+        columns.set(key, src.columns[key]);
+        seen.add(key);
+      }
+    }
+
+    // Include any unexpected keys not present in columnOrder.
     for (const [key, value] of Object.entries(src.columns)) {
+      if (seen.has(key)) continue;
       columns.set(key, value);
     }
   }
@@ -88,6 +123,7 @@ export function deserializeProfile(serialized) {
       sampled: src.sampled,
       sample_size: src.sample_size,
       columns,
+      columnOrder: Array.isArray(src.columnOrder) ? src.columnOrder : undefined,
       columnDescriptions,
     },
     primaryKeys: serialized.primaryKeys || [],

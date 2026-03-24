@@ -285,7 +285,14 @@ function isInt8Boolean(rawType, profile) {
  * @returns {{ dimensions: object[], measures: object[], mapKeysDiscovered: number, columnsProfiled: number, columnsSkipped: number }}
  */
 function processColumns(columns, options) {
-  const { arrayJoinColumns = [], maxMapKeys = 500, primaryKeys = [], cubeName = 'cube', columnDescriptions = new Map() } = options;
+  const {
+    arrayJoinColumns = [],
+    maxMapKeys = 500,
+    primaryKeys = [],
+    cubeName = 'cube',
+    columnDescriptions = new Map(),
+    columnOrder = [],
+  } = options;
   const arrayJoinColumnNames = arrayJoinColumns.map((a) => a.column);
 
   const allFields = [];
@@ -562,6 +569,37 @@ function processColumns(columns, options) {
   // Deduplicate field names
   deduplicateFields(allFields);
 
+  // Final ordering guard: keep generated fields in DDL column order.
+  // This protects against accidental ordering drift in upstream payloads.
+  const columnIndex = new Map();
+  if (Array.isArray(columnOrder) && columnOrder.length > 0) {
+    for (let i = 0; i < columnOrder.length; i++) {
+      columnIndex.set(columnOrder[i], i);
+    }
+  } else {
+    let idx = 0;
+    for (const colName of columns.keys()) {
+      columnIndex.set(colName, idx++);
+    }
+  }
+
+  const fallbackIndex = Number.MAX_SAFE_INTEGER;
+  allFields
+    .map((field, idx) => ({
+      field,
+      idx,
+      order: columnIndex.has(field._sourceColumn)
+        ? columnIndex.get(field._sourceColumn)
+        : fallbackIndex,
+    }))
+    .sort((a, b) => {
+      if (a.order === b.order) return a.idx - b.idx;
+      return a.order - b.order;
+    })
+    .forEach((entry, i) => {
+      allFields[i] = entry.field;
+    });
+
   const dimensions = [];
   const measures = [];
 
@@ -619,6 +657,7 @@ function buildRawCube(profiledTable, options) {
       maxMapKeys,
       primaryKeys,
       cubeName,
+      columnOrder: profiledTable.columnOrder || [],
       columnDescriptions: profiledTable.columnDescriptions || new Map(),
     });
 

@@ -14,6 +14,59 @@ import { deserializeProfile } from '../utils/smart-generation/profileSerializer.
 import { diffModels, parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
 import { validateModelSyntax, smokeTestQuery } from '../utils/smart-generation/modelValidator.js';
 
+function reorderProfileColumns(profiledTable) {
+  if (!profiledTable?.columns || !(profiledTable.columns instanceof Map)) return profiledTable;
+  const ordered = new Map();
+  const seen = new Set();
+  const preferred = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : [];
+
+  for (const colName of preferred) {
+    if (profiledTable.columns.has(colName)) {
+      ordered.set(colName, profiledTable.columns.get(colName));
+      seen.add(colName);
+    }
+  }
+
+  for (const [colName, colData] of profiledTable.columns) {
+    if (seen.has(colName)) continue;
+    ordered.set(colName, colData);
+    preferred.push(colName);
+  }
+
+  return {
+    ...profiledTable,
+    columns: ordered,
+    columnOrder: preferred,
+  };
+}
+
+async function hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table) {
+  if (!driver || !profiledTable?.columns || !(profiledTable.columns instanceof Map)) {
+    return profiledTable;
+  }
+  const hasStableOrder =
+    Array.isArray(profiledTable.columnOrder)
+    && profiledTable.columnOrder.length > 0
+    && profiledTable.columnOrder.length >= profiledTable.columns.size;
+  if (hasStableOrder) {
+    return reorderProfileColumns(profiledTable);
+  }
+
+  try {
+    const rows = await driver.query(
+      `SELECT name FROM system.columns WHERE database = '${schema}' AND table = '${table}' ORDER BY position`
+    );
+    const ddlOrder = rows.map((r) => r.name).filter((name) => profiledTable.columns.has(name));
+    if (ddlOrder.length > 0) {
+      return reorderProfileColumns({ ...profiledTable, columnOrder: ddlOrder });
+    }
+  } catch (err) {
+    console.warn(`[smartGenerate] Column order hydration failed (non-fatal): ${err.message}`);
+  }
+
+  return reorderProfileColumns(profiledTable);
+}
+
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
   const {
@@ -75,6 +128,9 @@ export default async (req, res, cubejs) => {
       const deserialized = deserializeProfile(profileData);
       profiledTable = deserialized.profiledTable;
       primaryKeys = deserialized.primaryKeys;
+      // Ensure column order is stable even when profile_data transport reorders object keys.
+      driver = await cubejs.options.driverFactory({ securityContext });
+      profiledTable = await hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table);
     } else {
       // Legacy path: profile from scratch (two ClickHouse round-trips)
       driver = await cubejs.options.driverFactory({ securityContext });
@@ -89,6 +145,7 @@ export default async (req, res, cubejs) => {
 
       emitter.emit('primary_keys', 'Detecting primary keys...', 0.5);
       primaryKeys = await detectPrimaryKeys(driver, schema, table);
+      profiledTable = reorderProfileColumns(profiledTable);
     }
 
     // Filter columns if user selected a subset
@@ -100,7 +157,11 @@ export default async (req, res, cubejs) => {
           filtered.set(name, data);
         }
       }
-      profiledTable = { ...profiledTable, columns: filtered };
+      const existingOrder = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : [];
+      const filteredOrder = existingOrder.length > 0
+        ? existingOrder.filter((name) => selectedColumns.has(name))
+        : Array.from(filtered.keys());
+      profiledTable = { ...profiledTable, columns: filtered, columnOrder: filteredOrder };
     }
 
     // Build cubes
