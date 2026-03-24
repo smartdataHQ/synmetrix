@@ -209,7 +209,27 @@ function mergeFields(existingFields, newFields, keepStale) {
     }
   }
 
-  return merged;
+  // Preserve DDL-based ordering from the incoming generation for all fields
+  // that exist in the incoming set. Fields not present in incoming (e.g. stale
+  // auto fields, preserved user/AI fields) keep relative order and are placed after.
+  const incomingOrder = new Map();
+  for (let i = 0; i < incoming.length; i++) {
+    incomingOrder.set(incoming[i].name, i);
+  }
+
+  return merged
+    .map((field, idx) => ({
+      field,
+      idx,
+      order: incomingOrder.has(field.name)
+        ? incomingOrder.get(field.name)
+        : Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((a, b) => {
+      if (a.order === b.order) return a.idx - b.idx;
+      return a.order - b.order;
+    })
+    .map((entry) => entry.field);
 }
 
 // ---------------------------------------------------------------------------
