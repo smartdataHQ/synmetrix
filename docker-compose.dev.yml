@@ -103,6 +103,7 @@ services:
     environment:
       ENABLE_TELEMETRY: "false"
       CONSOLE_MODE: cli
+      HASURA_GRAPHQL_MIGRATIONS_SERVER_TIMEOUT: "120"
     volumes:
       - ./services/hasura/migrations:/hasura/migrations
       - ./services/hasura/metadata:/hasura/metadata
