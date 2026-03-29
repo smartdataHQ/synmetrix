@@ -45,7 +45,7 @@ const LC_THRESHOLD = 60;
  * @param {string[]} [tableColumns] Valid column names (required when filters are provided)
  * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
-export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns, nestedFilters) {
+export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns, nestedFilters = []) {
   // Partition clause — apply when partition is set and either:
   //  (a) internalTables explicitly lists this table, OR
   //  (b) internalTables is not configured (empty/missing) — all tables are internal
