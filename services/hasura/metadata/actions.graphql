@@ -304,6 +304,7 @@ type SmartGenOutput {
   ai_enrichment: jsonb
   model_validation: jsonb
   previous_filters: jsonb
+  polish: jsonb
 }
 
 type UpdateTeamSettingsOutput {
