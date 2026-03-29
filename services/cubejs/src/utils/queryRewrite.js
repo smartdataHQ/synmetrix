@@ -61,7 +61,39 @@ export async function loadRules() {
 }
 
 /**
+ * Extract the bare table name from a sql_table or sql property.
+ * Strips schema prefix (e.g. "cst.semantic_events" → "semantic_events")
+ * and backtick/quote wrapping.
+ */
+function extractTableName(cube) {
+  // 1. meta.source_table (explicit, highest priority)
+  if (cube.meta?.source_table) return cube.meta.source_table;
+
+  // 2. sql_table property (YAML string or JS template result)
+  const sqlTable = cube.sql_table;
+  if (typeof sqlTable === "string" && sqlTable.trim()) {
+    const bare = sqlTable.replace(/[`"]/g, "").trim();
+    const lastDot = bare.lastIndexOf(".");
+    return lastDot >= 0 ? bare.substring(lastDot + 1) : bare;
+  }
+
+  // 3. sql property — parse "SELECT * FROM [schema.]table_name"
+  const sql = cube.sql;
+  if (typeof sql === "string") {
+    const match = sql.match(
+      /\bFROM\s+[`"]?(?:[\w-]+\.)?[`"]?([a-zA-Z_][\w]*)[`"]?/i
+    );
+    if (match) return match[1];
+  }
+
+  return null;
+}
+
+/**
  * Build a Map of cubeName → sourceTable by parsing all active dataschema files.
+ * Resolves the source table from meta.source_table, sql_table, or the sql FROM
+ * clause so that query rewrite rules (which target table names) apply to ALL
+ * cubes backed by a given table regardless of the cube name.
  * Cached by schemaVersion since the mapping only changes when models change.
  */
 async function buildCubeToTableMap(schemaVersion, fileIds) {
@@ -96,13 +128,12 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
       if (!Array.isArray(cubes)) continue;
 
       for (const cube of cubes) {
-        const sourceTable = cube.meta?.source_table;
-        if (cube.name && sourceTable) {
-          const dims = new Set(
-            (cube.dimensions || []).map((d) => d.name).filter(Boolean)
-          );
-          mapping.set(cube.name, { sourceTable, dimensions: dims });
-        }
+        if (!cube.name) continue;
+        const sourceTable = extractTableName(cube);
+        const dims = new Set(
+          (cube.dimensions || []).map((d) => d.name).filter(Boolean)
+        );
+        mapping.set(cube.name, { sourceTable, dimensions: dims });
       }
     }
   } catch (err) {
@@ -186,8 +217,13 @@ const queryRewrite = async (query, { securityContext }) => {
       if (!tableRules) continue;
 
       for (const rule of tableRules) {
-        // Only apply the rule if the cube actually has this dimension
-        if (cubeDimensions && !cubeDimensions.has(rule.dimension)) continue;
+        // If the cube is backed by a ruled table but lacks the required
+        // dimension, block the query — dropping a dimension must not
+        // bypass access control.
+        if (cubeDimensions && !cubeDimensions.has(rule.dimension)) {
+          blocked = true;
+          break;
+        }
 
         const filterKey = `${cubeName}.${rule.dimension}`;
 
