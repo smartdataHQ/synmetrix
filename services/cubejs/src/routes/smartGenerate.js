@@ -13,6 +13,7 @@ import { polishModel } from '../utils/smart-generation/modelPolisher.js';
 import { mergeModels, extractAIMetrics } from '../utils/smart-generation/merger.js';
 import { deserializeProfile } from '../utils/smart-generation/profileSerializer.js';
 import { diffModels, parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
+import { loadRules } from '../utils/queryRewrite.js';
 import { validateModelSyntax, smokeTestQuery } from '../utils/smart-generation/modelValidator.js';
 
 function reorderProfileColumns(profiledTable) {
@@ -137,11 +138,32 @@ export default async (req, res, cubejs) => {
       // Legacy path: profile from scratch (two ClickHouse round-trips)
       driver = await cubejs.options.driverFactory({ securityContext });
 
+      // Apply query rewrite rules as mandatory filters
+      const ruleFilters = [];
+      try {
+        const rules = await loadRules();
+        const { teamProperties, memberProperties } = securityContext.userScope || {};
+        for (const rule of rules) {
+          if (rule.cube_name !== table) continue;
+          const source = rule.property_source === 'team' ? teamProperties : memberProperties;
+          const value = source?.[rule.property_key];
+          if (value === undefined || value === null) continue;
+          const sqlOp = rule.operator === 'equals' ? '='
+            : rule.operator === 'notEquals' ? '!='
+            : rule.operator === 'contains' ? 'LIKE'
+            : '=';
+          const sqlVal = sqlOp === 'LIKE' ? `%${String(value)}%` : String(value);
+          ruleFilters.push({ column: rule.dimension, operator: sqlOp, value: sqlVal });
+        }
+      } catch (err) {
+        console.warn('[smartGenerate] Failed to load query rewrite rules (non-fatal):', err.message);
+      }
+
       emitter.emit('profile', 'Profiling table...', 0.05);
       profiledTable = await profileTable(driver, schema, table, {
         partition,
         internalTables,
-        filters,
+        filters: [...filters, ...ruleFilters],
         nestedFilters,
         emitter,
       });
