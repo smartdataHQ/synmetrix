@@ -94,22 +94,25 @@ export function buildWhereClause(schema, table, partition, internalTables, filte
 // Sampling strategy
 // ---------------------------------------------------------------------------
 
-async function detectSampling(driver, schema, table, whereClause, sampleRatio, rowCount) {
+async function detectSampling(driver, schema, table, whereClause, sampleRatio, rowCount, arrayJoinClause = '') {
   const sampleRows = Math.round(rowCount / sampleRatio);
   const baseTable = `${schema}.\`${table}\``;
 
-  try {
-    await driver.query(`SELECT 1 FROM ${baseTable} SAMPLE 1/${sampleRatio} LIMIT 1`);
-    return {
-      fromExpr: `${baseTable} SAMPLE 1/${sampleRatio}${whereClause}`,
-      method: 'native',
-      sampleRows,
-    };
-  } catch (e) { /* SAMPLE not supported */ }
+  // SAMPLE is incompatible with ARRAY JOIN — skip native sampling when array join is active
+  if (!arrayJoinClause) {
+    try {
+      await driver.query(`SELECT 1 FROM ${baseTable} SAMPLE 1/${sampleRatio} LIMIT 1`);
+      return {
+        fromExpr: `${baseTable} SAMPLE 1/${sampleRatio}${whereClause}`,
+        method: 'native',
+        sampleRows,
+      };
+    } catch (e) { /* SAMPLE not supported */ }
+  }
 
   const limitRows = Math.min(sampleRows, SUBQUERY_LIMIT_MAX);
   return {
-    fromExpr: `(SELECT * FROM ${baseTable}${whereClause} LIMIT ${limitRows})`,
+    fromExpr: `(SELECT * FROM ${baseTable}${arrayJoinClause}${whereClause} LIMIT ${limitRows})`,
     method: 'subquery_limit',
     sampleRows: limitRows,
   };
@@ -450,6 +453,14 @@ export async function profileTable(driver, schema, table, options = {}) {
     setTotalSteps(n) { this.totalSteps = n; },
   };
 
+  // Build ARRAY JOIN clause when nested groups are selected.
+  // This must be injected into all profiling SQL so column stats reflect the
+  // expanded rows rather than the raw base-table arrays.
+  const nestedGroups = nestedFilters.map((nf) => nf.group).filter(Boolean);
+  const arrayJoinClause = nestedGroups.length > 0
+    ? ` LEFT ARRAY JOIN ${nestedGroups.join(', ')}`
+    : '';
+
   // Build partition-only clause first (filters need column names from DESCRIBE).
   // The full clause (partition + filters) is computed after DESCRIBE completes.
   const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables, [], [], nestedFilters);
@@ -632,7 +643,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   tracker.emit('initial_profile', 'Running initial profile — row count, ranges, cardinality, group depths...');
 
   const initialParts = buildInitialProfileParts(columns, parentGroupInfo, emptyColumns);
-  const initialSql = `SELECT ${initialParts.join(', ')} FROM ${schema}.\`${table}\`${whereClause}`;
+  const initialSql = `SELECT ${initialParts.join(', ')} FROM ${schema}.\`${table}\`${arrayJoinClause}${whereClause}`;
 
   let rowCount = 0;
   try {
@@ -644,7 +655,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     console.warn(`[profiler] Initial profile failed, falling back to legacy flow: ${err.message}`);
     // Fallback: at least get row count
     try {
-      const countRows = await driver.query(`SELECT count() as cnt FROM ${schema}.\`${table}\`${whereClause}`);
+      const countRows = await driver.query(`SELECT count() as cnt FROM ${schema}.\`${table}\`${arrayJoinClause}${whereClause}`);
       rowCount = countRows.length > 0 ? (Number(countRows[0].cnt) || 0) : 0;
     } catch (e) { /* give up */ }
   }
@@ -706,11 +717,11 @@ export async function profileTable(driver, schema, table, options = {}) {
     // Sampling decision
     const needsSampling = rowCount > sampleThreshold;
     let samplingMethod = 'none';
-    let profilingFrom = `${schema}.\`${table}\`${whereClause}`;
+    let profilingFrom = `${schema}.\`${table}\`${arrayJoinClause}${whereClause}`;
     let sampleSize = null;
 
     if (needsSampling) {
-      const sampling = await detectSampling(driver, schema, table, whereClause, SAMPLE_RATIO, rowCount);
+      const sampling = await detectSampling(driver, schema, table, whereClause, SAMPLE_RATIO, rowCount, arrayJoinClause);
       samplingMethod = sampling.method;
       profilingFrom = sampling.fromExpr;
       sampleSize = sampling.sampleRows;
