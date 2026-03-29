@@ -747,6 +747,14 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     groupColumns.get(colData.parentName).push(colData);
   }
 
+  // Warn if no child columns were found for any of the requested groups
+  if (groupColumns.size === 0 && arrayJoinGroups.length > 0) {
+    console.warn(
+      `[cubeBuilder] buildArrayJoinCube: no child columns found for array join groups: ${arrayJoinGroups.join(', ')}. ` +
+      `The resulting cube will have no group-specific dimensions/measures.`
+    );
+  }
+
   // Derive cube name from table + filter values (or group names if no filters)
   const allFilters = nestedFilters.flatMap((nf) => nf.filters || []);
   const filterSuffix = deriveCubeNameFromFilters(allFilters);
@@ -754,8 +762,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   const cubeName = sanitizeCubeName(`${table}_${groupSuffix}`);
 
   // Build the ARRAY JOIN SQL with optional WHERE filters
-  const arrayJoinClauses = arrayJoinGroups.map((g) => `${g}`);
-  let sql = `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${arrayJoinClauses.join(', ')}`;
+  let sql = `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${arrayJoinGroups.join(', ')}`;
 
   // Collect WHERE conditions
   const whereParts = [];
@@ -766,9 +773,9 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     for (const f of nf.filters || []) {
       const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
       if (f.values.length === 1) {
-        whereParts.push(`${fullCol} = '${f.values[0].replace(/'/g, "\\'")}'`);
+        whereParts.push(`${fullCol} = '${f.values[0].replace(/'/g, "''")}'`);
       } else if (f.values.length > 1) {
-        const vals = f.values.map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ');
+        const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
         whereParts.push(`${fullCol} IN (${vals})`);
       }
     }
@@ -908,6 +915,16 @@ export function buildCubes(profiledTable, options = {}) {
       });
       // Override name to use the legacy alias-based naming
       legacyCube.name = sanitizeCubeName(`${profiledTable.table}_${ajDef.alias}`);
+
+      // Patch SQL to include AS alias (legacy format expected by existing consumers)
+      const qualifiedTable = `${profiledTable.database}.${profiledTable.table}`;
+      const isInternal = (options.internalTables || []).includes(profiledTable.table);
+      let legacySql = `SELECT *, ${ajDef.column} AS ${ajDef.alias} FROM ${qualifiedTable} LEFT ARRAY JOIN ${ajDef.column} AS ${ajDef.alias}`;
+      if (isInternal && options.partition) {
+        legacySql += ` WHERE partition = '${options.partition}'`;
+      }
+      legacyCube.sql = legacySql;
+
       legacyCube.meta.array_join_column = ajDef.column;
       legacyCube.meta.array_join_alias = ajDef.alias;
       cubes.push(legacyCube);
