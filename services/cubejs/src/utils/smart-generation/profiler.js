@@ -45,7 +45,7 @@ const LC_THRESHOLD = 60;
  * @param {string[]} [tableColumns] Valid column names (required when filters are provided)
  * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
-export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns, nestedFilters = []) {
+export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns) {
   // Partition clause — apply when partition is set and either:
   //  (a) internalTables explicitly lists this table, OR
   //  (b) internalTables is not configured (empty/missing) — all tables are internal
@@ -65,25 +65,7 @@ export function buildWhereClause(schema, table, partition, internalTables, filte
     filterClause = filterWhere.replace(/^\s*WHERE\s+/, '');
   }
 
-  // Nested filter clause — for profiling within ARRAY JOIN context
-  let nestedClause = '';
-  if (Array.isArray(nestedFilters) && nestedFilters.length > 0) {
-    const parts = [];
-    for (const nf of nestedFilters) {
-      for (const f of nf.filters || []) {
-        const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
-        if (f.values.length === 1) {
-          parts.push(`${fullCol} = '${f.values[0].replace(/'/g, "''")}'`);
-        } else if (f.values.length > 1) {
-          const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
-          parts.push(`${fullCol} IN (${vals})`);
-        }
-      }
-    }
-    nestedClause = parts.join(' AND ');
-  }
-
-  const allParts = [partitionClause, filterClause, nestedClause].filter(Boolean);
+  const allParts = [partitionClause, filterClause].filter(Boolean);
   if (allParts.length > 0) {
     return ` WHERE ${allParts.join(' AND ')}`;
   }
@@ -453,17 +435,16 @@ export async function profileTable(driver, schema, table, options = {}) {
     setTotalSteps(n) { this.totalSteps = n; },
   };
 
-  // Build ARRAY JOIN clause when nested groups are selected.
-  // This must be injected into all profiling SQL so column stats reflect the
-  // expanded rows rather than the raw base-table arrays.
+  // Nested groups requested for ARRAY JOIN — the actual clause is built after
+  // DESCRIBE, when we know which sub-columns belong to each group.
   const nestedGroups = nestedFilters.map((nf) => nf.group).filter(Boolean);
-  const arrayJoinClause = nestedGroups.length > 0
-    ? ` LEFT ARRAY JOIN ${nestedGroups.join(', ')}`
-    : '';
+  let arrayJoinClause = '';
 
   // Build partition-only clause first (filters need column names from DESCRIBE).
   // The full clause (partition + filters) is computed after DESCRIBE completes.
-  const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables, [], [], nestedFilters);
+  // Note: nestedFilters WHERE conditions use aliased names (after ARRAY JOIN),
+  // so they are NOT included in the partition-only clause built here.
+  const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables, [], []);
 
   // Normalize filters — anything non-array becomes empty
   const normalizedFilters = Array.isArray(filters) ? filters : [];
@@ -600,12 +581,58 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   tracker.emit('init', `Discovered ${columns.size} columns`, { column_count: columns.size });
 
+  // Build ARRAY JOIN clause now that we have the column list.
+  // ClickHouse Nested columns (stored as parallel arrays with dotted names)
+  // require enumerating each sub-column: ARRAY JOIN `parent.child` AS child_alias
+  if (nestedGroups.length > 0) {
+    const ajParts = [];
+    for (const group of nestedGroups) {
+      for (const [colName, col] of columns) {
+        if (col.parentName === group && col.childName) {
+          const alias = `${group.replace(/\./g, '_')}_${col.childName}`;
+          ajParts.push(`\`${colName}\` AS \`${alias}\``);
+        }
+      }
+    }
+    if (ajParts.length > 0) {
+      arrayJoinClause = ` LEFT ARRAY JOIN ${ajParts.join(', ')}`;
+    }
+  }
+
+  // Build nested filter WHERE using the aliased names (post-ARRAY JOIN).
+  let nestedWhereClause = '';
+  if (nestedFilters.length > 0) {
+    const parts = [];
+    for (const nf of nestedFilters) {
+      for (const f of nf.filters || []) {
+        const alias = `${nf.group.replace(/\./g, '_')}_${f.column}`;
+        if (f.values.length === 1) {
+          parts.push(`\`${alias}\` = '${f.values[0].replace(/'/g, "''")}'`);
+        } else if (f.values.length > 1) {
+          const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
+          parts.push(`\`${alias}\` IN (${vals})`);
+        }
+      }
+    }
+    if (parts.length > 0) {
+      nestedWhereClause = parts.join(' AND ');
+    }
+  }
+
   // Now that we have column names from DESCRIBE, build the full WHERE clause
   // combining partition filtering with any user-specified filters.
+  // Nested filters are handled separately via nestedWhereClause (aliased names).
   const tableColumnNames = [...columns.keys()];
-  const whereClause = normalizedFilters.length > 0
-    ? buildWhereClause(schema, table, partition, internalTables, normalizedFilters, tableColumnNames, nestedFilters)
+  let whereClause = normalizedFilters.length > 0
+    ? buildWhereClause(schema, table, partition, internalTables, normalizedFilters, tableColumnNames)
     : partitionOnlyClause;
+
+  // Append nested filter conditions (using aliased column names)
+  if (nestedWhereClause) {
+    whereClause = whereClause
+      ? `${whereClause} AND ${nestedWhereClause}`
+      : ` WHERE ${nestedWhereClause}`;
+  }
 
   // =========================================================================
   // Build parent group info (one sentinel per nested group)

@@ -761,22 +761,33 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   const groupSuffix = filterSuffix || arrayJoinGroups.map((g) => sanitizeCubeName(g)).join('_');
   const cubeName = sanitizeCubeName(`${table}_${groupSuffix}`);
 
-  // Build the ARRAY JOIN SQL with optional WHERE filters
-  let sql = `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${arrayJoinGroups.join(', ')}`;
+  // Build the ARRAY JOIN SQL — enumerate each sub-column with an alias.
+  // ClickHouse Nested columns (parallel arrays with dotted names) require:
+  //   ARRAY JOIN `parent.child1` AS child1_alias, `parent.child2` AS child2_alias
+  const ajParts = [];
+  for (const [group, cols] of groupColumns) {
+    for (const col of cols) {
+      ajParts.push(`\`${col.name}\` AS \`${col.childName}\``);
+    }
+  }
+  let sql = ajParts.length > 0
+    ? `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${ajParts.join(', ')}`
+    : `SELECT * FROM ${schema}.${table}`;
 
-  // Collect WHERE conditions
+  // Collect WHERE conditions — use child aliases (post-ARRAY JOIN names)
   const whereParts = [];
   if (isInternal && partition) {
     whereParts.push(`partition = '${partition}'`);
   }
   for (const nf of nestedFilters) {
     for (const f of nf.filters || []) {
-      const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+      // After ARRAY JOIN, sub-columns are referenced by childName alias
+      const alias = f.column;
       if (f.values.length === 1) {
-        whereParts.push(`${fullCol} = '${f.values[0].replace(/'/g, "''")}'`);
+        whereParts.push(`\`${alias}\` = '${f.values[0].replace(/'/g, "''")}'`);
       } else if (f.values.length > 1) {
         const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
-        whereParts.push(`${fullCol} IN (${vals})`);
+        whereParts.push(`\`${alias}\` IN (${vals})`);
       }
     }
   }
