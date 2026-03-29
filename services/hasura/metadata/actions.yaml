@@ -164,6 +164,8 @@ custom_types:
     - name: events_create_input
     - name: ArrayJoinInput
     - name: FilterConditionInput
+    - name: NestedFilterConditionInput
+    - name: NestedFilterInput
   objects:
     - name: CheckSourceOutput
     - name: GenSourceSchemaOutput

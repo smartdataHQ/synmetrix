@@ -18,6 +18,7 @@ export default async (session, input, headers) => {
     cube_name: cubeName,
     selected_ai_metrics: selectedAIMetrics,
     selected_columns: selectedColumns,
+    nested_filters: nestedFilters,
   } = input || {};
 
   const userId = session?.["x-hasura-user-id"];
@@ -43,6 +44,7 @@ export default async (session, input, headers) => {
       cube_name: cubeName,
       selected_ai_metrics: selectedAIMetrics,
       selected_columns: selectedColumns,
+      nestedFilters,
     });
 
     // Ensure subsequent Explore/Meta requests resolve the latest branch version
