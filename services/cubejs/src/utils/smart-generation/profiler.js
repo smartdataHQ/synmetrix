@@ -589,7 +589,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     for (const group of nestedGroups) {
       for (const [colName, col] of columns) {
         if (col.parentName === group && col.childName) {
-          const alias = `${group.replace(/\./g, '_')}_${col.childName}`;
+          const alias = colName.replace(/\./g, '_');
           ajParts.push(`\`${colName}\` AS \`${alias}\``);
         }
       }
@@ -605,7 +605,10 @@ export async function profileTable(driver, schema, table, options = {}) {
     const parts = [];
     for (const nf of nestedFilters) {
       for (const f of nf.filters || []) {
-        const alias = `${nf.group.replace(/\./g, '_')}_${f.column}`;
+        // Build the full dotted column name, then replace all dots with underscores
+        // to match the ARRAY JOIN alias (e.g. commerce.products.entry_type → commerce_products_entry_type)
+        const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+        const alias = fullCol.replace(/\./g, '_');
         if (f.values.length === 1) {
           parts.push(`\`${alias}\` = '${f.values[0].replace(/'/g, "''")}'`);
         } else if (f.values.length > 1) {
