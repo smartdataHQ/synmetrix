@@ -90,10 +90,11 @@ function analyzeExistingModel(code, fileName) {
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const { table, schema, branchId, filters: rawFilters } = req.body;
+  const { table, schema, branchId, filters: rawFilters, nestedFilters: rawNestedFilters } = req.body;
 
   // Normalize filters: default to empty array if missing/invalid
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
+  const nestedFilters = Array.isArray(rawNestedFilters) ? rawNestedFilters : [];
 
   if (!table || !schema) {
     return res.status(400).json({
@@ -117,6 +118,7 @@ export default async (req, res, cubejs) => {
       partition,
       internalTables,
       filters,
+      nestedFilters,
       emitter,
     });
 
