@@ -51,6 +51,7 @@ services:
     volumes:
       - ./services/cubejs/src:/app/src
       - ./services/cubejs/index.js:/app/index.js
+      - ../fraios/shared/principles:/app/shared/principles:ro
     ports:
       - 4000:4000
       - 9231:9229
@@ -60,6 +61,7 @@ services:
       - .env
       - .dev.env
     environment:
+      CUBE_PRINCIPLES_PATH: /app/shared/principles/cube-principles.md
       CUBEJS_SCHEDULED_REFRESH: false
       CUBEJS_DB_QUERY_LIMIT: 1000000
       WORKOS_API_KEY: ${WORKOS_API_KEY}
