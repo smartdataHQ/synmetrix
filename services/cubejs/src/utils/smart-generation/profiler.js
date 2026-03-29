@@ -45,7 +45,7 @@ const LC_THRESHOLD = 60;
  * @param {string[]} [tableColumns] Valid column names (required when filters are provided)
  * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
-export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns) {
+export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns, nestedFilters) {
   // Partition clause — apply when partition is set and either:
   //  (a) internalTables explicitly lists this table, OR
   //  (b) internalTables is not configured (empty/missing) — all tables are internal
@@ -65,14 +65,27 @@ export function buildWhereClause(schema, table, partition, internalTables, filte
     filterClause = filterWhere.replace(/^\s*WHERE\s+/, '');
   }
 
-  if (partitionClause && filterClause) {
-    return ` WHERE ${partitionClause} AND ${filterClause}`;
+  // Nested filter clause — for profiling within ARRAY JOIN context
+  let nestedClause = '';
+  if (Array.isArray(nestedFilters) && nestedFilters.length > 0) {
+    const parts = [];
+    for (const nf of nestedFilters) {
+      for (const f of nf.filters || []) {
+        const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+        if (f.values.length === 1) {
+          parts.push(`${fullCol} = '${f.values[0].replace(/'/g, "''")}'`);
+        } else if (f.values.length > 1) {
+          const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
+          parts.push(`${fullCol} IN (${vals})`);
+        }
+      }
+    }
+    nestedClause = parts.join(' AND ');
   }
-  if (partitionClause) {
-    return ` WHERE ${partitionClause}`;
-  }
-  if (filterClause) {
-    return ` WHERE ${filterClause}`;
+
+  const allParts = [partitionClause, filterClause, nestedClause].filter(Boolean);
+  if (allParts.length > 0) {
+    return ` WHERE ${allParts.join(' AND ')}`;
   }
   return '';
 }
@@ -380,6 +393,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     partition = null,
     internalTables = [],
     filters = [],
+    nestedFilters = [],
     emitter = null,
     sampleThreshold = DEFAULT_SAMPLE_THRESHOLD,
   } = options;
@@ -438,7 +452,7 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   // Build partition-only clause first (filters need column names from DESCRIBE).
   // The full clause (partition + filters) is computed after DESCRIBE completes.
-  const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables);
+  const partitionOnlyClause = buildWhereClause(schema, table, partition, internalTables, [], [], nestedFilters);
 
   // Normalize filters — anything non-array becomes empty
   const normalizedFilters = Array.isArray(filters) ? filters : [];
@@ -579,7 +593,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   // combining partition filtering with any user-specified filters.
   const tableColumnNames = [...columns.keys()];
   const whereClause = normalizedFilters.length > 0
-    ? buildWhereClause(schema, table, partition, internalTables, normalizedFilters, tableColumnNames)
+    ? buildWhereClause(schema, table, partition, internalTables, normalizedFilters, tableColumnNames, nestedFilters)
     : partitionOnlyClause;
 
   // =========================================================================

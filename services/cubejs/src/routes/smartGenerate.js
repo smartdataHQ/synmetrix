@@ -93,6 +93,7 @@ export default async (req, res, cubejs) => {
     : null;
   const dryRun = rawDryRun === true;
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
+  const nestedFilters = Array.isArray(req.body.nestedFilters) ? req.body.nestedFilters : [];
   const fileNameOverride = typeof rawFileName === 'string' && rawFileName.trim() ? rawFileName.trim() : null;
   // Derive cube name from file name if not explicitly set (strip extension)
   const explicitCubeName = typeof rawCubeName === 'string' && rawCubeName.trim() ? rawCubeName.trim() : null;
@@ -140,6 +141,7 @@ export default async (req, res, cubejs) => {
         partition,
         internalTables,
         filters,
+        nestedFilters,
         emitter,
       });
 
@@ -174,6 +176,7 @@ export default async (req, res, cubejs) => {
       primaryKeys,
       cubeName: cubeNameOverride,
       filters,
+      nestedFilters,
     });
 
     // Store filters in cube-level meta for provenance tracking
