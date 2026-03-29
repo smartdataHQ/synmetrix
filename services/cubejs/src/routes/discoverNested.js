@@ -87,10 +87,16 @@ export default async function discoverNested(req, res, cubejs) {
           );
           const values = rows.map((r) => r.val).filter(Boolean).sort();
           if (values.length > 0) {
+            const type = group.childTypes.get(disc.child);
             discriminators.push({
               column: disc.column,
               childName: disc.child,
               values,
+              raw_type: type,
+              value_type: /int|float|decimal|double/i.test(type) ? 'NUMBER'
+                : /date|datetime/i.test(type) ? 'DATE'
+                : /bool/i.test(type) ? 'BOOLEAN'
+                : 'STRING',
             });
           }
         } catch (err) {
