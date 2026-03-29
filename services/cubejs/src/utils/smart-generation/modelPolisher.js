@@ -10,14 +10,17 @@
 
 import { z } from 'zod';
 import fs from 'fs';
+import { validateModelSyntax } from './modelValidator.js';
+import { generateJs } from './yamlGenerator.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const MODEL = 'gpt-5.4';
-const DEFAULT_TIMEOUT = 60_000;
-const MAX_RETRIES = 1; // 2 total attempts
+const DEFAULT_TIMEOUT = 90_000;
+const MAX_RETRIES = 1; // 2 total LLM attempts
+const MAX_VALIDATION_LOOPS = 2; // validation → correction cycles
 
 // ---------------------------------------------------------------------------
 // Zod schemas for structured output
@@ -93,9 +96,15 @@ let _principlesCache = null;
 function loadPrinciples() {
   if (_principlesCache) return _principlesCache;
   try {
-    const principlesPath = process.env.CUBE_PRINCIPLES_PATH
-      || '/app/shared/principles/cube-principles.md';
-    _principlesCache = fs.readFileSync(principlesPath, 'utf-8');
+    const paths = [
+      process.env.CUBE_PRINCIPLES_PATH,
+      '/app/shared/principles/cube-principles.md',
+      '/app/shared/first-principles/semantic-layer-cubes.md',
+    ].filter(Boolean);
+    for (const p of paths) {
+      try { _principlesCache = fs.readFileSync(p, 'utf-8'); break; } catch { /* try next */ }
+    }
+    if (_principlesCache) return _principlesCache;
   } catch {
     _principlesCache = [
       '# Cube Modeling Principles (Summary)',
@@ -256,10 +265,64 @@ export async function polishModel(generatedCode, profileSummary, cubes, options 
         { signal: AbortSignal.timeout(timeout) }
       );
 
-      const parsed = completion.choices[0]?.message?.parsed;
+      let parsed = completion.choices[0]?.message?.parsed;
       if (!parsed) {
         if (attempt < MAX_RETRIES) continue;
         return { polishedCubes: null, report: null, status: 'failed', error: 'No parsed response from LLM' };
+      }
+
+      // -- Validation loop: generate JS → validate → feed errors back ---------
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: JSON.stringify(parsed) },
+      ];
+
+      for (let vLoop = 0; vLoop < MAX_VALIDATION_LOOPS; vLoop++) {
+        try {
+          const polishedJs = generateJs(parsed.cubes);
+          const fileName = (parsed.cubes[0]?.name || 'model') + '.js';
+          const validation = validateModelSyntax(polishedJs, fileName);
+
+          if (validation.valid) {
+            // Model passes validation
+            if (parsed.validation_report) {
+              parsed.validation_report.issues_fixed.push('Model syntax validated successfully');
+            }
+            break;
+          }
+
+          // Validation failed — send errors back to LLM for correction
+          const errorMsg = 'The polished model has syntax errors. Fix them and return the corrected model.\n\n'
+            + 'Validation errors:\n'
+            + (validation.errors || []).map((e) => '- ' + e).join('\n')
+            + '\n\nReturn the COMPLETE corrected model (all cubes, all fields) with fixes applied.';
+
+          console.warn('[modelPolisher] Validation loop ' + (vLoop + 1) + ': ' + (validation.errors?.length || 0) + ' errors, requesting correction');
+
+          messages.push({ role: 'user', content: errorMsg });
+
+          const correction = await client.chat.completions.parse(
+            {
+              model: MODEL,
+              messages,
+              response_format: zodResponseFormat(PolishResponseSchema, 'polished_model'),
+              temperature: 0.2,
+            },
+            { signal: AbortSignal.timeout(timeout) }
+          );
+
+          const corrected = correction.choices[0]?.message?.parsed;
+          if (corrected) {
+            parsed = corrected;
+            messages.push({ role: 'assistant', content: JSON.stringify(corrected) });
+          } else {
+            break; // No correction available
+          }
+        } catch (valErr) {
+          console.warn('[modelPolisher] Validation loop error (non-fatal):', valErr.message);
+          break;
+        }
       }
 
       return {
