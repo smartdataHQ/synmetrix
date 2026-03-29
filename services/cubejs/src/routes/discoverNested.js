@@ -10,15 +10,30 @@ const LOOKUP_KEY_PATTERN = /(_of|_type|_kind|_category)$/i;
  * Request body: { table: string, schema: string }
  * Response: { groups: NestedGroup[] }
  */
+/** Safe identifier pattern — only alphanumeric, underscore, dot allowed. */
+const SAFE_IDENTIFIER = /^[a-zA-Z0-9_.]+$/;
+
 export default async function discoverNested(req, res, cubejs) {
+  const { securityContext } = req;
   const { table, schema } = req.body;
 
   if (!table || !schema) {
-    return res.status(400).json({ error: 'table and schema are required' });
+    return res.status(400).json({
+      code: 'discover_nested_missing_params',
+      message: 'The table and schema parameters are required.',
+    });
   }
 
+  if (!SAFE_IDENTIFIER.test(schema) || !SAFE_IDENTIFIER.test(table)) {
+    return res.status(400).json({
+      code: 'discover_nested_invalid_identifier',
+      message: 'The schema and table parameters must contain only alphanumeric characters, underscores, and dots.',
+    });
+  }
+
+  let driver;
   try {
-    const driver = await cubejs.driverFactory();
+    driver = await cubejs.options.driverFactory({ securityContext });
 
     // 1. Fetch all columns for the table from system.columns
     const columnsRows = await driver.query(
@@ -94,6 +109,14 @@ export default async function discoverNested(req, res, cubejs) {
     res.json({ groups: result });
   } catch (err) {
     console.error('[discoverNested] Error:', err);
-    res.status(500).json({ error: err.message || 'Failed to discover nested structures' });
+
+    if (driver?.release) {
+      await driver.release();
+    }
+
+    res.status(500).json({
+      code: 'discover_nested_error',
+      message: err.message || 'Failed to discover nested structures',
+    });
   }
 }
