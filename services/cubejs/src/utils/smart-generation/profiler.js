@@ -588,7 +588,7 @@ export async function profileTable(driver, schema, table, options = {}) {
     const ajParts = [];
     for (const group of nestedGroups) {
       for (const [colName, col] of columns) {
-        if (col.parentName === group && col.childName) {
+        if (col.parentName === group && col.childName && col.rawType?.startsWith('Array(')) {
           const alias = colName.replace(/\./g, '_');
           ajParts.push(`\`${colName}\` AS \`${alias}\``);
         }

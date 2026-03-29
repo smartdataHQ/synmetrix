@@ -738,11 +738,14 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   const table = profiledTable.table;
   const isInternal = internalTables.includes(table);
 
-  // Collect all child columns for the selected groups
+  // Collect all Array-typed child columns for the selected groups.
+  // Only Array columns can be ARRAY JOINed — scalar dotted columns
+  // (e.g. commerce.details Nullable(String)) are excluded.
   const groupColumns = new Map(); // group -> [colData]
   for (const [colName, colData] of profiledTable.columns) {
     if (colData.columnType !== ColumnType.GROUPED || !colData.parentName) continue;
     if (!arrayJoinGroups.includes(colData.parentName)) continue;
+    if (!colData.rawType?.startsWith('Array(')) continue;
     if (!groupColumns.has(colData.parentName)) groupColumns.set(colData.parentName, []);
     groupColumns.get(colData.parentName).push(colData);
   }
@@ -767,22 +770,23 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   const ajParts = [];
   for (const [group, cols] of groupColumns) {
     for (const col of cols) {
-      ajParts.push(`\`${col.name}\` AS \`${col.childName}\``);
+      const alias = col.name.replace(/\./g, '_');
+      ajParts.push(`\`${col.name}\` AS \`${alias}\``);
     }
   }
   let sql = ajParts.length > 0
     ? `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${ajParts.join(', ')}`
     : `SELECT * FROM ${schema}.${table}`;
 
-  // Collect WHERE conditions — use child aliases (post-ARRAY JOIN names)
+  // Collect WHERE conditions — use aliased names (dots → underscores)
   const whereParts = [];
   if (isInternal && partition) {
     whereParts.push(`partition = '${partition}'`);
   }
   for (const nf of nestedFilters) {
     for (const f of nf.filters || []) {
-      // After ARRAY JOIN, sub-columns are referenced by childName alias
-      const alias = f.column;
+      const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+      const alias = fullCol.replace(/\./g, '_');
       if (f.values.length === 1) {
         whereParts.push(`\`${alias}\` = '${f.values[0].replace(/'/g, "''")}'`);
       } else if (f.values.length > 1) {
@@ -809,11 +813,10 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
 
   for (const [group, cols] of groupColumns) {
     for (const col of cols) {
-      const dimName = sanitizeFieldName(col.childName);
+      // The ARRAY JOIN alias is the full dotted name with dots → underscores
+      const colAlias = col.name.replace(/\./g, '_');
+      const dimName = sanitizeFieldName(colAlias);
       let finalName = dimName;
-      if (existingNames.has(finalName)) {
-        finalName = `${sanitizeFieldName(group)}_${finalName}`;
-      }
       if (existingNames.has(finalName)) {
         finalName = `${finalName}_${existingNames.size}`;
       }
@@ -829,14 +832,14 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
       if (col.valueType === ValueType.NUMBER) {
         measures.push({
           name: finalName,
-          sql: `{CUBE}.${col.childName}`,
+          sql: `{CUBE}.${colAlias}`,
           type: 'sum',
           meta: { auto_generated: true, source_column: col.name, source_group: group },
         });
       } else {
         dimensions.push({
           name: finalName,
-          sql: `{CUBE}.${col.childName}`,
+          sql: `{CUBE}.${colAlias}`,
           type: cubeType,
           meta: { auto_generated: true, source_column: col.name, source_group: group },
         });
