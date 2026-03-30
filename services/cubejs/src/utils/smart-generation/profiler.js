@@ -879,7 +879,7 @@ export async function profileTable(driver, schema, table, options = {}) {
       }
     }
 
-    const lcFrom = `${schema}.\`${table}\`${whereClause}`;
+    const lcFrom = `${schema}.\`${table}\`${arrayJoinClause}${whereClause}`;
 
     // --- Per-key stats for Map columns (range for numeric, cardinality for string) ---
     if (mapStatsCandidates.length > 0) {
