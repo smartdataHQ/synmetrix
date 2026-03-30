@@ -104,7 +104,9 @@ export default async (req, res, cubejs) => {
   // When provided, only these AI metric names are merged into the model (user selection from preview)
   const selectedAIMetrics = Array.isArray(rawSelectedAIMetrics) ? new Set(rawSelectedAIMetrics) : null;
   // When provided, these fully-qualified field names (cube.field) are excluded from the final model
-  const excludedFields = Array.isArray(req.body.excluded_fields) ? new Set(req.body.excluded_fields) : null;
+  const rawExcludedFields = req.body.excluded_fields;
+  console.log('[smartGenerate] raw excluded_fields:', typeof rawExcludedFields, Array.isArray(rawExcludedFields) ? rawExcludedFields.length : rawExcludedFields);
+  const excludedFields = Array.isArray(rawExcludedFields) ? new Set(rawExcludedFields) : null;
   // When provided, only these column names become dimensions/measures (user field selection)
   const selectedColumns = Array.isArray(rawSelectedColumns) ? new Set(rawSelectedColumns) : null;
 
@@ -454,31 +456,70 @@ export default async (req, res, cubejs) => {
           );
         }
 
-        // Derived metrics: remove if they reference excluded measures via {measure_name} syntax
-        cube.measures = cube.measures.filter((m) => {
-          if (!m.sql) return true;
-          const refs = m.sql.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g);
-          if (!refs) return true;
-          for (const ref of refs) {
-            const name = ref.slice(1, -1);
-            if (name === 'CUBE') continue;
-            if (!survivingAll.has(name)) return false;
-          }
-          return true;
-        });
+        // Iteratively remove fields with broken references until stable.
+        // Each pass may remove fields that other fields depend on.
+        let changed = true;
+        while (changed) {
+          changed = false;
+          const currentDims = new Set(cube.dimensions.map((d) => d.name));
+          const currentMeasures = new Set(cube.measures.map((m) => m.name));
+          const currentAll = new Set([...currentDims, ...currentMeasures]);
 
-        // Segments: remove if their SQL references excluded columns via {CUBE}.field_name
-        if (cube.segments) {
-          cube.segments = cube.segments.filter((s) => {
-            if (!s.sql) return true;
-            const colRefs = s.sql.match(/\{CUBE\}\.([a-zA-Z_][a-zA-Z0-9_]*)/g);
-            if (!colRefs) return true;
-            for (const ref of colRefs) {
+          // Helper: check if SQL references only surviving fields
+          const sqlRefsValid = (sql) => {
+            if (!sql) return true;
+            // Check {measure_name} references
+            const curlyRefs = sql.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
+            for (const ref of curlyRefs) {
+              const name = ref.slice(1, -1);
+              if (name === 'CUBE') continue;
+              if (!currentAll.has(name)) return false;
+            }
+            // Check {CUBE}.field references
+            const cubeRefs = sql.match(/\{CUBE\}\.([a-zA-Z_][a-zA-Z0-9_]*)/g) || [];
+            for (const ref of cubeRefs) {
               const name = ref.replace('{CUBE}.', '');
-              if (!survivingAll.has(name)) return false;
+              if (!currentAll.has(name)) return false;
             }
             return true;
+          };
+
+          const prevMeasureCount = cube.measures.length;
+          cube.measures = cube.measures.filter((m) => {
+            if (m.meta?.filtered_count_for && !currentDims.has(m.meta.filtered_count_for)) return false;
+            return sqlRefsValid(m.sql);
           });
+          if (cube.measures.length !== prevMeasureCount) changed = true;
+
+          if (cube.segments) {
+            const prevSegCount = cube.segments.length;
+            cube.segments = cube.segments.filter((s) => sqlRefsValid(s.sql));
+            if (cube.segments.length !== prevSegCount) changed = true;
+          }
+
+          // Clean drill_members
+          for (const m of cube.measures) {
+            if (m.drill_members) {
+              const before = m.drill_members.length;
+              m.drill_members = m.drill_members.filter((d) => currentDims.has(d));
+              if (m.drill_members.length === 0) delete m.drill_members;
+              if (m.drill_members?.length !== before) changed = true;
+            }
+          }
+        }
+
+        // Pre-aggregations: filter to surviving measures/dimensions only
+        if (cube.pre_aggregations) {
+          const finalMeasures = new Set(cube.measures.map((m) => m.name));
+          const finalDims = new Set(cube.dimensions.map((d) => d.name));
+          for (const pa of cube.pre_aggregations) {
+            if (pa.measures) pa.measures = pa.measures.filter((m) => finalMeasures.has(m));
+            if (pa.dimensions) pa.dimensions = pa.dimensions.filter((d) => finalDims.has(d));
+            if (pa.time_dimension && !finalDims.has(pa.time_dimension)) pa.time_dimension = null;
+          }
+          cube.pre_aggregations = cube.pre_aggregations.filter(
+            (pa) => !pa.measures || pa.measures.length > 0
+          );
         }
       }
     }
