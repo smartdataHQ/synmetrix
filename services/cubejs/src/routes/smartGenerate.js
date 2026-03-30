@@ -9,7 +9,7 @@ import { buildCubes, mergeAIMetrics } from '../utils/smart-generation/cubeBuilde
 import { generateJs, generateFileName } from '../utils/smart-generation/yamlGenerator.js';
 import { enrichWithAIMetrics } from '../utils/smart-generation/llmEnricher.js';
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
-import { polishModel } from '../utils/smart-generation/modelPolisher.js';
+import { adviseModel, applyAdvisoryPasses } from '../utils/smart-generation/modelAdvisor.js';
 import { mergeModels, extractAIMetrics } from '../utils/smart-generation/merger.js';
 import { deserializeProfile } from '../utils/smart-generation/profileSerializer.js';
 import { diffModels, parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
@@ -368,13 +368,13 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // ── Stage: LLM Model Polishing (only on Apply, not Preview) ─────────
-    let polishResult = null;
+    // ── Stage: LLM Model Advisory Passes (only on Apply) ────────────────
+    let advisorResult = null;
     if (!dryRun) {
-      emitter.emit('polishing', 'Polishing model with LLM...', 0.65);
-      const generatedPrePolish = generateJs(cubeResult.cubes);
+      emitter.emit('advising', 'Running LLM advisory passes...', 0.65);
+      const generatedPreAdvise = generateJs(cubeResult.cubes);
 
-      const profileSummaryForPolish = {
+      const profileSummaryForAdvisor = {
         table,
         schema,
         row_count: profiledTable.row_count,
@@ -387,28 +387,14 @@ export default async (req, res, cubejs) => {
       };
 
       try {
-        polishResult = await polishModel(generatedPrePolish, profileSummaryForPolish, cubeResult.cubes);
+        advisorResult = await adviseModel(generatedPreAdvise, profileSummaryForAdvisor, cubeResult.cubes);
 
-        if (polishResult.status === 'success' && polishResult.polishedCubes) {
-          for (let i = 0; i < cubeResult.cubes.length && i < polishResult.polishedCubes.length; i++) {
-            const original = cubeResult.cubes[i];
-            const polished = polishResult.polishedCubes[i];
-
-            polished.sql = original.sql;
-            polished.sql_table = original.sql_table;
-
-            cubeResult.cubes[i] = {
-              ...original,
-              ...polished,
-              sql: original.sql,
-              sql_table: original.sql_table,
-              meta: { ...original.meta, ...polished.meta },
-            };
-          }
+        if (advisorResult.status === 'success' && advisorResult.passes.length > 0) {
+          applyAdvisoryPasses(cubeResult.cubes, advisorResult.passes);
         }
       } catch (err) {
-        console.warn('[smartGenerate] Model polishing failed (non-fatal):', err.message);
-        polishResult = { status: 'failed', error: err.message };
+        console.warn('[smartGenerate] Model advisory failed (non-fatal):', err.message);
+        advisorResult = { passes: [], status: 'failed', error: err.message };
       }
     }
 
@@ -479,10 +465,10 @@ export default async (req, res, cubejs) => {
           cubes_count: summary.cubes_count,
         },
         ai_enrichment: aiEnrichment,
-        polish: polishResult ? {
-          status: polishResult.status,
-          report: polishResult.report || null,
-          error: polishResult.error || null,
+        advisor: advisorResult ? {
+          status: advisorResult.status,
+          passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
+          error: advisorResult.error || null,
         } : null,
         model_validation: modelValidation,
         previous_filters: previousFilters,
@@ -536,10 +522,10 @@ export default async (req, res, cubejs) => {
           cubes_count: cubeResult.summary.cubes_count,
         },
         ai_enrichment: aiEnrichment,
-        polish: polishResult ? {
-          status: polishResult.status,
-          report: polishResult.report || null,
-          error: polishResult.error || null,
+        advisor: advisorResult ? {
+          status: advisorResult.status,
+          passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
+          error: advisorResult.error || null,
         } : null,
         model_validation: modelValidation,
         previous_filters: previousFilters,
@@ -595,10 +581,10 @@ export default async (req, res, cubejs) => {
         cubes_count: summary.cubes_count,
       },
       ai_enrichment: aiEnrichment,
-      polish: polishResult ? {
-        status: polishResult.status,
-        report: polishResult.report || null,
-        error: polishResult.error || null,
+      advisor: advisorResult ? {
+        status: advisorResult.status,
+        passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
+        error: advisorResult.error || null,
       } : null,
       previous_filters: previousFilters,
     };
