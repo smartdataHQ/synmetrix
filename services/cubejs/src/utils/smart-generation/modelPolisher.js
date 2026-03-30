@@ -48,11 +48,25 @@ async function getSchemas() {
     public: z.boolean().nullable().describe('false for internal plumbing fields'),
     primary_key: z.boolean().nullable(),
     format: z.enum(['currency', 'percent']).nullable(),
-    meta: z.record(z.string(), z.string()).nullable(),
+    meta: z.object({
+      auto_generated: z.boolean().nullable(),
+      ai_generated: z.boolean().nullable(),
+      source_column: z.string().nullable(),
+      source_group: z.string().nullable(),
+    }).nullable(),
     drill_members: z.array(z.string()).nullable(),
-    rollingWindow: z.any().nullable(),
+    rollingWindow: z.object({
+      type: z.enum(['to_date', 'fixed']),
+      granularity: z.enum(['year', 'quarter', 'month', 'week', 'day', 'hour']).nullable(),
+      trailing: z.string().nullable(),
+      leading: z.string().nullable(),
+      offset: z.enum(['start', 'end']).nullable(),
+    }).nullable(),
     multiStage: z.boolean().nullable(),
-    timeShift: z.any().nullable(),
+    timeShift: z.array(z.object({
+      interval: z.string(),
+      type: z.enum(['prior', 'next']),
+    })).nullable(),
   });
 
   const PolishedCubeSchema = z.object({
@@ -68,7 +82,7 @@ async function getSchemas() {
       time_zone: z.string().nullable(),
       refresh_cadence: z.string().nullable(),
       auto_generated: z.boolean(),
-    }).passthrough(),
+    }),
     dimensions: z.array(PolishedFieldSchema),
     measures: z.array(PolishedFieldSchema),
     segments: z.array(PolishedFieldSchema).nullable(),
@@ -80,7 +94,10 @@ async function getSchemas() {
       time_dimension: z.string().nullable(),
       granularity: z.string().nullable(),
       partition_granularity: z.string().nullable(),
-      refresh_key: z.any().nullable(),
+      refresh_key: z.object({
+        every: z.string().nullable(),
+        sql: z.string().nullable(),
+      }).nullable(),
       indexes: z.array(z.object({
         name: z.string(),
         columns: z.array(z.string()),
