@@ -104,7 +104,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/smartGenSchemas'
       forward_client_headers: true
-      timeout: 180
+      timeout: 300
     permissions:
       - role: user
   - name: update_team_settings

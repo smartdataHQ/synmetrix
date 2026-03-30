@@ -23,6 +23,10 @@ export default async (session, input, headers) => {
 
   const userId = session?.["x-hasura-user-id"];
 
+  if (nestedFilters) {
+    console.log('[smartGenSchemas] nested_filters received:', JSON.stringify(nestedFilters));
+  }
+
   try {
     // CRITICAL: pass branchId to cubejsApi constructor for correct branch scoping
     const result = await cubejsApi({
