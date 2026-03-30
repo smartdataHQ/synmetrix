@@ -11,6 +11,23 @@ import { ColumnType, ValueType } from './typeParser.js';
 // -- Helpers ----------------------------------------------------------------
 
 /**
+ * Convert a snake_case field name to a human-readable Title.
+ * E.g. "commerce_products_entry_type" → "Commerce Products Entry Type"
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function titleFromName(name) {
+  const UPPER = new Set(['id', 'gid', 'sku', 'upc', 'ean', 'isbn', 'gtin', 'uom', 'gs1', 'ip', 'url', 'img', 'os', 'ms', 'mgr']);
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(' ')
+    .map((w) => UPPER.has(w.toLowerCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
  * Sanitize a table name into a valid Cube.js cube identifier.
  *
  * @param {string} name
@@ -669,10 +686,32 @@ function buildRawCube(profiledTable, options) {
     meta: { auto_generated: true, field_type: 'integer' },
   });
 
+  // -- Heuristics: partition-first ordering ----------------------------------
+  const partitionIdx = dimensions.findIndex((d) => d.name === 'partition');
+  if (partitionIdx > 0) {
+    const [partitionDim] = dimensions.splice(partitionIdx, 1);
+    dimensions.unshift(partitionDim);
+  }
+
+  // -- Heuristics: titles on all fields + cube --------------------------------
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
+  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
+
+  // -- Heuristics: meta block -------------------------------------------------
+  const timeDim = dimensions.find((d) => d.type === 'time' && d.primary_key !== true);
+  const grainParts = (primaryKeys || []).length > 0
+    ? primaryKeys.map(sanitizeFieldName).join(' + ')
+    : 'one row per source record';
+
   const meta = {
     auto_generated: true,
     source_database: schema,
     source_table: table,
+    grain: grainParts,
+    grain_description: `Each row represents one ${table} record, keyed by ${grainParts}.`,
+    time_dimension: timeDim ? timeDim.name : null,
+    time_zone: 'UTC',
+    refresh_cadence: '1 hour',
     generated_at: new Date().toISOString(),
   };
 
@@ -685,12 +724,100 @@ function buildRawCube(profiledTable, options) {
     meta.source_partition = partition;
   }
 
+  // -- Heuristics: paired filtered counts for LC dimensions -------------------
+  const countMeasure = measures.find((m) => m.type === 'count');
+  if (countMeasure) {
+    for (const dim of dimensions) {
+      const lcValues = dim.meta?.lc_values;
+      if (!Array.isArray(lcValues) || lcValues.length === 0 || lcValues.length > 10) continue;
+      if (dim.type !== 'string') continue;
+      for (const val of lcValues) {
+        const slug = sanitizeFieldName(val.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+        const measName = `count_${dim.name}_${slug}`;
+        if (measures.some((m) => m.name === measName)) continue;
+        measures.push({
+          name: measName,
+          title: titleFromName(measName),
+          sql: `{CUBE}.${dim.name}`,
+          type: 'count',
+          filters: [{ sql: `{CUBE}.${dim.name} = '${val.replace(/'/g, "''")}'` }],
+          meta: { auto_generated: true, filtered_count_for: dim.name, filter_value: val },
+        });
+      }
+    }
+  }
+
+  // -- Heuristics: format inference -------------------------------------------
+  const CURRENCY_PATTERN = /^(revenue|tax|discount|cogs|commission|amount|fee|total|balance)$|_(price|cost|revenue|fee|amount)$/i;
+  const PERCENT_PATTERN = /_(percentage|pct|ratio|rate)$/i;
+  for (const meas of measures) {
+    if (meas.format) continue;
+    if (CURRENCY_PATTERN.test(meas.name)) meas.format = 'currency';
+    else if (PERCENT_PATTERN.test(meas.name)) meas.format = 'percent';
+  }
+
+  // -- Heuristics: public:false on plumbing fields ----------------------------
+  const PLUMBING_PATTERN = /^(message_id|event_gid|anonymous_gid|session_gid|user_gid|write_key|ttl_days)$|_gid$/;
+  for (const dim of dimensions) {
+    if (dim.public !== undefined) continue;
+    if (PLUMBING_PATTERN.test(dim.name)) dim.public = false;
+  }
+
+  // -- Heuristics: drill members on count -------------------------------------
+  if (countMeasure) {
+    const drillCandidates = dimensions
+      .filter((d) => d.type === 'string' && !d.name.includes('_id') && !d.name.includes('_gid') && d.public !== false)
+      .slice(0, 5)
+      .map((d) => d.name);
+    if (drillCandidates.length > 0) {
+      countMeasure.drill_members = drillCandidates;
+    }
+  }
+
+  // -- Heuristics: default pre-aggregations -----------------------------------
+  const preAggDimensions = dimensions
+    .filter((d) => d.type === 'string' && d.public !== false)
+    .slice(0, 5)
+    .map((d) => d.name);
+  const preAggMeasures = measures
+    .filter((m) => ['count', 'sum', 'min', 'max', 'count_distinct_approx'].includes(m.type))
+    .slice(0, 10)
+    .map((m) => m.name);
+  const pre_aggregations = [];
+  if (timeDim && preAggMeasures.length > 0) {
+    pre_aggregations.push({
+      name: 'daily_rollup',
+      type: 'rollup',
+      dimensions: ['partition', ...preAggDimensions],
+      measures: preAggMeasures,
+      time_dimension: timeDim.name,
+      granularity: 'day',
+      partition_granularity: 'month',
+      refresh_key: { every: '1 hour' },
+      indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
+    });
+    pre_aggregations.push({
+      name: 'monthly_rollup',
+      type: 'rollup',
+      dimensions: ['partition'],
+      measures: preAggMeasures.slice(0, 5),
+      time_dimension: timeDim.name,
+      granularity: 'month',
+      partition_granularity: 'month',
+      refresh_key: { every: '1 hour' },
+      indexes: [{ name: 'partition_idx', columns: ['partition'] }],
+    });
+  }
+
   const cube = {
     name: cubeName,
+    title: titleFromName(cubeName),
+    description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     ...source,
     meta,
     dimensions,
     measures,
+    pre_aggregations,
   };
 
   return { cube, mapKeysDiscovered, columnsProfiled, columnsSkipped };
@@ -847,6 +974,10 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     }
   }
 
+  // Titles on all fields
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
+  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
+
   const meta = {
     auto_generated: true,
     source_database: schema,
@@ -862,6 +993,8 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
 
   return {
     name: cubeName,
+    title: titleFromName(cubeName),
+    description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     sql,
     meta,
     dimensions,
