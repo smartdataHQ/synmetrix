@@ -891,15 +891,34 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   const groupSuffix = filterSuffix || arrayJoinGroups.map((g) => sanitizeCubeName(g)).join('_');
   const cubeName = sanitizeCubeName(`${table}_${groupSuffix}`);
 
+  // Ensure nested filter columns are always in the ARRAY JOIN even if
+  // the user deselected them — the WHERE clause depends on them.
+  const filterColumns = new Set();
+  for (const nf of nestedFilters) {
+    for (const f of nf.filters || []) {
+      const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+      filterColumns.add(fullCol);
+    }
+  }
+
   // Build the ARRAY JOIN SQL — enumerate each sub-column with an alias.
   // ClickHouse Nested columns (parallel arrays with dotted names) require:
   //   ARRAY JOIN `parent.child1` AS child1_alias, `parent.child2` AS child2_alias
   // Format with newlines for readability in the model editor.
   const ajParts = [];
+  const ajColumnNames = new Set();
   for (const [group, cols] of groupColumns) {
     for (const col of cols) {
       const alias = col.name.replace(/\./g, '_');
       ajParts.push(`  \`${col.name}\` AS \`${alias}\``);
+      ajColumnNames.add(col.name);
+    }
+  }
+  // Add any filter columns that weren't in the selected columns
+  for (const filterCol of filterColumns) {
+    if (!ajColumnNames.has(filterCol)) {
+      const alias = filterCol.replace(/\./g, '_');
+      ajParts.push(`  \`${filterCol}\` AS \`${alias}\``);
     }
   }
   let sql;
