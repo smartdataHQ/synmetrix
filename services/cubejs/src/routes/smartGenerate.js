@@ -406,7 +406,7 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // Strip excluded fields (user deselected in change preview)
+    // Strip excluded fields and clean up all cross-references
     if (excludedFields && excludedFields.size > 0) {
       for (const cube of cubeResult.cubes) {
         cube.dimensions = cube.dimensions.filter(
@@ -420,6 +420,51 @@ export default async (req, res, cubejs) => {
             (s) => !excludedFields.has(`${cube.name}.${s.name}`)
           );
         }
+
+        // Clean up cross-references to surviving fields only
+        const survivingDims = new Set(cube.dimensions.map((d) => d.name));
+        const survivingMeasures = new Set(cube.measures.map((m) => m.name));
+        const survivingAll = new Set([...survivingDims, ...survivingMeasures]);
+
+        // Drill members: remove references to excluded dimensions
+        for (const m of cube.measures) {
+          if (m.drill_members) {
+            m.drill_members = m.drill_members.filter((d) => survivingDims.has(d));
+            if (m.drill_members.length === 0) delete m.drill_members;
+          }
+        }
+
+        // Paired counts: remove if referenced dimension is gone
+        cube.measures = cube.measures.filter((m) => {
+          if (m.meta?.filtered_count_for && !survivingDims.has(m.meta.filtered_count_for)) return false;
+          return true;
+        });
+
+        // Pre-aggregations: filter to surviving measures/dimensions only
+        if (cube.pre_aggregations) {
+          for (const pa of cube.pre_aggregations) {
+            if (pa.measures) pa.measures = pa.measures.filter((m) => survivingMeasures.has(m));
+            if (pa.dimensions) pa.dimensions = pa.dimensions.filter((d) => survivingDims.has(d));
+            if (pa.time_dimension && !survivingDims.has(pa.time_dimension)) pa.time_dimension = null;
+          }
+          // Remove pre-aggs with no measures left
+          cube.pre_aggregations = cube.pre_aggregations.filter(
+            (pa) => !pa.measures || pa.measures.length > 0
+          );
+        }
+
+        // Derived metrics: remove if they reference excluded measures via {measure_name} syntax
+        cube.measures = cube.measures.filter((m) => {
+          if (!m.sql) return true;
+          const refs = m.sql.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g);
+          if (!refs) return true;
+          for (const ref of refs) {
+            const name = ref.slice(1, -1);
+            if (name === 'CUBE') continue;
+            if (!survivingAll.has(name)) return false;
+          }
+          return true;
+        });
       }
     }
 
