@@ -780,7 +780,7 @@ function buildRawCube(profiledTable, options) {
     .slice(0, 5)
     .map((d) => d.name);
   const preAggMeasures = measures
-    .filter((m) => ['count', 'sum', 'min', 'max', 'count_distinct_approx'].includes(m.type))
+    .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
     .slice(0, 10)
     .map((m) => m.name);
   const pre_aggregations = [];
@@ -894,16 +894,20 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   // Build the ARRAY JOIN SQL — enumerate each sub-column with an alias.
   // ClickHouse Nested columns (parallel arrays with dotted names) require:
   //   ARRAY JOIN `parent.child1` AS child1_alias, `parent.child2` AS child2_alias
+  // Format with newlines for readability in the model editor.
   const ajParts = [];
   for (const [group, cols] of groupColumns) {
     for (const col of cols) {
       const alias = col.name.replace(/\./g, '_');
-      ajParts.push(`\`${col.name}\` AS \`${alias}\``);
+      ajParts.push(`  \`${col.name}\` AS \`${alias}\``);
     }
   }
-  let sql = ajParts.length > 0
-    ? `SELECT * FROM ${schema}.${table} LEFT ARRAY JOIN ${ajParts.join(', ')}`
-    : `SELECT * FROM ${schema}.${table}`;
+  let sql;
+  if (ajParts.length > 0) {
+    sql = `SELECT *\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
+  } else {
+    sql = `SELECT * FROM ${schema}.${table}`;
+  }
 
   // Collect WHERE conditions — use aliased names (dots → underscores)
   const whereParts = [];
@@ -923,7 +927,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     }
   }
   if (whereParts.length > 0) {
-    sql += ` WHERE ${whereParts.join(' AND ')}`;
+    sql += `\nWHERE ${whereParts.join('\n  AND ')}`;
   }
 
   // Start with non-array dimensions/measures from the raw cube
@@ -1104,7 +1108,7 @@ export function buildCubes(profiledTable, options = {}) {
         .slice(0, 5)
         .map((d) => d.name);
       const preAggMeasures = ajCube.measures
-        .filter((m) => ['count', 'sum', 'min', 'max', 'count_distinct_approx'].includes(m.type))
+        .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
         .slice(0, 10)
         .map((m) => m.name);
       if (preAggMeasures.length > 0) {

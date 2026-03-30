@@ -158,7 +158,7 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
     metrics: z.array(z.object({
       name: z.string(),
       sql: z.string(),
-      type: z.enum(['number', 'count', 'sum', 'avg', 'min', 'max', 'count_distinct', 'count_distinct_approx']),
+      type: z.enum(['number', 'count', 'sum', 'avg', 'min', 'max', 'count_distinct']),
       title: z.string(),
       description: z.string(),
       format: z.enum(['currency', 'percent']).nullable(),
