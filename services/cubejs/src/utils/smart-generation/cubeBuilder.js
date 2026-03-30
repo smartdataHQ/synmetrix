@@ -933,11 +933,22 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   // Start with non-array dimensions/measures from the raw cube.
   // Exclude FILTER_PARAMS dimensions — they use indexOf on array columns
   // which are scalars after ARRAY JOIN and will cause runtime errors.
+  // Also exclude paired count measures whose referenced dimension was removed.
   const dimensions = rawCube.dimensions
     .filter((d) => !d._isArrayField && !(d.sql && d.sql.includes('FILTER_PARAMS')))
     .map((d) => ({ ...d }));
+  const survivingDimNames = new Set(dimensions.map((d) => d.name));
   const measures = rawCube.measures
-    .filter((m) => !(m.sql && m.sql.includes('FILTER_PARAMS')))
+    .filter((m) => {
+      if (m.sql && m.sql.includes('FILTER_PARAMS')) return false;
+      // Paired counts reference a dimension — check it survived
+      if (m.meta?.filtered_count_for && !survivingDimNames.has(m.meta.filtered_count_for)) return false;
+      // Drill members that reference removed dimensions
+      if (m.drill_members) {
+        m.drill_members = m.drill_members.filter((d) => survivingDimNames.has(d));
+      }
+      return true;
+    })
     .map((m) => ({ ...m }));
 
   // Add dimensions/measures for each child column in the selected groups
