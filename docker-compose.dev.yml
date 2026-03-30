@@ -51,8 +51,7 @@ services:
     volumes:
       - ./services/cubejs/src:/app/src
       - ./services/cubejs/index.js:/app/index.js
-      - ../fraios/shared/principles:/app/shared/principles:ro
-      - ../fraios/shared/first-principles:/app/shared/first-principles:ro
+      - ./services/cubejs/principles:/app/shared/principles:ro
     ports:
       - 4000:4000
       - 9231:9229
