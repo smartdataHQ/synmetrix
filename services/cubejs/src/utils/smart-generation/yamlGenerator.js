@@ -57,11 +57,6 @@ function formatField(field) {
     meta,
   };
 
-  // Preserve description for AI-generated fields
-  if (field.description) {
-    entry.description = field.description;
-  }
-
   // Pass through advanced Cube.js measure properties
   if (field.rollingWindow) entry.rollingWindow = field.rollingWindow;
   if (field.multiStage) entry.multiStage = true;
@@ -71,6 +66,14 @@ function formatField(field) {
     entry.primary_key = true;
     entry.public = true;
   }
+
+  // Serialise new cubeBuilder properties
+  if (field.title) entry.title = field.title;
+  if (field.description) entry.description = field.description;
+  if (field.public === false) entry.public = false;
+  if (field.format) entry.format = field.format;
+  if (field.drill_members && field.drill_members.length > 0) entry.drill_members = field.drill_members;
+  if (field.filters && field.filters.length > 0) entry.filters = field.filters;
 
   return entry;
 }
@@ -110,6 +113,16 @@ function formatCube(cube) {
 
   if (measures.length > 0) {
     entry.measures = measures;
+  }
+
+  // Cube-level properties from cubeBuilder
+  if (cube.title) entry.title = cube.title;
+  if (cube.description) entry.description = cube.description;
+  if (cube.pre_aggregations && cube.pre_aggregations.length > 0) {
+    entry.pre_aggregations = cube.pre_aggregations;
+  }
+  if (cube.segments && cube.segments.length > 0) {
+    entry.segments = cube.segments.map(formatField);
   }
 
   return entry;
@@ -205,6 +218,14 @@ export function generateJs(cubeDefinitions) {
       lines.push(`  sql: \`${sqlToJsTemplate(formatted.sql)}\`,`);
     }
 
+    // Cube-level scalar properties
+    if (formatted.title) {
+      lines.push(`  title: ${JSON.stringify(formatted.title)},`);
+    }
+    if (formatted.description) {
+      lines.push(`  description: ${JSON.stringify(formatted.description)},`);
+    }
+
     // Cube-level meta
     if (formatted.meta) {
       lines.push('');
@@ -225,6 +246,21 @@ export function generateJs(cubeDefinitions) {
         if (dim.primary_key) {
           lines.push('      primary_key: true,');
           lines.push('      public: true,');
+        }
+        if (dim.title) {
+          lines.push(`      title: ${JSON.stringify(dim.title)},`);
+        }
+        if (dim.public === false) {
+          lines.push('      public: false,');
+        }
+        if (dim.format) {
+          lines.push(`      format: ${JSON.stringify(dim.format)},`);
+        }
+        if (dim.drill_members && dim.drill_members.length > 0) {
+          lines.push(`      drill_members: ${JSON.stringify(dim.drill_members)},`);
+        }
+        if (dim.filters && dim.filters.length > 0) {
+          lines.push(`      filters: ${JSON.stringify(dim.filters)},`);
         }
         if (dim.meta) {
           lines.push(metaToJs(dim.meta, 6));
@@ -261,10 +297,56 @@ export function generateJs(cubeDefinitions) {
           const items = m.timeShift.map((ts) => `{ interval: '${ts.interval}', type: '${ts.type}' }`);
           lines.push(`      timeShift: [${items.join(', ')}],`);
         }
+        if (m.title) {
+          lines.push(`      title: ${JSON.stringify(m.title)},`);
+        }
+        if (m.public === false) {
+          lines.push('      public: false,');
+        }
+        if (m.format) {
+          lines.push(`      format: ${JSON.stringify(m.format)},`);
+        }
+        if (m.drill_members && m.drill_members.length > 0) {
+          lines.push(`      drill_members: ${JSON.stringify(m.drill_members)},`);
+        }
+        if (m.filters && m.filters.length > 0) {
+          lines.push(`      filters: ${JSON.stringify(m.filters)},`);
+        }
         if (m.meta) {
           lines.push(metaToJs(m.meta, 6));
         }
         lines.push('    },');
+      }
+      lines.push('  },');
+    }
+
+    // Segments
+    if (formatted.segments && formatted.segments.length > 0) {
+      lines.push('');
+      lines.push('  segments: {');
+      for (const seg of formatted.segments) {
+        lines.push(`    ${seg.name}: {`);
+        lines.push(`      sql: \`${sqlToJsTemplate(seg.sql)}\`,`);
+        if (seg.title) {
+          lines.push(`      title: ${JSON.stringify(seg.title)},`);
+        }
+        if (seg.description) {
+          lines.push(`      description: ${JSON.stringify(seg.description)},`);
+        }
+        if (seg.meta) {
+          lines.push(metaToJs(seg.meta, 6));
+        }
+        lines.push('    },');
+      }
+      lines.push('  },');
+    }
+
+    // Pre-aggregations
+    if (formatted.pre_aggregations && formatted.pre_aggregations.length > 0) {
+      lines.push('');
+      lines.push('  pre_aggregations: {');
+      for (const pa of formatted.pre_aggregations) {
+        lines.push(`    ${pa.name}: ${JSON.stringify(pa, null, 6).replace(/^\{/, '{').replace(/\}$/, '    }')},`);
       }
       lines.push('  },');
     }
