@@ -211,8 +211,14 @@ export default async (req, res, cubejs) => {
     }
 
     // Fetch existing schemas early (needed for AI superset regeneration and merge)
-    const fileName = fileNameOverride
-      ? (fileNameOverride.endsWith('.js') || fileNameOverride.endsWith('.yml') ? fileNameOverride : `${fileNameOverride}.js`)
+    // When nested filters produce a different cube name, use that for the file name
+    // so file name matches cube name (required for Cube.js resolution).
+    const cubeName = cubeResult.cubes[0]?.name;
+    const effectiveFileNameOverride = (nestedFilters.length > 0 && cubeName)
+      ? `${cubeName}.js`
+      : fileNameOverride;
+    const fileName = effectiveFileNameOverride
+      ? (effectiveFileNameOverride.endsWith('.js') || effectiveFileNameOverride.endsWith('.yml') ? effectiveFileNameOverride : `${effectiveFileNameOverride}.js`)
       : generateFileName(table, true);
     emitter.emit('versioning', 'Checking existing schemas...', 0.62);
     // Use admin secret (no authToken) for internal Hasura calls — the user's
@@ -424,8 +430,13 @@ export default async (req, res, cubejs) => {
     }
 
     let finalYaml = yamlContent;
-    if (existingCode) {
-      finalYaml = mergeModels(existingCode, yamlContent, mergeStrategy);
+    // When nested filters are active, the cube structure is fundamentally
+    // different (ARRAY JOIN flattens arrays into scalars). Merging with an
+    // existing model that has FILTER_PARAMS on array columns will break.
+    // Force replace to start clean.
+    const effectiveMergeStrategy = nestedFilters.length > 0 ? 'replace' : mergeStrategy;
+    if (existingCode && effectiveMergeStrategy !== 'replace') {
+      finalYaml = mergeModels(existingCode, yamlContent, effectiveMergeStrategy);
     }
 
     // Fix FILTER_PARAMS references: after merge, old cube names may persist
