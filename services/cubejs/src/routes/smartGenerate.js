@@ -428,6 +428,19 @@ export default async (req, res, cubejs) => {
       finalYaml = mergeModels(existingCode, yamlContent, mergeStrategy);
     }
 
+    // Fix FILTER_PARAMS references: after merge, old cube names may persist
+    // in FILTER_PARAMS expressions from the previous model version.
+    const actualCubeName = cubeResult.cubes[0]?.name;
+    if (actualCubeName && finalYaml.includes('FILTER_PARAMS.')) {
+      const fpPattern = /FILTER_PARAMS\.([a-zA-Z_][a-zA-Z0-9_]*)\./g;
+      finalYaml = finalYaml.replace(fpPattern, (match, refCubeName) => {
+        if (refCubeName !== actualCubeName) {
+          return `FILTER_PARAMS.${actualCubeName}.`;
+        }
+        return match;
+      });
+    }
+
     // Validate generated model — syntax check + smoke-test query
     emitter.emit('validating', 'Validating model...', 0.79);
     const syntaxResult = await validateModelSyntax(finalYaml, fileName);
