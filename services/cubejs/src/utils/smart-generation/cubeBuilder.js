@@ -1040,30 +1040,111 @@ export function buildCubes(profiledTable, options = {}) {
 
   const cubes = [];
 
-  // 1. Build the raw (main) cube
+  // Always build the raw cube — needed for field processing and heuristics.
+  // When nested filters are active, the raw cube is used as a base but NOT emitted.
   const { cube: rawCube, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     buildRawCube(profiledTable, options);
 
-  cubes.push(rawCube);
-
-  // 2a. Build nested-filter ARRAY JOIN cube (new path)
   if (nestedFilters.length > 0) {
+    // Nested-filter path: emit ONLY the array-joined cube.
+    // The raw cube is used internally for base field processing but discarded.
     const groups = nestedFilters.map((nf) => nf.group);
     const ajCube = buildArrayJoinCube(profiledTable, groups, rawCube, options);
-    cubes.push(ajCube);
-  }
 
-  // 2b. Build legacy ARRAY JOIN cubes (backwards-compatible path)
-  if (nestedFilters.length === 0) {
+    // Apply heuristics that buildRawCube applies but buildArrayJoinCube doesn't:
+    // - Partition-first ordering
+    const partitionIdx = ajCube.dimensions.findIndex((d) => d.name === 'partition');
+    if (partitionIdx > 0) {
+      const [partitionDim] = ajCube.dimensions.splice(partitionIdx, 1);
+      ajCube.dimensions.unshift(partitionDim);
+    }
+
+    // - Grain + meta enrichment
+    const timeDim = ajCube.dimensions.find((d) => d.type === 'time' && d.primary_key !== true);
+    const primaryKeys = options.primaryKeys || [];
+    const grainParts = primaryKeys.length > 0
+      ? primaryKeys.map(sanitizeFieldName).join(' + ')
+      : 'one row per source record';
+    ajCube.meta.grain = grainParts;
+    ajCube.meta.grain_description = `Each row represents one ${profiledTable.table} record, keyed by ${grainParts}.`;
+    ajCube.meta.time_dimension = timeDim ? timeDim.name : null;
+    ajCube.meta.time_zone = 'UTC';
+    ajCube.meta.refresh_cadence = '1 hour';
+
+    // - Drill members on count
+    const countMeasure = ajCube.measures.find((m) => m.type === 'count');
+    if (countMeasure && !countMeasure.drill_members) {
+      const drillCandidates = ajCube.dimensions
+        .filter((d) => d.type === 'string' && !d.name.includes('_id') && !d.name.includes('_gid') && d.public !== false)
+        .slice(0, 5)
+        .map((d) => d.name);
+      if (drillCandidates.length > 0) countMeasure.drill_members = drillCandidates;
+    }
+
+    // - Format inference
+    const CURRENCY_PATTERN = /^(revenue|tax|discount|cogs|commission|amount|fee|total|balance)$|_(price|cost|revenue|fee|amount)$/i;
+    const PERCENT_PATTERN = /_(percentage|pct|ratio|rate)$/i;
+    for (const meas of ajCube.measures) {
+      if (meas.format) continue;
+      if (CURRENCY_PATTERN.test(meas.name)) meas.format = 'currency';
+      else if (PERCENT_PATTERN.test(meas.name)) meas.format = 'percent';
+    }
+
+    // - Public:false on plumbing
+    const PLUMBING_PATTERN = /^(message_id|event_gid|anonymous_gid|session_gid|user_gid|write_key|ttl_days)$|_gid$/;
+    for (const dim of ajCube.dimensions) {
+      if (dim.public !== undefined) continue;
+      if (PLUMBING_PATTERN.test(dim.name)) dim.public = false;
+    }
+
+    // - Pre-aggregations
+    if (timeDim) {
+      const preAggDimensions = ajCube.dimensions
+        .filter((d) => d.type === 'string' && d.public !== false)
+        .slice(0, 5)
+        .map((d) => d.name);
+      const preAggMeasures = ajCube.measures
+        .filter((m) => ['count', 'sum', 'min', 'max', 'count_distinct_approx'].includes(m.type))
+        .slice(0, 10)
+        .map((m) => m.name);
+      if (preAggMeasures.length > 0) {
+        ajCube.pre_aggregations = [
+          {
+            name: 'daily_rollup',
+            type: 'rollup',
+            dimensions: ['partition', ...preAggDimensions],
+            measures: preAggMeasures,
+            time_dimension: timeDim.name,
+            granularity: 'day',
+            partition_granularity: 'month',
+            refresh_key: { every: '1 hour' },
+            indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
+          },
+          {
+            name: 'monthly_rollup',
+            type: 'rollup',
+            dimensions: ['partition'],
+            measures: preAggMeasures.slice(0, 5),
+            time_dimension: timeDim.name,
+            granularity: 'month',
+            partition_granularity: 'month',
+            refresh_key: { every: '1 hour' },
+            indexes: [{ name: 'partition_idx', columns: ['partition'] }],
+          },
+        ];
+      }
+    }
+
+    cubes.push(ajCube);
+  } else if (arrayJoinColumns.length > 0) {
+    // Legacy ARRAY JOIN path: raw cube + separate flattened cubes
+    cubes.push(rawCube);
     for (const ajDef of arrayJoinColumns) {
       const legacyCube = buildArrayJoinCube(profiledTable, [ajDef.column], rawCube, {
         ...options,
         nestedFilters: [],
       });
-      // Override name to use the legacy alias-based naming
       legacyCube.name = sanitizeCubeName(`${profiledTable.table}_${ajDef.alias}`);
-
-      // Patch SQL to include AS alias (legacy format expected by existing consumers)
       const qualifiedTable = `${profiledTable.database}.${profiledTable.table}`;
       const isInternal = (options.internalTables || []).includes(profiledTable.table);
       let legacySql = `SELECT *, ${ajDef.column} AS ${ajDef.alias} FROM ${qualifiedTable} LEFT ARRAY JOIN ${ajDef.column} AS ${ajDef.alias}`;
@@ -1071,11 +1152,13 @@ export function buildCubes(profiledTable, options = {}) {
         legacySql += ` WHERE partition = '${options.partition}'`;
       }
       legacyCube.sql = legacySql;
-
       legacyCube.meta.array_join_column = ajDef.column;
       legacyCube.meta.array_join_alias = ajDef.alias;
       cubes.push(legacyCube);
     }
+  } else {
+    // No array join: just the raw cube
+    cubes.push(rawCube);
   }
 
   // 3. Compute summary
