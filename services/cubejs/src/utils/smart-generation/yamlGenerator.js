@@ -341,12 +341,39 @@ export function generateJs(cubeDefinitions) {
       lines.push('  },');
     }
 
-    // Pre-aggregations
+    // Pre-aggregations — Cube.js uses named object keys, not arrays
     if (formatted.pre_aggregations && formatted.pre_aggregations.length > 0) {
       lines.push('');
       lines.push('  pre_aggregations: {');
       for (const pa of formatted.pre_aggregations) {
-        lines.push(`    ${pa.name}: ${JSON.stringify(pa, null, 6).replace(/^\{/, '{').replace(/\}$/, '    }')},`);
+        const paName = pa.name || 'rollup';
+        lines.push(`    ${paName}: {`);
+        if (pa.type) lines.push(`      type: \`${pa.type}\`,`);
+        if (pa.measures && pa.measures.length > 0) {
+          lines.push(`      measures: [${pa.measures.map((m) => `CUBE.${m}`).join(', ')}],`);
+        }
+        if (pa.dimensions && pa.dimensions.length > 0) {
+          lines.push(`      dimensions: [${pa.dimensions.map((d) => `CUBE.${d}`).join(', ')}],`);
+        }
+        if (pa.time_dimension) lines.push(`      time_dimension: CUBE.${pa.time_dimension},`);
+        if (pa.granularity) lines.push(`      granularity: \`${pa.granularity}\`,`);
+        if (pa.partition_granularity) lines.push(`      partition_granularity: \`${pa.partition_granularity}\`,`);
+        if (pa.refresh_key) {
+          if (pa.refresh_key.every) lines.push(`      refresh_key: { every: \`${pa.refresh_key.every}\` },`);
+        }
+        if (pa.build_range_start?.sql) lines.push(`      build_range_start: { sql: \`${pa.build_range_start.sql}\` },`);
+        if (pa.build_range_end?.sql) lines.push(`      build_range_end: { sql: \`${pa.build_range_end.sql}\` },`);
+        // Indexes as named objects: { idx_name: { columns: [CUBE.col, ...] } }
+        if (pa.indexes && pa.indexes.length > 0) {
+          lines.push('      indexes: {');
+          for (const idx of pa.indexes) {
+            const idxName = idx.name || 'main_idx';
+            const cols = (idx.columns || []).map((c) => `CUBE.${c}`).join(', ');
+            lines.push(`        ${idxName}: { columns: [${cols}] },`);
+          }
+          lines.push('      },');
+        }
+        lines.push('    },');
       }
       lines.push('  },');
     }
