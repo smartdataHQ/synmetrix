@@ -930,11 +930,15 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     sql += `\nWHERE ${whereParts.join('\n  AND ')}`;
   }
 
-  // Start with non-array dimensions/measures from the raw cube
+  // Start with non-array dimensions/measures from the raw cube.
+  // Exclude FILTER_PARAMS dimensions — they use indexOf on array columns
+  // which are scalars after ARRAY JOIN and will cause runtime errors.
   const dimensions = rawCube.dimensions
-    .filter((d) => !d._isArrayField)
+    .filter((d) => !d._isArrayField && !(d.sql && d.sql.includes('FILTER_PARAMS')))
     .map((d) => ({ ...d }));
-  const measures = rawCube.measures.map((m) => ({ ...m }));
+  const measures = rawCube.measures
+    .filter((m) => !(m.sql && m.sql.includes('FILTER_PARAMS')))
+    .map((m) => ({ ...m }));
 
   // Add dimensions/measures for each child column in the selected groups
   const existingNames = new Set([
