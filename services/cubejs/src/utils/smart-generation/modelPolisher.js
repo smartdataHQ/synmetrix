@@ -48,7 +48,7 @@ async function getSchemas() {
     public: z.boolean().nullable().describe('false for internal plumbing fields'),
     primary_key: z.boolean().nullable(),
     format: z.enum(['currency', 'percent']).nullable(),
-    meta: z.record(z.any()).nullable(),
+    meta: z.record(z.string(), z.string()).nullable(),
     drill_members: z.array(z.string()).nullable(),
     rollingWindow: z.any().nullable(),
     multiStage: z.boolean().nullable(),
