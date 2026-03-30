@@ -368,46 +368,48 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // ── Stage: LLM Model Polishing ──────────────────────────────────────
+    // ── Stage: LLM Model Polishing (only on Apply, not Preview) ─────────
     let polishResult = null;
-    const generatedPrePolish = generateJs(cubeResult.cubes);
+    if (!dryRun) {
+      emitter.emit('polishing', 'Polishing model with LLM...', 0.65);
+      const generatedPrePolish = generateJs(cubeResult.cubes);
 
-    const profileSummaryForPolish = {
-      table,
-      schema,
-      row_count: profiledTable.row_count,
-      columns: profiledTable.columnOrder
-        ? profiledTable.columnOrder.map((name) => {
-            const col = profiledTable.columns.get(name);
-            return { name, type: col?.rawType || col?.valueType || 'unknown', description: col?.description || '' };
-          })
-        : [],
-    };
+      const profileSummaryForPolish = {
+        table,
+        schema,
+        row_count: profiledTable.row_count,
+        columns: profiledTable.columnOrder
+          ? profiledTable.columnOrder.map((name) => {
+              const col = profiledTable.columns.get(name);
+              return { name, type: col?.rawType || col?.valueType || 'unknown', description: col?.description || '' };
+            })
+          : [],
+      };
 
-    try {
-      polishResult = await polishModel(generatedPrePolish, profileSummaryForPolish, cubeResult.cubes);
+      try {
+        polishResult = await polishModel(generatedPrePolish, profileSummaryForPolish, cubeResult.cubes);
 
-      if (polishResult.status === 'success' && polishResult.polishedCubes) {
-        for (let i = 0; i < cubeResult.cubes.length && i < polishResult.polishedCubes.length; i++) {
-          const original = cubeResult.cubes[i];
-          const polished = polishResult.polishedCubes[i];
+        if (polishResult.status === 'success' && polishResult.polishedCubes) {
+          for (let i = 0; i < cubeResult.cubes.length && i < polishResult.polishedCubes.length; i++) {
+            const original = cubeResult.cubes[i];
+            const polished = polishResult.polishedCubes[i];
 
-          // Preserve original SQL (polisher shouldn't change data access)
-          polished.sql = original.sql;
-          polished.sql_table = original.sql_table;
+            polished.sql = original.sql;
+            polished.sql_table = original.sql_table;
 
-          cubeResult.cubes[i] = {
-            ...original,
-            ...polished,
-            sql: original.sql,
-            sql_table: original.sql_table,
-            meta: { ...original.meta, ...polished.meta },
-          };
+            cubeResult.cubes[i] = {
+              ...original,
+              ...polished,
+              sql: original.sql,
+              sql_table: original.sql_table,
+              meta: { ...original.meta, ...polished.meta },
+            };
+          }
         }
+      } catch (err) {
+        console.warn('[smartGenerate] Model polishing failed (non-fatal):', err.message);
+        polishResult = { status: 'failed', error: err.message };
       }
-    } catch (err) {
-      console.warn('[smartGenerate] Model polishing failed (non-fatal):', err.message);
-      polishResult = { status: 'failed', error: err.message };
     }
 
     // Generate JS model

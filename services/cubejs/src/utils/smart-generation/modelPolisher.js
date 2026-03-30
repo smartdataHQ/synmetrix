@@ -25,7 +25,7 @@ async function getZod() {
 // ---------------------------------------------------------------------------
 
 const MODEL = 'gpt-5.4';
-const DEFAULT_TIMEOUT = 90_000;
+const DEFAULT_TIMEOUT = 180_000;
 const MAX_RETRIES = 1; // 2 total LLM attempts
 const MAX_VALIDATION_LOOPS = 2; // validation → correction cycles
 
