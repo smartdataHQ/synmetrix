@@ -118,6 +118,7 @@ type Mutation {
     selected_ai_metrics: [String]
     selected_columns: [String]
     nested_filters: [NestedFilterInput]
+    excluded_fields: [String]
   ): SmartGenOutput
 }
 

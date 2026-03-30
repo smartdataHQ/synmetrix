@@ -103,6 +103,8 @@ export default async (req, res, cubejs) => {
     || (fileNameOverride ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '') : null);
   // When provided, only these AI metric names are merged into the model (user selection from preview)
   const selectedAIMetrics = Array.isArray(rawSelectedAIMetrics) ? new Set(rawSelectedAIMetrics) : null;
+  // When provided, these fully-qualified field names (cube.field) are excluded from the final model
+  const excludedFields = Array.isArray(req.body.excluded_fields) ? new Set(req.body.excluded_fields) : null;
   // When provided, only these column names become dimensions/measures (user field selection)
   const selectedColumns = Array.isArray(rawSelectedColumns) ? new Set(rawSelectedColumns) : null;
 
@@ -401,6 +403,23 @@ export default async (req, res, cubejs) => {
       } catch (err) {
         console.warn('[smartGenerate] Model advisory failed (non-fatal):', err.message);
         advisorResult = { passes: [], status: 'failed', error: err.message };
+      }
+    }
+
+    // Strip excluded fields (user deselected in change preview)
+    if (excludedFields && excludedFields.size > 0) {
+      for (const cube of cubeResult.cubes) {
+        cube.dimensions = cube.dimensions.filter(
+          (d) => !excludedFields.has(`${cube.name}.${d.name}`)
+        );
+        cube.measures = cube.measures.filter(
+          (m) => !excludedFields.has(`${cube.name}.${m.name}`)
+        );
+        if (cube.segments) {
+          cube.segments = cube.segments.filter(
+            (s) => !excludedFields.has(`${cube.name}.${s.name}`)
+          );
+        }
       }
     }
 
