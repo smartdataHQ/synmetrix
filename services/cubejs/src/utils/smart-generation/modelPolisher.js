@@ -8,10 +8,17 @@
  * Never throws — all errors are caught and returned as a status.
  */
 
-import { z } from 'zod';
 import fs from 'fs';
 import { validateModelSyntax } from './modelValidator.js';
 import { generateJs } from './yamlGenerator.js';
+
+// Zod is imported dynamically alongside the OpenAI helper to ensure
+// both come from the same resolved package version.
+let _z = null;
+async function getZod() {
+  if (!_z) { _z = (await import('zod')).z; }
+  return _z;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,69 +30,78 @@ const MAX_RETRIES = 1; // 2 total LLM attempts
 const MAX_VALIDATION_LOOPS = 2; // validation → correction cycles
 
 // ---------------------------------------------------------------------------
-// Zod schemas for structured output
+// Zod schemas for structured output (built lazily via getSchemas)
 // ---------------------------------------------------------------------------
 
-const PolishedFieldSchema = z.object({
-  name: z.string(),
-  sql: z.string(),
-  type: z.string(),
-  fieldType: z.enum(['dimension', 'measure', 'segment']),
-  title: z.string().describe('Human-readable title for non-technical consumers'),
-  description: z.string().nullable().describe('Description for non-obvious fields'),
-  public: z.boolean().nullable().describe('false for internal plumbing fields'),
-  primary_key: z.boolean().nullable(),
-  format: z.enum(['currency', 'percent']).nullable(),
-  meta: z.record(z.any()).nullable(),
-  drill_members: z.array(z.string()).nullable(),
-  rollingWindow: z.any().nullable(),
-  multiStage: z.boolean().nullable(),
-  timeShift: z.any().nullable(),
-});
+let _schemas = null;
+async function getSchemas() {
+  if (_schemas) return _schemas;
+  const z = await getZod();
 
-const PolishedCubeSchema = z.object({
-  name: z.string(),
-  sql: z.string().nullable(),
-  sql_table: z.string().nullable(),
-  title: z.string(),
-  description: z.string().describe('Paragraph: grain, source, analytical questions supported'),
-  meta: z.object({
-    grain: z.string(),
-    grain_description: z.string(),
-    time_dimension: z.string().nullable(),
-    time_zone: z.string().nullable(),
-    refresh_cadence: z.string().nullable(),
-    auto_generated: z.boolean(),
-  }).passthrough(),
-  dimensions: z.array(PolishedFieldSchema),
-  measures: z.array(PolishedFieldSchema),
-  segments: z.array(PolishedFieldSchema).nullable(),
-  pre_aggregations: z.array(z.object({
+  const PolishedFieldSchema = z.object({
     name: z.string(),
-    type: z.enum(['rollup', 'original_sql', 'rollup_join', 'rollup_lambda']),
-    dimensions: z.array(z.string()).nullable(),
-    measures: z.array(z.string()).nullable(),
-    time_dimension: z.string().nullable(),
-    granularity: z.string().nullable(),
-    partition_granularity: z.string().nullable(),
-    refresh_key: z.any().nullable(),
-    indexes: z.array(z.object({
-      name: z.string(),
-      columns: z.array(z.string()),
-    })).nullable(),
-  })).nullable(),
-});
+    sql: z.string(),
+    type: z.string(),
+    fieldType: z.enum(['dimension', 'measure', 'segment']),
+    title: z.string().describe('Human-readable title for non-technical consumers'),
+    description: z.string().nullable().describe('Description for non-obvious fields'),
+    public: z.boolean().nullable().describe('false for internal plumbing fields'),
+    primary_key: z.boolean().nullable(),
+    format: z.enum(['currency', 'percent']).nullable(),
+    meta: z.record(z.any()).nullable(),
+    drill_members: z.array(z.string()).nullable(),
+    rollingWindow: z.any().nullable(),
+    multiStage: z.boolean().nullable(),
+    timeShift: z.any().nullable(),
+  });
 
-const PolishResponseSchema = z.object({
-  cubes: z.array(PolishedCubeSchema),
-  validation_report: z.object({
-    principles_applied: z.array(z.string()).describe('Which principles from cube-principles.md were applied'),
-    issues_fixed: z.array(z.string()).describe('Specific issues found and corrected'),
-    warnings: z.array(z.string()).describe('Things the user should review manually'),
-    grain: z.string().describe('The identified analytical grain'),
-    primary_key: z.string().describe('The identified primary key expression'),
-  }),
-});
+  const PolishedCubeSchema = z.object({
+    name: z.string(),
+    sql: z.string().nullable(),
+    sql_table: z.string().nullable(),
+    title: z.string(),
+    description: z.string().describe('Paragraph: grain, source, analytical questions supported'),
+    meta: z.object({
+      grain: z.string(),
+      grain_description: z.string(),
+      time_dimension: z.string().nullable(),
+      time_zone: z.string().nullable(),
+      refresh_cadence: z.string().nullable(),
+      auto_generated: z.boolean(),
+    }).passthrough(),
+    dimensions: z.array(PolishedFieldSchema),
+    measures: z.array(PolishedFieldSchema),
+    segments: z.array(PolishedFieldSchema).nullable(),
+    pre_aggregations: z.array(z.object({
+      name: z.string(),
+      type: z.enum(['rollup', 'original_sql', 'rollup_join', 'rollup_lambda']),
+      dimensions: z.array(z.string()).nullable(),
+      measures: z.array(z.string()).nullable(),
+      time_dimension: z.string().nullable(),
+      granularity: z.string().nullable(),
+      partition_granularity: z.string().nullable(),
+      refresh_key: z.any().nullable(),
+      indexes: z.array(z.object({
+        name: z.string(),
+        columns: z.array(z.string()),
+      })).nullable(),
+    })).nullable(),
+  });
+
+  const PolishResponseSchema = z.object({
+    cubes: z.array(PolishedCubeSchema),
+    validation_report: z.object({
+      principles_applied: z.array(z.string()).describe('Which principles from cube-principles.md were applied'),
+      issues_fixed: z.array(z.string()).describe('Specific issues found and corrected'),
+      warnings: z.array(z.string()).describe('Things the user should review manually'),
+      grain: z.string().describe('The identified analytical grain'),
+      primary_key: z.string().describe('The identified primary key expression'),
+    }),
+  });
+
+  _schemas = { PolishResponseSchema };
+  return _schemas;
+}
 
 // ---------------------------------------------------------------------------
 // Principles loader
@@ -242,6 +258,7 @@ export async function polishModel(generatedCode, profileSummary, cubes, options 
   // -- Dynamic imports (same pattern as llmEnricher) ------------------------
   const { default: OpenAI } = await import('openai');
   const { zodResponseFormat } = await import('openai/helpers/zod');
+  const { PolishResponseSchema } = await getSchemas();
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
