@@ -408,6 +408,7 @@ export default async (req, res, cubejs) => {
 
     // Strip excluded fields and clean up all cross-references
     if (excludedFields && excludedFields.size > 0) {
+      console.log('[smartGenerate] Excluding fields:', [...excludedFields]);
       for (const cube of cubeResult.cubes) {
         cube.dimensions = cube.dimensions.filter(
           (d) => !excludedFields.has(`${cube.name}.${d.name}`)
@@ -465,6 +466,20 @@ export default async (req, res, cubejs) => {
           }
           return true;
         });
+
+        // Segments: remove if their SQL references excluded columns via {CUBE}.field_name
+        if (cube.segments) {
+          cube.segments = cube.segments.filter((s) => {
+            if (!s.sql) return true;
+            const colRefs = s.sql.match(/\{CUBE\}\.([a-zA-Z_][a-zA-Z0-9_]*)/g);
+            if (!colRefs) return true;
+            for (const ref of colRefs) {
+              const name = ref.replace('{CUBE}.', '');
+              if (!survivingAll.has(name)) return false;
+            }
+            return true;
+          });
+        }
       }
     }
 

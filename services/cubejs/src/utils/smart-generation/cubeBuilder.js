@@ -923,7 +923,23 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   }
   let sql;
   if (ajParts.length > 0) {
-    sql = `SELECT *\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
+    // Must explicitly project aliased columns so they're visible when
+    // Cube.js wraps this in a subquery. SELECT * alone doesn't project
+    // ARRAY JOIN aliases into the outer query scope.
+    const selectAliases = [];
+    for (const [group, cols] of groupColumns) {
+      for (const col of cols) {
+        const alias = col.name.replace(/\./g, '_');
+        selectAliases.push(`  \`${col.name}\` AS \`${alias}\``);
+      }
+    }
+    for (const filterCol of filterColumns) {
+      if (!ajColumnNames.has(filterCol)) {
+        const alias = filterCol.replace(/\./g, '_');
+        selectAliases.push(`  \`${filterCol}\` AS \`${alias}\``);
+      }
+    }
+    sql = `SELECT *,\n${selectAliases.join(',\n')}\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
   } else {
     sql = `SELECT * FROM ${schema}.${table}`;
   }
