@@ -605,8 +605,6 @@ export async function profileTable(driver, schema, table, options = {}) {
     const parts = [];
     for (const nf of nestedFilters) {
       for (const f of nf.filters || []) {
-        // Build the full dotted column name, then replace all dots with underscores
-        // to match the ARRAY JOIN alias (e.g. commerce.products.entry_type → commerce_products_entry_type)
         const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
         const alias = fullCol.replace(/\./g, '_');
         if (f.values.length === 1) {
