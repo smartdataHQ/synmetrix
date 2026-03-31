@@ -94,6 +94,7 @@ export default async (req, res, cubejs) => {
     ? rawProfileData
     : null;
   const dryRun = rawDryRun === true;
+  const skipLlm = req.body.skip_llm === true;
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
   const nestedFilters = Array.isArray(req.body.nestedFilters) ? req.body.nestedFilters : [];
   const fileNameOverride = typeof rawFileName === 'string' && rawFileName.trim() ? rawFileName.trim() : null;
@@ -128,6 +129,7 @@ export default async (req, res, cubejs) => {
 
     let profiledTable;
     let primaryKeys;
+    const rewriteRuleDimensions = new Set(); // Track which dimensions are required by rewrite rules
 
     if (profileData) {
       // Use cached profile data from the profile_table step — no ClickHouse queries
@@ -138,6 +140,14 @@ export default async (req, res, cubejs) => {
       // Ensure column order is stable even when profile_data transport reorders object keys.
       driver = await cubejs.options.driverFactory({ securityContext });
       profiledTable = await hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table);
+
+      // Load rewrite rules even on cached path — needed for required_fields
+      try {
+        const rules = await loadRules();
+        for (const rule of rules) {
+          if (rule.cube_name === table) rewriteRuleDimensions.add(rule.dimension);
+        }
+      } catch { /* non-fatal */ }
     } else {
       // Legacy path: profile from scratch (two ClickHouse round-trips)
       driver = await cubejs.options.driverFactory({ securityContext });
@@ -149,6 +159,7 @@ export default async (req, res, cubejs) => {
         const { teamProperties, memberProperties } = securityContext.userScope || {};
         for (const rule of rules) {
           if (rule.cube_name !== table) continue;
+          rewriteRuleDimensions.add(rule.dimension);
           const source = rule.property_source === 'team' ? teamProperties : memberProperties;
           const value = source?.[rule.property_key];
           if (value === undefined || value === null) continue;
@@ -177,18 +188,26 @@ export default async (req, res, cubejs) => {
       profiledTable = reorderProfileColumns(profiledTable);
     }
 
-    // Filter columns if user selected a subset
+    // Filter columns if user selected a subset.
+    // Always preserve nested group children for active nested filters — they're
+    // needed by buildArrayJoinCube even if the user didn't explicitly select them
+    // (they appear inactive in the UI because the profiler can't profile Array
+    // columns without ARRAY JOIN, so hasValues stays false).
     if (selectedColumns) {
+      const nestedGroupNames = new Set(nestedFilters.map((nf) => nf.group));
       const fullColumns = profiledTable.columns;
       const filtered = new Map();
       for (const [name, data] of fullColumns) {
-        if (selectedColumns.has(name)) {
+        const isNestedChild = data.columnType === 'GROUPED' && data.parentName
+          && nestedGroupNames.has(data.parentName);
+        const isNestedParent = data.columnType === 'NESTED';
+        if (selectedColumns.has(name) || isNestedChild || isNestedParent) {
           filtered.set(name, data);
         }
       }
       const existingOrder = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : [];
       const filteredOrder = existingOrder.length > 0
-        ? existingOrder.filter((name) => selectedColumns.has(name))
+        ? existingOrder.filter((name) => filtered.has(name))
         : Array.from(filtered.keys());
       profiledTable = { ...profiledTable, columns: filtered, columnOrder: filteredOrder };
     }
@@ -249,7 +268,7 @@ export default async (req, res, cubejs) => {
     // shows the full picture including AI suggestions before the user commits.
     let aiEnrichment = { status: 'skipped', model: null, metrics_count: 0, error: null };
 
-    {
+    if (!skipLlm) {
       emitter.emit('ai_enrich', 'Generating AI metrics...', 0.63);
 
       // Extract existing AI metrics from the previous model for superset regeneration
@@ -378,9 +397,9 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // ── Stage: LLM Model Advisory Passes (only on Apply) ────────────────
+    // ── Stage: LLM Model Advisory Passes (only on Apply, skip if LLM disabled) ──
     let advisorResult = null;
-    if (!dryRun) {
+    if (!dryRun && !skipLlm) {
       emitter.emit('advising', 'Running LLM advisory passes...', 0.65);
       const generatedPreAdvise = generateJs(cubeResult.cubes);
 
@@ -522,6 +541,78 @@ export default async (req, res, cubejs) => {
           );
         }
       }
+
+      // Rebuild ARRAY JOIN SQL to exclude columns that no longer have
+      // surviving dimensions/measures. This avoids ClickHouse processing
+      // unnecessary nested columns in the LEFT ARRAY JOIN.
+      for (const cube of cubeResult.cubes) {
+        if (!cube.sql || !cube.sql.includes('LEFT ARRAY JOIN')) continue;
+        // Collect all source_column values from surviving fields
+        const usedSourceColumns = new Set();
+        for (const d of cube.dimensions || []) {
+          if (d.meta?.source_column) usedSourceColumns.add(d.meta.source_column);
+        }
+        for (const m of cube.measures || []) {
+          if (m.meta?.source_column) usedSourceColumns.add(m.meta.source_column);
+        }
+        // Also keep filter columns referenced in the WHERE clause
+        const nestedFilterMeta = cube.meta?.nested_filters;
+        if (Array.isArray(nestedFilterMeta)) {
+          for (const nf of nestedFilterMeta) {
+            for (const f of nf.filters || []) {
+              usedSourceColumns.add(f.column);
+            }
+          }
+        }
+
+        // Parse and rebuild the ARRAY JOIN clause
+        const ajMatch = cube.sql.match(/([\s\S]*?)LEFT ARRAY JOIN\n([\s\S]*?)(\nWHERE[\s\S]*)?$/);
+        if (!ajMatch) continue;
+        const [, selectPart, ajBody, wherePart = ''] = ajMatch;
+        const ajLines = ajBody.split(',\n').map((l) => l.trim()).filter(Boolean);
+        // Keep only lines whose source column is used
+        const keptAjLines = ajLines.filter((line) => {
+          // Extract dotted name from: `commerce.products.units` AS `commerce_products_units`
+          const m = line.match(/`([^`]+)`\s+AS\s+`([^`]+)`/);
+          if (!m) return true; // keep non-standard lines
+          return usedSourceColumns.has(m[1]);
+        });
+        if (keptAjLines.length === 0) continue; // shouldn't happen but guard
+        // Rebuild SELECT: keep all base columns, drop alias names for pruned AJ columns
+        const selectMatch = selectPart.match(/SELECT\n([\s\S]*?)\nFROM/);
+        if (!selectMatch) continue;
+        const selectLines = selectMatch[1].split(',\n').map((l) => l.trim()).filter(Boolean);
+        // Build the full set of alias names from the ORIGINAL ARRAY JOIN (before pruning)
+        const allAliasNames = new Set(ajLines.map((line) => {
+          const m = line.match(/AS\s+`([^`]+)`/);
+          return m ? m[1] : null;
+        }).filter(Boolean));
+        // And the surviving subset
+        const keptAliasNames = new Set(keptAjLines.map((line) => {
+          const m = line.match(/AS\s+`([^`]+)`/);
+          return m ? m[1] : null;
+        }).filter(Boolean));
+        const keptSelectLines = selectLines.filter((line) => {
+          const clean = line.replace(/`/g, '').trim();
+          // If it's a known alias name, only keep if it survived pruning
+          if (allAliasNames.has(clean)) return keptAliasNames.has(clean);
+          // Not an alias — it's a base column, always keep
+          return true;
+        });
+        const fromMatch = selectPart.match(/\nFROM\s+(.+)/);
+        const fromClause = fromMatch ? fromMatch[1].trim() : '';
+        cube.sql = `SELECT\n${keptSelectLines.map((l) => `  ${l}`).join(',\n')}\nFROM ${fromClause}\nLEFT ARRAY JOIN\n${keptAjLines.map((l) => `  ${l}`).join(',\n')}${wherePart}`;
+      }
+
+      // Recompute summary after field exclusion
+      let totalDimensions = 0;
+      let totalMeasures = 0;
+      for (const cube of cubeResult.cubes) {
+        totalDimensions += cube.dimensions.length;
+        totalMeasures += cube.measures.length;
+      }
+      cubeResult.summary.dimensions_count = totalDimensions;
+      cubeResult.summary.measures_count = totalMeasures;
     }
 
     // Generate JS model
@@ -593,6 +684,29 @@ export default async (req, res, cubejs) => {
     // Compute change preview (pass structured cubes for new model — JS strings can't be YAML-parsed)
     const changePreview = diffModels(existingCode, cubeResult.cubes, mergeStrategy);
 
+    // Build required_fields: fields that must always be included (rewrite rules + nested filters).
+    // These are fully-qualified "cube.field" names matching the change preview format.
+    const requiredFields = [];
+    for (const cube of cubeResult.cubes) {
+      for (const dim of cube.dimensions || []) {
+        if (rewriteRuleDimensions.has(dim.name)) {
+          requiredFields.push(`${cube.name}.${dim.name}`);
+        }
+      }
+    }
+    // Nested filter columns are baked into the cube SQL WHERE — their dimensions must survive
+    for (const nf of nestedFilters) {
+      for (const f of nf.filters || []) {
+        const childName = f.column.includes('.') ? f.column.split('.').pop() : f.column;
+        for (const cube of cubeResult.cubes) {
+          const dim = (cube.dimensions || []).find((d) =>
+            d.name.includes(childName) && d.meta?.source_group
+          );
+          if (dim) requiredFields.push(`${cube.name}.${dim.name}`);
+        }
+      }
+    }
+
     // Dry-run: return preview without saving
     if (dryRun) {
       const { summary } = cubeResult;
@@ -603,6 +717,7 @@ export default async (req, res, cubejs) => {
         file_name: fileName,
         changed: existingCode !== finalYaml,
         change_preview: changePreview,
+        required_fields: requiredFields,
         model_summary: {
           dimensions_count: summary.dimensions_count,
           measures_count: summary.measures_count,

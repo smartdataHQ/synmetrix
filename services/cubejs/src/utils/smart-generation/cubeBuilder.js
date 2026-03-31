@@ -304,6 +304,7 @@ function isInt8Boolean(rawType, profile) {
 function processColumns(columns, options) {
   const {
     arrayJoinColumns = [],
+    arrayJoinGroups = [],
     maxMapKeys = 500,
     primaryKeys = [],
     cubeName = 'cube',
@@ -325,10 +326,18 @@ function processColumns(columns, options) {
     const profile = columnData.profile;
     const details = columnData; // details fields are on the column data itself
 
-    // Skip columns with no values
+    // Skip columns with no values.
+    // Exception: GROUPED columns not in the ARRAY JOIN groups (e.g. location.*)
+    // are never profiled (the profiler skips Array columns), so hasValues stays
+    // false. Let them through — they produce valid dimensions via NestedFieldProcessor.
+    // GROUPED columns IN the ARRAY JOIN groups are handled by buildArrayJoinCube.
     if (profile && profile.hasValues === false) {
-      columnsSkipped++;
-      continue;
+      const isNonAjGrouped = details.columnType === ColumnType.GROUPED
+        && details.parentName && !arrayJoinGroups.includes(details.parentName);
+      if (!isNonAjGrouped) {
+        columnsSkipped++;
+        continue;
+      }
     }
 
     // Skip string/UUID columns with 0 unique non-empty values
@@ -381,8 +390,12 @@ function processColumns(columns, options) {
           }
           allFields.push(field);
         } else {
-          // Skip nested sub-columns with no non-empty values
+          // Skip nested sub-columns with no non-empty values — but only for
+          // ARRAY JOIN groups (they'll get fresh fields via buildArrayJoinCube).
+          // Non-AJ groups (like location.*) are never profiled, so uniqueValues
+          // stays 0 — let them through to produce FILTER_PARAMS dimensions.
           if (
+            arrayJoinGroups.includes(details.parentName) &&
             profile &&
             (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
             (profile.uniqueValues ?? 0) === 0
@@ -655,11 +668,13 @@ function buildRawCube(profiledTable, options) {
     partition = null,
     internalTables = [],
     arrayJoinColumns = [],
+    nestedFilters = [],
     maxMapKeys = 500,
     primaryKeys = [],
     cubeName: cubeNameOverride,
     filters = [],
   } = options;
+  const arrayJoinGroups = nestedFilters.map((nf) => nf.group);
 
   const schema = profiledTable.database;
   const table = profiledTable.table;
@@ -671,6 +686,7 @@ function buildRawCube(profiledTable, options) {
   const { dimensions, measures, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     processColumns(profiledTable.columns, {
       arrayJoinColumns,
+      arrayJoinGroups,
       maxMapKeys,
       primaryKeys,
       cubeName,
@@ -724,29 +740,6 @@ function buildRawCube(profiledTable, options) {
     meta.source_partition = partition;
   }
 
-  // -- Heuristics: paired filtered counts for LC dimensions -------------------
-  const countMeasure = measures.find((m) => m.type === 'count');
-  if (countMeasure) {
-    for (const dim of dimensions) {
-      const lcValues = dim.meta?.lc_values;
-      if (!Array.isArray(lcValues) || lcValues.length === 0 || lcValues.length > 10) continue;
-      if (dim.type !== 'string') continue;
-      for (const val of lcValues) {
-        const slug = sanitizeFieldName(val.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
-        const measName = `count_${dim.name}_${slug}`;
-        if (measures.some((m) => m.name === measName)) continue;
-        measures.push({
-          name: measName,
-          title: titleFromName(measName),
-          sql: `{CUBE}.${dim.name}`,
-          type: 'count',
-          filters: [{ sql: `{CUBE}.${dim.name} = '${val.replace(/'/g, "''")}'` }],
-          meta: { auto_generated: true, filtered_count_for: dim.name, filter_value: val },
-        });
-      }
-    }
-  }
-
   // -- Heuristics: format inference -------------------------------------------
   const CURRENCY_PATTERN = /^(revenue|tax|discount|cogs|commission|amount|fee|total|balance)$|_(price|cost|revenue|fee|amount)$/i;
   const PERCENT_PATTERN = /_(percentage|pct|ratio|rate)$/i;
@@ -764,6 +757,7 @@ function buildRawCube(profiledTable, options) {
   }
 
   // -- Heuristics: drill members on count -------------------------------------
+  const countMeasure = measures.find((m) => m.type === 'count');
   if (countMeasure) {
     const drillCandidates = dimensions
       .filter((d) => d.type === 'string' && !d.name.includes('_id') && !d.name.includes('_gid') && d.public !== false)
@@ -791,8 +785,6 @@ function buildRawCube(profiledTable, options) {
       dimensions: ['partition', ...preAggDimensions],
       measures: preAggMeasures,
       time_dimension: timeDim.name,
-      granularity: 'day',
-      partition_granularity: 'month',
       refresh_key: { every: '1 hour' },
       indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
     });
@@ -802,8 +794,6 @@ function buildRawCube(profiledTable, options) {
       dimensions: ['partition'],
       measures: preAggMeasures.slice(0, 5),
       time_dimension: timeDim.name,
-      granularity: 'month',
-      partition_granularity: 'month',
       refresh_key: { every: '1 hour' },
       indexes: [{ name: 'partition_idx', columns: ['partition'] }],
     });
@@ -923,23 +913,40 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   }
   let sql;
   if (ajParts.length > 0) {
-    // Must explicitly project aliased columns so they're visible when
-    // Cube.js wraps this in a subquery. SELECT * alone doesn't project
-    // ARRAY JOIN aliases into the outer query scope.
-    const selectAliases = [];
-    for (const [group, cols] of groupColumns) {
+    // Build explicit SELECT of non-nested columns only.
+    // DO NOT use SELECT * — it exposes original Array columns (e.g.
+    // `commerce.products.entry_type` Array(String)) alongside the
+    // ARRAY JOIN aliases (`commerce_products_entry_type` scalar).
+    // When Cube.js wraps this in a subquery, both exist and ClickHouse
+    // may resolve references to the Array version, causing type errors.
+    //
+    // The ARRAY JOIN aliases must also be in the SELECT so they're visible
+    // when Cube.js wraps this in a subquery.
+    const selectParts = [];
+    for (const [colName, colData] of profiledTable.columns) {
+      // Skip ALL nested/grouped columns — they're Array types and can't be
+      // used directly in SQL. ARRAY JOIN group children are added below as
+      // scalar alias names. Other groups (e.g. location.*) are excluded since
+      // they don't have ARRAY JOIN expansion in this cube.
+      if (colData.columnType === ColumnType.GROUPED) continue;
+      if (colData.columnType === ColumnType.NESTED) continue;
+      // Only backtick-quote names with dots or special chars; simple names stay unquoted
+      const needsQuote = /[^a-zA-Z0-9_]/.test(colName);
+      selectParts.push(needsQuote ? `  \`${colName}\`` : `  ${colName}`);
+    }
+    // Add ARRAY JOIN alias names (scalar after JOIN) so they project into
+    // Cube.js subquery scope. Use the alias name only (not "x AS y" again).
+    for (const [, cols] of groupColumns) {
       for (const col of cols) {
-        const alias = col.name.replace(/\./g, '_');
-        selectAliases.push(`  \`${col.name}\` AS \`${alias}\``);
+        selectParts.push(`  ${col.name.replace(/\./g, '_')}`);
       }
     }
     for (const filterCol of filterColumns) {
       if (!ajColumnNames.has(filterCol)) {
-        const alias = filterCol.replace(/\./g, '_');
-        selectAliases.push(`  \`${filterCol}\` AS \`${alias}\``);
+        selectParts.push(`  ${filterCol.replace(/\./g, '_')}`);
       }
     }
-    sql = `SELECT *,\n${selectAliases.join(',\n')}\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
+    sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
   } else {
     sql = `SELECT * FROM ${schema}.${table}`;
   }
@@ -966,16 +973,40 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   }
 
   // Start with non-array dimensions/measures from the raw cube.
-  // Exclude FILTER_PARAMS dimensions — they use indexOf on array columns
-  // which are scalars after ARRAY JOIN and will cause runtime errors.
-  // Also exclude paired count measures whose referenced dimension was removed.
+  // Exclude dimensions/measures whose source column belongs to an ARRAY JOIN
+  // group — the raw cube references Array columns directly, but the AJ cube
+  // replaces them with exploded scalar aliases.
+  // FILTER_PARAMS dimensions for AJ groups also break (indexOf on scalar = error).
+  // However, FILTER_PARAMS dimensions for NON-AJ groups (e.g. location.*) are
+  // valid — those arrays are not exploded by ARRAY JOIN and indexOf still works.
+  const ajGroupColumnNames = new Set();
+  for (const [, cols] of groupColumns) {
+    for (const col of cols) ajGroupColumnNames.add(col.name);
+  }
+  const isAjGroupColumn = (sourceCol) => {
+    if (!sourceCol) return false;
+    // Check if source column is directly in the AJ group
+    if (ajGroupColumnNames.has(sourceCol)) return true;
+    // Check if the parent group of this column is an AJ group
+    const dotIdx = sourceCol.indexOf('.');
+    if (dotIdx > 0) {
+      const parent = sourceCol.substring(0, dotIdx);
+      return arrayJoinGroups.includes(parent);
+    }
+    return false;
+  };
   const dimensions = rawCube.dimensions
-    .filter((d) => !d._isArrayField && !(d.sql && d.sql.includes('FILTER_PARAMS')))
+    .filter((d) => {
+      if (d.meta?.source_column && isAjGroupColumn(d.meta.source_column)) return false;
+      if (d.sql && d.sql.includes('FILTER_PARAMS') && isAjGroupColumn(d._sourceColumn)) return false;
+      return true;
+    })
     .map((d) => ({ ...d }));
   const survivingDimNames = new Set(dimensions.map((d) => d.name));
   const measures = rawCube.measures
     .filter((m) => {
-      if (m.sql && m.sql.includes('FILTER_PARAMS')) return false;
+      if (m.meta?.source_column && isAjGroupColumn(m.meta.source_column)) return false;
+      if (m.sql && m.sql.includes('FILTER_PARAMS') && isAjGroupColumn(m._sourceColumn)) return false;
       // Paired counts reference a dimension — check it survived
       if (m.meta?.filtered_count_for && !survivingDimNames.has(m.meta.filtered_count_for)) return false;
       // Drill members that reference removed dimensions
@@ -1169,8 +1200,6 @@ export function buildCubes(profiledTable, options = {}) {
             dimensions: ['partition', ...preAggDimensions],
             measures: preAggMeasures,
             time_dimension: timeDim.name,
-            granularity: 'day',
-            partition_granularity: 'month',
             refresh_key: { every: '1 hour' },
             indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
           },
@@ -1180,8 +1209,6 @@ export function buildCubes(profiledTable, options = {}) {
             dimensions: ['partition'],
             measures: preAggMeasures.slice(0, 5),
             time_dimension: timeDim.name,
-            granularity: 'month',
-            partition_granularity: 'month',
             refresh_key: { every: '1 hour' },
             indexes: [{ name: 'partition_idx', columns: ['partition'] }],
           },
