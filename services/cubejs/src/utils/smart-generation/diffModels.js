@@ -21,6 +21,17 @@ function isAIField(field) {
   return field?.meta?.ai_generated === true;
 }
 
+/**
+ * Derive a source tag from a field's meta object.
+ * Used by the frontend to decide default selection (e.g. map fields are opt-in).
+ */
+function fieldSource(field) {
+  if (field?.meta?.map_key) return 'map';
+  if (field?.meta?.source_group) return 'nested';
+  if (field?.meta?.ai_generated) return 'ai';
+  return undefined;
+}
+
 function isAutoCube(cube) {
   return cube?.meta?.auto_generated === true;
 }
@@ -131,7 +142,10 @@ function diffFields(existingFields, newFields, memberType, cubeName, isReplace) 
   // New fields not in existing
   for (const field of incoming) {
     if (!handledNames.has(field.name)) {
-      added.push({ name: field.name, type: field.type, member_type: memberType, cube: cubeName });
+      const entry = { name: field.name, type: field.type, member_type: memberType, cube: cubeName };
+      const src = fieldSource(field);
+      if (src) entry.source = src;
+      added.push(entry);
     }
   }
 
@@ -410,13 +424,19 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
     for (const cube of newCubes) {
       const cubeName = cube.name;
       for (const dim of Array.isArray(cube.dimensions) ? cube.dimensions : []) {
-        result.fields_added.push({ name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName });
+        const entry = { name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName };
+        const src = fieldSource(dim);
+        if (src) entry.source = src;
+        result.fields_added.push(entry);
         if (isAIField(dim)) {
           result.ai_metrics_added.push(aiMetricEntry(dim, cubeName));
         }
       }
       for (const meas of Array.isArray(cube.measures) ? cube.measures : []) {
-        result.fields_added.push({ name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName });
+        const entry = { name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName };
+        const src = fieldSource(meas);
+        if (src) entry.source = src;
+        result.fields_added.push(entry);
         if (isAIField(meas)) {
           result.ai_metrics_added.push(aiMetricEntry(meas, cubeName));
         }
@@ -511,13 +531,19 @@ export function diffModels(existingContent, newContent, mergeStrategy = 'auto') 
     if (!processedCubes.has(newCube.name)) {
       const cubeName = newCube.name;
       for (const dim of Array.isArray(newCube.dimensions) ? newCube.dimensions : []) {
-        result.fields_added.push({ name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName });
+        const entry = { name: dim.name, type: dim.type, member_type: 'dimension', cube: cubeName };
+        const src = fieldSource(dim);
+        if (src) entry.source = src;
+        result.fields_added.push(entry);
         if (isAIField(dim)) {
           result.ai_metrics_added.push(aiMetricEntry(dim, cubeName));
         }
       }
       for (const meas of Array.isArray(newCube.measures) ? newCube.measures : []) {
-        result.fields_added.push({ name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName });
+        const entry = { name: meas.name, type: meas.type, member_type: 'measure', cube: cubeName };
+        const src = fieldSource(meas);
+        if (src) entry.source = src;
+        result.fields_added.push(entry);
         if (isAIField(meas)) {
           result.ai_metrics_added.push(aiMetricEntry(meas, cubeName));
         }

@@ -104,7 +104,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/smartGenSchemas'
       forward_client_headers: true
-      timeout: 180
+      timeout: 300
     permissions:
       - role: user
   - name: update_team_settings
@@ -164,6 +164,8 @@ custom_types:
     - name: events_create_input
     - name: ArrayJoinInput
     - name: FilterConditionInput
+    - name: NestedFilterConditionInput
+    - name: NestedFilterInput
   objects:
     - name: CheckSourceOutput
     - name: GenSourceSchemaOutput

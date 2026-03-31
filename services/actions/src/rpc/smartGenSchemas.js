@@ -18,9 +18,15 @@ export default async (session, input, headers) => {
     cube_name: cubeName,
     selected_ai_metrics: selectedAIMetrics,
     selected_columns: selectedColumns,
+    nested_filters: nestedFilters,
+    excluded_fields: excludedFields,
   } = input || {};
 
   const userId = session?.["x-hasura-user-id"];
+
+  if (nestedFilters) {
+    console.log('[smartGenSchemas] nested_filters received:', JSON.stringify(nestedFilters));
+  }
 
   try {
     // CRITICAL: pass branchId to cubejsApi constructor for correct branch scoping
@@ -43,6 +49,8 @@ export default async (session, input, headers) => {
       cube_name: cubeName,
       selected_ai_metrics: selectedAIMetrics,
       selected_columns: selectedColumns,
+      nestedFilters,
+      excluded_fields: excludedFields,
     });
 
     // Ensure subsequent Explore/Meta requests resolve the latest branch version

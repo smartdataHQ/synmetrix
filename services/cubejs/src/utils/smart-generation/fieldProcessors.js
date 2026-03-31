@@ -136,14 +136,16 @@ function getCubeType(columnDetails, profile) {
  */
 function generateSqlExpression(columnDetails, profile) {
   const columnName = columnDetails.name;
+  // Backtick-quote dotted names (nested columns like "location.label")
+  const colRef = columnName.includes('.') ? `\`${columnName}\`` : columnName;
 
   if (columnDetails.valueType === ValueType.UUID) {
-    return `toString({CUBE}.${columnName})`;
+    return `toString({CUBE}.${colRef})`;
   }
   if (isInt8Boolean(columnDetails.rawType, profile)) {
-    return `({CUBE}.${columnName}) = 1`;
+    return `({CUBE}.${colRef}) = 1`;
   }
-  return `{CUBE}.${columnName}`;
+  return `{CUBE}.${colRef}`;
 }
 
 // -- Processors -------------------------------------------------------------

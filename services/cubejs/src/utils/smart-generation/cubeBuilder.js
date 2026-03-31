@@ -11,6 +11,23 @@ import { ColumnType, ValueType } from './typeParser.js';
 // -- Helpers ----------------------------------------------------------------
 
 /**
+ * Convert a snake_case field name to a human-readable Title.
+ * E.g. "commerce_products_entry_type" → "Commerce Products Entry Type"
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function titleFromName(name) {
+  const UPPER = new Set(['id', 'gid', 'sku', 'upc', 'ean', 'isbn', 'gtin', 'uom', 'gs1', 'ip', 'url', 'img', 'os', 'ms', 'mgr']);
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(' ')
+    .map((w) => UPPER.has(w.toLowerCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
  * Sanitize a table name into a valid Cube.js cube identifier.
  *
  * @param {string} name
@@ -287,6 +304,7 @@ function isInt8Boolean(rawType, profile) {
 function processColumns(columns, options) {
   const {
     arrayJoinColumns = [],
+    arrayJoinGroups = [],
     maxMapKeys = 500,
     primaryKeys = [],
     cubeName = 'cube',
@@ -308,10 +326,18 @@ function processColumns(columns, options) {
     const profile = columnData.profile;
     const details = columnData; // details fields are on the column data itself
 
-    // Skip columns with no values
+    // Skip columns with no values.
+    // Exception: GROUPED columns not in the ARRAY JOIN groups (e.g. location.*)
+    // are never profiled (the profiler skips Array columns), so hasValues stays
+    // false. Let them through — they produce valid dimensions via NestedFieldProcessor.
+    // GROUPED columns IN the ARRAY JOIN groups are handled by buildArrayJoinCube.
     if (profile && profile.hasValues === false) {
-      columnsSkipped++;
-      continue;
+      const isNonAjGrouped = details.columnType === ColumnType.GROUPED
+        && details.parentName && !arrayJoinGroups.includes(details.parentName);
+      if (!isNonAjGrouped) {
+        columnsSkipped++;
+        continue;
+      }
     }
 
     // Skip string/UUID columns with 0 unique non-empty values
@@ -364,8 +390,12 @@ function processColumns(columns, options) {
           }
           allFields.push(field);
         } else {
-          // Skip nested sub-columns with no non-empty values
+          // Skip nested sub-columns with no non-empty values — but only for
+          // ARRAY JOIN groups (they'll get fresh fields via buildArrayJoinCube).
+          // Non-AJ groups (like location.*) are never profiled, so uniqueValues
+          // stays 0 — let them through to produce FILTER_PARAMS dimensions.
           if (
+            arrayJoinGroups.includes(details.parentName) &&
             profile &&
             (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
             (profile.uniqueValues ?? 0) === 0
@@ -638,11 +668,13 @@ function buildRawCube(profiledTable, options) {
     partition = null,
     internalTables = [],
     arrayJoinColumns = [],
+    nestedFilters = [],
     maxMapKeys = 500,
     primaryKeys = [],
     cubeName: cubeNameOverride,
     filters = [],
   } = options;
+  const arrayJoinGroups = nestedFilters.map((nf) => nf.group);
 
   const schema = profiledTable.database;
   const table = profiledTable.table;
@@ -654,6 +686,7 @@ function buildRawCube(profiledTable, options) {
   const { dimensions, measures, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     processColumns(profiledTable.columns, {
       arrayJoinColumns,
+      arrayJoinGroups,
       maxMapKeys,
       primaryKeys,
       cubeName,
@@ -669,10 +702,32 @@ function buildRawCube(profiledTable, options) {
     meta: { auto_generated: true, field_type: 'integer' },
   });
 
+  // -- Heuristics: partition-first ordering ----------------------------------
+  const partitionIdx = dimensions.findIndex((d) => d.name === 'partition');
+  if (partitionIdx > 0) {
+    const [partitionDim] = dimensions.splice(partitionIdx, 1);
+    dimensions.unshift(partitionDim);
+  }
+
+  // -- Heuristics: titles on all fields + cube --------------------------------
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
+  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
+
+  // -- Heuristics: meta block -------------------------------------------------
+  const timeDim = dimensions.find((d) => d.type === 'time' && d.primary_key !== true);
+  const grainParts = (primaryKeys || []).length > 0
+    ? primaryKeys.map(sanitizeFieldName).join(' + ')
+    : 'one row per source record';
+
   const meta = {
     auto_generated: true,
     source_database: schema,
     source_table: table,
+    grain: grainParts,
+    grain_description: `Each row represents one ${table} record, keyed by ${grainParts}.`,
+    time_dimension: timeDim ? timeDim.name : null,
+    time_zone: 'UTC',
+    refresh_cadence: '1 hour',
     generated_at: new Date().toISOString(),
   };
 
@@ -685,78 +740,335 @@ function buildRawCube(profiledTable, options) {
     meta.source_partition = partition;
   }
 
+  // -- Heuristics: format inference -------------------------------------------
+  const CURRENCY_PATTERN = /^(revenue|tax|discount|cogs|commission|amount|fee|total|balance)$|_(price|cost|revenue|fee|amount)$/i;
+  const PERCENT_PATTERN = /_(percentage|pct|ratio|rate)$/i;
+  for (const meas of measures) {
+    if (meas.format) continue;
+    if (CURRENCY_PATTERN.test(meas.name)) meas.format = 'currency';
+    else if (PERCENT_PATTERN.test(meas.name)) meas.format = 'percent';
+  }
+
+  // -- Heuristics: public:false on plumbing fields ----------------------------
+  const PLUMBING_PATTERN = /^(message_id|event_gid|anonymous_gid|session_gid|user_gid|write_key|ttl_days)$|_gid$/;
+  for (const dim of dimensions) {
+    if (dim.public !== undefined) continue;
+    if (PLUMBING_PATTERN.test(dim.name)) dim.public = false;
+  }
+
+  // -- Heuristics: drill members on count -------------------------------------
+  const countMeasure = measures.find((m) => m.type === 'count');
+  if (countMeasure) {
+    const drillCandidates = dimensions
+      .filter((d) => d.type === 'string' && !d.name.includes('_id') && !d.name.includes('_gid') && d.public !== false)
+      .slice(0, 5)
+      .map((d) => d.name);
+    if (drillCandidates.length > 0) {
+      countMeasure.drill_members = drillCandidates;
+    }
+  }
+
+  // -- Heuristics: default pre-aggregations -----------------------------------
+  const preAggDimensions = dimensions
+    .filter((d) => d.type === 'string' && d.public !== false)
+    .slice(0, 5)
+    .map((d) => d.name);
+  const preAggMeasures = measures
+    .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
+    .slice(0, 10)
+    .map((m) => m.name);
+  const pre_aggregations = [];
+  if (timeDim && preAggMeasures.length > 0) {
+    pre_aggregations.push({
+      name: 'daily_rollup',
+      type: 'rollup',
+      dimensions: ['partition', ...preAggDimensions],
+      measures: preAggMeasures,
+      time_dimension: timeDim.name,
+      refresh_key: { every: '1 hour' },
+      indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
+    });
+    pre_aggregations.push({
+      name: 'monthly_rollup',
+      type: 'rollup',
+      dimensions: ['partition'],
+      measures: preAggMeasures.slice(0, 5),
+      time_dimension: timeDim.name,
+      refresh_key: { every: '1 hour' },
+      indexes: [{ name: 'partition_idx', columns: ['partition'] }],
+    });
+  }
+
   const cube = {
     name: cubeName,
+    title: titleFromName(cubeName),
+    description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     ...source,
     meta,
     dimensions,
     measures,
+    pre_aggregations,
   };
 
   return { cube, mapKeysDiscovered, columnsProfiled, columnsSkipped };
 }
 
 /**
- * Build a flattened ARRAY JOIN cube for a specific array column.
+ * Derive a cube name suffix from nested filter values.
+ * E.g., ["Line Item", "Cart Item"] → "line_items_cart_items"
+ *
+ * @param {Array<{column: string, values: string[]}>} filters
+ * @returns {string} Sanitized suffix or empty string
+ */
+function deriveCubeNameFromFilters(filters) {
+  if (!filters || filters.length === 0) return '';
+
+  const parts = [];
+  for (const f of filters) {
+    for (const v of f.values) {
+      // "Line Item" → "line_item", then pluralize naively
+      let slug = v.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+      if (slug && !slug.endsWith('s')) slug += 's';
+      if (slug) parts.push(slug);
+    }
+  }
+  return parts.join('_');
+}
+
+/**
+ * Build a flattened ARRAY JOIN cube for one or more nested array groups.
  *
  * @param {object} profiledTable
- * @param {{ column: string, alias: string }} arrayJoinDef
+ * @param {string[]} arrayJoinGroups - Parent group names (e.g. ["commerce.products"])
  * @param {object} rawCube - The already-built raw cube (to inherit non-array fields)
  * @param {object} options
  * @returns {object} Cube definition
  */
-function buildArrayJoinCube(profiledTable, arrayJoinDef, rawCube, options) {
-  const { partition = null, internalTables = [] } = options;
+function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
+  const {
+    partition = null,
+    internalTables = [],
+    nestedFilters = [],
+  } = options;
 
   const schema = profiledTable.database;
   const table = profiledTable.table;
-  const { column, alias } = arrayJoinDef;
   const isInternal = internalTables.includes(table);
 
-  const cubeName = sanitizeCubeName(`${table}_${alias}`);
-
-  // Build the ARRAY JOIN SQL
-  let sql = `SELECT *, ${column} AS ${alias} FROM ${schema}.${table} LEFT ARRAY JOIN ${column} AS ${alias}`;
-  if (isInternal && partition) {
-    sql += ` WHERE partition = '${partition}'`;
+  // Collect all Array-typed child columns for the selected groups.
+  // Only Array columns can be ARRAY JOINed — scalar dotted columns
+  // (e.g. commerce.details Nullable(String)) are excluded.
+  const groupColumns = new Map(); // group -> [colData]
+  for (const [colName, colData] of profiledTable.columns) {
+    if (colData.columnType !== ColumnType.GROUPED || !colData.parentName) continue;
+    if (!arrayJoinGroups.includes(colData.parentName)) continue;
+    if (!colData.rawType?.startsWith('Array(')) continue;
+    if (!groupColumns.has(colData.parentName)) groupColumns.set(colData.parentName, []);
+    groupColumns.get(colData.parentName).push(colData);
   }
 
-  // Start with non-array dimensions/measures from the raw cube
-  const dimensions = rawCube.dimensions
-    .filter((d) => !d._isArrayField)
-    .map((d) => ({ ...d }));
-  const measures = rawCube.measures.map((m) => ({ ...m }));
+  // Warn if no child columns were found for any of the requested groups
+  if (groupColumns.size === 0 && arrayJoinGroups.length > 0) {
+    console.warn(
+      `[cubeBuilder] buildArrayJoinCube: no child columns found for array join groups: ${arrayJoinGroups.join(', ')}. ` +
+      `The resulting cube will have no group-specific dimensions/measures.`
+    );
+  }
 
-  // Process the array column's element fields
-  // Look up the array column in the profiled table
-  const columnData = profiledTable.columns.get(column);
-  if (columnData && columnData.profile) {
-    // Add a dimension for the flattened alias
-    const aliasDim = {
-      name: sanitizeFieldName(alias),
-      sql: `{CUBE}.${alias}`,
-      type: 'string',
-      meta: { auto_generated: true },
-    };
+  // Derive cube name from table + filter values (or group names if no filters)
+  const allFilters = nestedFilters.flatMap((nf) => nf.filters || []);
+  const filterSuffix = deriveCubeNameFromFilters(allFilters);
+  const groupSuffix = filterSuffix || arrayJoinGroups.map((g) => sanitizeCubeName(g)).join('_');
+  const cubeName = sanitizeCubeName(`${table}_${groupSuffix}`);
 
-    // Check for name collision
-    const existingNames = new Set([
-      ...dimensions.map((d) => d.name),
-      ...measures.map((m) => m.name),
-    ]);
-    if (existingNames.has(aliasDim.name)) {
-      aliasDim.name = `${sanitizeFieldName(column)}_${aliasDim.name}`;
+  // Ensure nested filter columns are always in the ARRAY JOIN even if
+  // the user deselected them — the WHERE clause depends on them.
+  const filterColumns = new Set();
+  for (const nf of nestedFilters) {
+    for (const f of nf.filters || []) {
+      const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+      filterColumns.add(fullCol);
     }
-
-    dimensions.push(aliasDim);
   }
+
+  // Build the ARRAY JOIN SQL — enumerate each sub-column with an alias.
+  // ClickHouse Nested columns (parallel arrays with dotted names) require:
+  //   ARRAY JOIN `parent.child1` AS child1_alias, `parent.child2` AS child2_alias
+  // Format with newlines for readability in the model editor.
+  const ajParts = [];
+  const ajColumnNames = new Set();
+  for (const [group, cols] of groupColumns) {
+    for (const col of cols) {
+      const alias = col.name.replace(/\./g, '_');
+      ajParts.push(`  \`${col.name}\` AS \`${alias}\``);
+      ajColumnNames.add(col.name);
+    }
+  }
+  // Add any filter columns that weren't in the selected columns
+  for (const filterCol of filterColumns) {
+    if (!ajColumnNames.has(filterCol)) {
+      const alias = filterCol.replace(/\./g, '_');
+      ajParts.push(`  \`${filterCol}\` AS \`${alias}\``);
+    }
+  }
+  let sql;
+  if (ajParts.length > 0) {
+    // Build explicit SELECT of non-nested columns only.
+    // DO NOT use SELECT * — it exposes original Array columns (e.g.
+    // `commerce.products.entry_type` Array(String)) alongside the
+    // ARRAY JOIN aliases (`commerce_products_entry_type` scalar).
+    // When Cube.js wraps this in a subquery, both exist and ClickHouse
+    // may resolve references to the Array version, causing type errors.
+    //
+    // The ARRAY JOIN aliases must also be in the SELECT so they're visible
+    // when Cube.js wraps this in a subquery.
+    const selectParts = [];
+    for (const [colName, colData] of profiledTable.columns) {
+      // Skip ALL nested/grouped columns — they're Array types and can't be
+      // used directly in SQL. ARRAY JOIN group children are added below as
+      // scalar alias names. Other groups (e.g. location.*) are excluded since
+      // they don't have ARRAY JOIN expansion in this cube.
+      if (colData.columnType === ColumnType.GROUPED) continue;
+      if (colData.columnType === ColumnType.NESTED) continue;
+      // Only backtick-quote names with dots or special chars; simple names stay unquoted
+      const needsQuote = /[^a-zA-Z0-9_]/.test(colName);
+      selectParts.push(needsQuote ? `  \`${colName}\`` : `  ${colName}`);
+    }
+    // Add ARRAY JOIN alias names (scalar after JOIN) so they project into
+    // Cube.js subquery scope. Use the alias name only (not "x AS y" again).
+    for (const [, cols] of groupColumns) {
+      for (const col of cols) {
+        selectParts.push(`  ${col.name.replace(/\./g, '_')}`);
+      }
+    }
+    for (const filterCol of filterColumns) {
+      if (!ajColumnNames.has(filterCol)) {
+        selectParts.push(`  ${filterCol.replace(/\./g, '_')}`);
+      }
+    }
+    sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
+  } else {
+    sql = `SELECT * FROM ${schema}.${table}`;
+  }
+
+  // Collect WHERE conditions — use aliased names (dots → underscores)
+  const whereParts = [];
+  if (isInternal && partition) {
+    whereParts.push(`partition = '${partition}'`);
+  }
+  for (const nf of nestedFilters) {
+    for (const f of nf.filters || []) {
+      const fullCol = f.column.includes('.') ? f.column : `${nf.group}.${f.column}`;
+      const alias = fullCol.replace(/\./g, '_');
+      if (f.values.length === 1) {
+        whereParts.push(`\`${alias}\` = '${f.values[0].replace(/'/g, "''")}'`);
+      } else if (f.values.length > 1) {
+        const vals = f.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ');
+        whereParts.push(`\`${alias}\` IN (${vals})`);
+      }
+    }
+  }
+  if (whereParts.length > 0) {
+    sql += `\nWHERE ${whereParts.join('\n  AND ')}`;
+  }
+
+  // Start with non-array dimensions/measures from the raw cube.
+  // Exclude dimensions/measures whose source column belongs to an ARRAY JOIN
+  // group — the raw cube references Array columns directly, but the AJ cube
+  // replaces them with exploded scalar aliases.
+  // FILTER_PARAMS dimensions for AJ groups also break (indexOf on scalar = error).
+  // However, FILTER_PARAMS dimensions for NON-AJ groups (e.g. location.*) are
+  // valid — those arrays are not exploded by ARRAY JOIN and indexOf still works.
+  const ajGroupColumnNames = new Set();
+  for (const [, cols] of groupColumns) {
+    for (const col of cols) ajGroupColumnNames.add(col.name);
+  }
+  const isAjGroupColumn = (sourceCol) => {
+    if (!sourceCol) return false;
+    // Check if source column is directly in the AJ group
+    if (ajGroupColumnNames.has(sourceCol)) return true;
+    // Check if the parent group of this column is an AJ group
+    const dotIdx = sourceCol.indexOf('.');
+    if (dotIdx > 0) {
+      const parent = sourceCol.substring(0, dotIdx);
+      return arrayJoinGroups.includes(parent);
+    }
+    return false;
+  };
+  const dimensions = rawCube.dimensions
+    .filter((d) => {
+      if (d.meta?.source_column && isAjGroupColumn(d.meta.source_column)) return false;
+      if (d.sql && d.sql.includes('FILTER_PARAMS') && isAjGroupColumn(d._sourceColumn)) return false;
+      return true;
+    })
+    .map((d) => ({ ...d }));
+  const survivingDimNames = new Set(dimensions.map((d) => d.name));
+  const measures = rawCube.measures
+    .filter((m) => {
+      if (m.meta?.source_column && isAjGroupColumn(m.meta.source_column)) return false;
+      if (m.sql && m.sql.includes('FILTER_PARAMS') && isAjGroupColumn(m._sourceColumn)) return false;
+      // Paired counts reference a dimension — check it survived
+      if (m.meta?.filtered_count_for && !survivingDimNames.has(m.meta.filtered_count_for)) return false;
+      // Drill members that reference removed dimensions
+      if (m.drill_members) {
+        m.drill_members = m.drill_members.filter((d) => survivingDimNames.has(d));
+      }
+      return true;
+    })
+    .map((m) => ({ ...m }));
+
+  // Add dimensions/measures for each child column in the selected groups
+  const existingNames = new Set([
+    ...dimensions.map((d) => d.name),
+    ...measures.map((m) => m.name),
+  ]);
+
+  for (const [group, cols] of groupColumns) {
+    for (const col of cols) {
+      // The ARRAY JOIN alias is the full dotted name with dots → underscores
+      const colAlias = col.name.replace(/\./g, '_');
+      const dimName = sanitizeFieldName(colAlias);
+      let finalName = dimName;
+      if (existingNames.has(finalName)) {
+        finalName = `${finalName}_${existingNames.size}`;
+      }
+      existingNames.add(finalName);
+
+      // Map value types to Cube.js types
+      let cubeType = 'string';
+      if (col.valueType === ValueType.NUMBER) cubeType = 'number';
+      else if (col.valueType === ValueType.DATE) cubeType = 'time';
+      else if (col.valueType === ValueType.BOOLEAN) cubeType = 'boolean';
+
+      // Numeric child columns become measures; strings become dimensions
+      if (col.valueType === ValueType.NUMBER) {
+        measures.push({
+          name: finalName,
+          sql: `{CUBE}.${colAlias}`,
+          type: 'sum',
+          meta: { auto_generated: true, source_column: col.name, source_group: group },
+        });
+      } else {
+        dimensions.push({
+          name: finalName,
+          sql: `{CUBE}.${colAlias}`,
+          type: cubeType,
+          meta: { auto_generated: true, source_column: col.name, source_group: group },
+        });
+      }
+    }
+  }
+
+  // Titles on all fields
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
+  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
 
   const meta = {
     auto_generated: true,
     source_database: schema,
     source_table: table,
-    array_join_column: column,
-    array_join_alias: alias,
+    array_join_groups: arrayJoinGroups,
+    nested_filters: nestedFilters.length > 0 ? nestedFilters : undefined,
     generated_at: new Date().toISOString(),
   };
 
@@ -766,6 +1078,8 @@ function buildArrayJoinCube(profiledTable, arrayJoinDef, rawCube, options) {
 
   return {
     name: cubeName,
+    title: titleFromName(cubeName),
+    description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     sql,
     meta,
     dimensions,
@@ -806,20 +1120,126 @@ export { mergeAIMetrics };
 export function buildCubes(profiledTable, options = {}) {
   const {
     arrayJoinColumns = [],
+    nestedFilters = [],
   } = options;
 
   const cubes = [];
 
-  // 1. Build the raw (main) cube
+  // Always build the raw cube — needed for field processing and heuristics.
+  // When nested filters are active, the raw cube is used as a base but NOT emitted.
   const { cube: rawCube, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     buildRawCube(profiledTable, options);
 
-  cubes.push(rawCube);
+  if (nestedFilters.length > 0) {
+    // Nested-filter path: emit ONLY the array-joined cube.
+    // The raw cube is used internally for base field processing but discarded.
+    const groups = nestedFilters.map((nf) => nf.group);
+    const ajCube = buildArrayJoinCube(profiledTable, groups, rawCube, options);
 
-  // 2. Build flattened ARRAY JOIN cubes
-  for (const ajDef of arrayJoinColumns) {
-    const ajCube = buildArrayJoinCube(profiledTable, ajDef, rawCube, options);
+    // Apply heuristics that buildRawCube applies but buildArrayJoinCube doesn't:
+    // - Partition-first ordering
+    const partitionIdx = ajCube.dimensions.findIndex((d) => d.name === 'partition');
+    if (partitionIdx > 0) {
+      const [partitionDim] = ajCube.dimensions.splice(partitionIdx, 1);
+      ajCube.dimensions.unshift(partitionDim);
+    }
+
+    // - Grain + meta enrichment
+    const timeDim = ajCube.dimensions.find((d) => d.type === 'time' && d.primary_key !== true);
+    const primaryKeys = options.primaryKeys || [];
+    const grainParts = primaryKeys.length > 0
+      ? primaryKeys.map(sanitizeFieldName).join(' + ')
+      : 'one row per source record';
+    ajCube.meta.grain = grainParts;
+    ajCube.meta.grain_description = `Each row represents one ${profiledTable.table} record, keyed by ${grainParts}.`;
+    ajCube.meta.time_dimension = timeDim ? timeDim.name : null;
+    ajCube.meta.time_zone = 'UTC';
+    ajCube.meta.refresh_cadence = '1 hour';
+
+    // - Drill members on count
+    const countMeasure = ajCube.measures.find((m) => m.type === 'count');
+    if (countMeasure && !countMeasure.drill_members) {
+      const drillCandidates = ajCube.dimensions
+        .filter((d) => d.type === 'string' && !d.name.includes('_id') && !d.name.includes('_gid') && d.public !== false)
+        .slice(0, 5)
+        .map((d) => d.name);
+      if (drillCandidates.length > 0) countMeasure.drill_members = drillCandidates;
+    }
+
+    // - Format inference
+    const CURRENCY_PATTERN = /^(revenue|tax|discount|cogs|commission|amount|fee|total|balance)$|_(price|cost|revenue|fee|amount)$/i;
+    const PERCENT_PATTERN = /_(percentage|pct|ratio|rate)$/i;
+    for (const meas of ajCube.measures) {
+      if (meas.format) continue;
+      if (CURRENCY_PATTERN.test(meas.name)) meas.format = 'currency';
+      else if (PERCENT_PATTERN.test(meas.name)) meas.format = 'percent';
+    }
+
+    // - Public:false on plumbing
+    const PLUMBING_PATTERN = /^(message_id|event_gid|anonymous_gid|session_gid|user_gid|write_key|ttl_days)$|_gid$/;
+    for (const dim of ajCube.dimensions) {
+      if (dim.public !== undefined) continue;
+      if (PLUMBING_PATTERN.test(dim.name)) dim.public = false;
+    }
+
+    // - Pre-aggregations
+    if (timeDim) {
+      const preAggDimensions = ajCube.dimensions
+        .filter((d) => d.type === 'string' && d.public !== false)
+        .slice(0, 5)
+        .map((d) => d.name);
+      const preAggMeasures = ajCube.measures
+        .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
+        .slice(0, 10)
+        .map((m) => m.name);
+      if (preAggMeasures.length > 0) {
+        ajCube.pre_aggregations = [
+          {
+            name: 'daily_rollup',
+            type: 'rollup',
+            dimensions: ['partition', ...preAggDimensions],
+            measures: preAggMeasures,
+            time_dimension: timeDim.name,
+            refresh_key: { every: '1 hour' },
+            indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
+          },
+          {
+            name: 'monthly_rollup',
+            type: 'rollup',
+            dimensions: ['partition'],
+            measures: preAggMeasures.slice(0, 5),
+            time_dimension: timeDim.name,
+            refresh_key: { every: '1 hour' },
+            indexes: [{ name: 'partition_idx', columns: ['partition'] }],
+          },
+        ];
+      }
+    }
+
     cubes.push(ajCube);
+  } else if (arrayJoinColumns.length > 0) {
+    // Legacy ARRAY JOIN path: raw cube + separate flattened cubes
+    cubes.push(rawCube);
+    for (const ajDef of arrayJoinColumns) {
+      const legacyCube = buildArrayJoinCube(profiledTable, [ajDef.column], rawCube, {
+        ...options,
+        nestedFilters: [],
+      });
+      legacyCube.name = sanitizeCubeName(`${profiledTable.table}_${ajDef.alias}`);
+      const qualifiedTable = `${profiledTable.database}.${profiledTable.table}`;
+      const isInternal = (options.internalTables || []).includes(profiledTable.table);
+      let legacySql = `SELECT *, ${ajDef.column} AS ${ajDef.alias} FROM ${qualifiedTable} LEFT ARRAY JOIN ${ajDef.column} AS ${ajDef.alias}`;
+      if (isInternal && options.partition) {
+        legacySql += ` WHERE partition = '${options.partition}'`;
+      }
+      legacyCube.sql = legacySql;
+      legacyCube.meta.array_join_column = ajDef.column;
+      legacyCube.meta.array_join_alias = ajDef.alias;
+      cubes.push(legacyCube);
+    }
+  } else {
+    // No array join: just the raw cube
+    cubes.push(rawCube);
   }
 
   // 3. Compute summary

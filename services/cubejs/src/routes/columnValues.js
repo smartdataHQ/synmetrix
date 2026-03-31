@@ -59,14 +59,25 @@ export default async (req, res, cubejs) => {
       schema, table, partition, internalTables, filters, columnNames
     );
 
-    // Compose the full query
-    let sql = `SELECT DISTINCT \`${column}\` AS v FROM ${schema}.\`${table}\``;
-
-    if (whereClause) {
-      sql += whereClause;
-      sql += ` AND \`${column}\` IS NOT NULL`;
+    // Compose the full query — use arrayJoin for nested array columns (dotted names)
+    const isNestedColumn = column.includes('.');
+    let sql;
+    if (isNestedColumn) {
+      sql = `SELECT DISTINCT arrayJoin(\`${column}\`) AS v FROM ${schema}.\`${table}\``;
+      if (whereClause) {
+        sql += whereClause;
+        sql += ` AND notEmpty(\`${column}\`)`;
+      } else {
+        sql += ` WHERE notEmpty(\`${column}\`)`;
+      }
     } else {
-      sql += ` WHERE \`${column}\` IS NOT NULL`;
+      sql = `SELECT DISTINCT \`${column}\` AS v FROM ${schema}.\`${table}\``;
+      if (whereClause) {
+        sql += whereClause;
+        sql += ` AND \`${column}\` IS NOT NULL`;
+      } else {
+        sql += ` WHERE \`${column}\` IS NOT NULL`;
+      }
     }
 
     // Server-side partial match via ILIKE

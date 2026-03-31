@@ -117,6 +117,8 @@ type Mutation {
     cube_name: String
     selected_ai_metrics: [String]
     selected_columns: [String]
+    nested_filters: [NestedFilterInput]
+    excluded_fields: [String]
   ): SmartGenOutput
 }
 
@@ -145,6 +147,16 @@ input FilterConditionInput {
   column: String!
   operator: String!
   value: jsonb
+}
+
+input NestedFilterConditionInput {
+  column: String!
+  values: [String!]!
+}
+
+input NestedFilterInput {
+  group: String!
+  filters: [NestedFilterConditionInput!]!
 }
 
 input SourceTable {
@@ -293,6 +305,7 @@ type SmartGenOutput {
   ai_enrichment: jsonb
   model_validation: jsonb
   previous_filters: jsonb
+  polish: jsonb
 }
 
 type UpdateTeamSettingsOutput {

@@ -7,6 +7,7 @@ import { createProgressEmitter } from '../utils/smart-generation/progressEmitter
 import { serializeProfile } from '../utils/smart-generation/profileSerializer.js';
 import { ColumnType } from '../utils/smart-generation/typeParser.js';
 import { parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
+import { loadRules } from '../utils/queryRewrite.js';
 
 /**
  * Analyze an existing data schema file for user content and reprofile support.
@@ -90,10 +91,11 @@ function analyzeExistingModel(code, fileName) {
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const { table, schema, branchId, filters: rawFilters } = req.body;
+  const { table, schema, branchId, filters: rawFilters, nestedFilters: rawNestedFilters } = req.body;
 
   // Normalize filters: default to empty array if missing/invalid
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
+  const nestedFilters = Array.isArray(rawNestedFilters) ? rawNestedFilters : [];
 
   if (!table || !schema) {
     return res.status(400).json({
@@ -110,13 +112,41 @@ export default async (req, res, cubejs) => {
 
     driver = await cubejs.options.driverFactory({ securityContext });
 
+    // Apply query rewrite rules as additional filters.
+    // Rules are defined by source table name and add mandatory row-level filters
+    // (e.g. partition scoping) based on team/member properties.
+    const ruleFilters = [];
+    try {
+      const rules = await loadRules();
+      const { teamProperties, memberProperties } = securityContext.userScope || {};
+      for (const rule of rules) {
+        if (rule.cube_name !== table) continue;
+        const source = rule.property_source === 'team' ? teamProperties : memberProperties;
+        const value = source?.[rule.property_key];
+        if (value === undefined || value === null) continue;
+        // Translate Cube.js operator to SQL — rules use 'equals', 'notEquals', 'contains', etc.
+        const sqlOp = rule.operator === 'equals' ? '='
+          : rule.operator === 'notEquals' ? '!='
+          : rule.operator === 'contains' ? 'LIKE'
+          : '=';
+        const sqlVal = sqlOp === 'LIKE' ? `%${String(value)}%` : String(value);
+        ruleFilters.push({ column: rule.dimension, operator: sqlOp, value: sqlVal });
+      }
+    } catch (err) {
+      console.warn('[profileTable] Failed to load query rewrite rules (non-fatal):', err.message);
+    }
+
+    // Merge rule filters with user-specified filters
+    const allFilters = [...filters, ...ruleFilters];
+
     const emitter = createProgressEmitter(res, req.headers.accept);
 
     // Profile the table
     const profiledTable = await profileTable(driver, schema, table, {
       partition,
       internalTables,
-      filters,
+      filters: allFilters,
+      nestedFilters,
       emitter,
     });
 

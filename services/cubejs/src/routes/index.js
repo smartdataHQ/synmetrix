@@ -26,6 +26,7 @@ import profileTable from "./profileTable.js";
 import runSql from "./runSql.js";
 import smartGenerate from "./smartGenerate.js";
 import columnValues from "./columnValues.js";
+import discoverNested from "./discoverNested.js";
 import discover from "./discover.js";
 import testConnection from "./testConnection.js";
 import validate from "./validate.js";
@@ -253,6 +254,11 @@ export default ({ basePath, cubejs }) => {
     async (req, res) => columnValues(req, res, cubejs)
   );
 
+  router.post(
+    `${basePath}/v1/discover-nested`,
+    checkAuthMiddleware,
+    async (req, res) => discoverNested(req, res, cubejs)
+  );
 
   router.post(
     `${basePath}/v1/validate`,
