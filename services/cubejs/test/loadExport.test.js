@@ -303,6 +303,61 @@ describe("maybeHandleLoadExport", () => {
     ]);
   });
 
+  it("skips native ClickHouse path and uses semantic streaming when pre-aggregations are in the query plan", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"],
+        measures: ["Orders.count"],
+      },
+    });
+    const res = new MockResponse();
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      sqlQuery: {
+        sql: ["SELECT city, count FROM orders_rollup", []],
+        // The compiler attaches a preAggregations array when pre-agg
+        // tables are part of the query plan (typically in CubeStore).
+        preAggregations: [
+          { tableName: "stb_pre_agg.orders_rollup", dataSource: "default" },
+        ],
+        aliasNameToMember: {
+          "Orders.city": "Orders.city",
+          "Orders.count": "Orders.count",
+        },
+      },
+      metaConfig: createMetaConfig({
+        measures: [{ name: "Orders.count", type: "count" }],
+        dimensions: [{ name: "Orders.city", type: "string" }],
+      }),
+      streamRows: [
+        { "Orders.city": "Reykjavik", "Orders.count": 3 },
+      ],
+      // Native driver should NOT be called — pre-agg flag bypasses native path.
+      // Semantic streaming (via QueryOrchestrator.streamQuery) handles
+      // pre-aggregations correctly, so that path is used instead.
+      driver: createClickHouseDriver({
+        arrowChunks: [Buffer.from("should-not-be-used")],
+      }),
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      throw new Error("next should not be called — semantic streaming handles pre-agg queries");
+    }, cubejs);
+
+    assert.equal(
+      res.headers["Content-Type"],
+      "application/vnd.apache.arrow.stream"
+    );
+
+    const parsed = tableFromIPC(res.binaryOutput);
+    assert.deepEqual(parsed.toArray().map((row) => row.toJSON()), [
+      { "Orders.city": "Reykjavik", "Orders.count": 3 },
+    ]);
+  });
+
   it("falls through to the buffered path when semantic streaming is unavailable", async () => {
     const req = createRequest({
       format: "csv",

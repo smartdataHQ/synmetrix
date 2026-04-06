@@ -3,8 +3,6 @@ import { randomUUID } from "crypto";
 import sqlstring from "sqlstring";
 import * as prepareAnnotationModule from "@cubejs-backend/api-gateway/dist/src/helpers/prepare-annotation.js";
 import { QueryType } from "@cubejs-backend/api-gateway/dist/src/types/enums.js";
-import * as QueryCacheModule from "@cubejs-backend/query-orchestrator/dist/src/orchestrator/QueryCache.js";
-
 import {
   deriveExportColumnsFromLoad,
   getLoadRequestFormat,
@@ -30,8 +28,6 @@ const prepareAnnotation =
   typeof prepareAnnotationModule.prepareAnnotation === "function"
     ? prepareAnnotationModule.prepareAnnotation
     : prepareAnnotationModule.default;
-const QueryCache = QueryCacheModule.QueryCache;
-
 const CSV_HEADERS = {
   "Content-Type": "text/csv",
   "Content-Disposition": 'attachment; filename="query-result.csv"',
@@ -321,6 +317,14 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
       forceNoCache: true,
     };
 
+    // The compiled sqlQuery carries a preAggregations array when the query
+    // plan routes through pre-aggregation tables (typically in CubeStore).
+    // Neither the native ClickHouse path nor semantic streaming can reach
+    // CubeStore tables, so flag it so tryHandleLoadExport can bail out early
+    // and let the standard Cube.js load pipeline handle it.
+    const usesPreAggregations = Array.isArray(sqlQuery.preAggregations)
+      && sqlQuery.preAggregations.length > 0;
+
     return {
       handled: false,
       requestStarted,
@@ -331,6 +335,7 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
       annotation,
       columns: deriveExportColumnsFromLoad(normalizedQuery, annotation),
       streamingQuery,
+      usesPreAggregations,
     };
   } catch (err) {
     emitGatewayHandledError(
@@ -350,6 +355,8 @@ async function prepareNativeClickHouseExport(plan) {
     return null;
   }
 
+  // Verify the query orchestrator is available — if not, the native
+  // passthrough cannot safely determine whether the query is eligible.
   const adapterApi = await plan.apiGateway.getAdapterApi(plan.context);
   const queryOrchestrator = adapterApi.getQueryOrchestrator?.();
   const preAggregations = queryOrchestrator?.getPreAggregations?.();
@@ -357,24 +364,25 @@ async function prepareNativeClickHouseExport(plan) {
     return null;
   }
 
+  // Even when plan.usesPreAggregations is false (the compiler did not
+  // indicate pre-aggs), the orchestrator may still resolve lambda tables
+  // at runtime.  Those inline tables are not compatible with the native
+  // ClickHouse passthrough, so check and bail out if present.
   const {
     preAggregationsTablesToTempTables,
     values,
   } = await preAggregations.loadAllPreAggregationsIfNeeded(plan.streamingQuery);
 
-  const inlineTables = preAggregationsTablesToTempTables.flatMap(
-    ([, preAggregation]) => (preAggregation.lambdaTable ? [preAggregation.lambdaTable] : [])
+  const hasLambdaTables = preAggregationsTablesToTempTables.some(
+    ([, preAggregation]) => Boolean(preAggregation.lambdaTable)
   );
 
-  if (inlineTables.length > 0) {
+  if (hasLambdaTables) {
     return null;
   }
 
   return {
-    query: QueryCache.replacePreAggregationTableNames(
-      plan.streamingQuery.query,
-      preAggregationsTablesToTempTables
-    ),
+    query: plan.streamingQuery.query,
     values: values || plan.streamingQuery.values,
   };
 }
@@ -449,52 +457,56 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
   const abortController = createAbortController(res);
 
   try {
+    let nativeQuery = null;
+
+    // The native ClickHouse passthrough sends SQL directly to ClickHouse,
+    // bypassing the Cube.js query orchestrator.  When pre-aggregations are
+    // involved the orchestrator rewrites the SQL to reference temp tables
+    // that live in CubeStore — ClickHouse cannot reach those tables, so
+    // the native path must be skipped.  The semantic streaming fallback
+    // below goes through QueryOrchestrator.streamQuery which loads
+    // pre-aggregations and routes to the correct data source.
     if (
-      format === "csv"
-      && plan.capabilities.nativeCsvPassthrough
+      !plan.usesPreAggregations
+      && (format === "csv" && plan.capabilities.nativeCsvPassthrough
+        || format === "arrow" && plan.capabilities.nativeArrowPassthrough)
       && isClickHouseContext(plan.context.securityContext)
     ) {
-      const nativeQuery = await prepareNativeClickHouseExport(plan);
-      if (nativeQuery) {
-        const driver = await cubejs.options.driverFactory({
-          securityContext: plan.context.securityContext,
-        });
-        res.set(CSV_HEADERS);
-        await executeNativeClickHouseCsv(
-          res,
-          nativeQuery.query,
-          nativeQuery.values,
-          driver,
-          abortController.signal,
-          getAliasNameToMember(plan)
-        );
-        res.end();
-        return true;
-      }
+      nativeQuery = await prepareNativeClickHouseExport(plan);
     }
 
-    if (
-      format === "arrow"
-      && plan.capabilities.nativeArrowPassthrough
-      && isClickHouseContext(plan.context.securityContext)
-    ) {
-      const nativeQuery = await prepareNativeClickHouseExport(plan);
-      if (nativeQuery) {
-        const driver = await cubejs.options.driverFactory({
-          securityContext: plan.context.securityContext,
-        });
-        res.set(ARROW_HEADERS);
-        setNativeArrowFieldMappingHeaders(res, plan);
-        await executeNativeClickHouseArrow(
-          res,
-          nativeQuery.query,
-          nativeQuery.values,
-          driver,
-          abortController.signal
-        );
-        res.end();
-        return true;
-      }
+    if (format === "csv" && nativeQuery?.query) {
+      const driver = await cubejs.options.driverFactory({
+        securityContext: plan.context.securityContext,
+      });
+      res.set(CSV_HEADERS);
+      await executeNativeClickHouseCsv(
+        res,
+        nativeQuery.query,
+        nativeQuery.values,
+        driver,
+        abortController.signal,
+        getAliasNameToMember(plan)
+      );
+      res.end();
+      return true;
+    }
+
+    if (format === "arrow" && nativeQuery?.query) {
+      const driver = await cubejs.options.driverFactory({
+        securityContext: plan.context.securityContext,
+      });
+      res.set(ARROW_HEADERS);
+      setNativeArrowFieldMappingHeaders(res, plan);
+      await executeNativeClickHouseArrow(
+        res,
+        nativeQuery.query,
+        nativeQuery.values,
+        driver,
+        abortController.signal
+      );
+      res.end();
+      return true;
     }
 
     if (!canSemanticStreamLoadExport(format, plan.capabilities)) {
