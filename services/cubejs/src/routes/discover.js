@@ -139,6 +139,59 @@ export default async function discover(req, res) {
 
     res.json({
       datasources: buildDiscoverResponse(user.dataSources, partitionTeamIds),
+      usage: {
+        description:
+          "All /api/v1/* endpoints (except /discover and /version) require these headers for datasource context.",
+        required_headers: {
+          Authorization: "Bearer <token>",
+          "x-hasura-datasource-id":
+            "The datasource 'id' from this response",
+          "x-hasura-branch-id":
+            "The 'branch_id' from this response (optional — defaults to active branch)",
+          "x-hasura-branch-version-id":
+            "The 'version_id' from this response (optional — defaults to latest version)",
+        },
+        endpoints: {
+          "GET  /api/v1/discover":
+            "This endpoint. Lists datasources and cubes available to the authenticated user. No datasource headers required.",
+          "ALL  /v1/graphql":
+            "GraphQL API (proxied to Hasura). Accepts WorkOS, FraiOS, and legacy Hasura tokens. No datasource headers required.",
+          "ALL  /v1/ws":
+            "WebSocket endpoint for GraphQL subscriptions (proxied to Hasura). Same auth as /v1/graphql.",
+          "GET  /api/v1/meta":
+            "Cube metadata — lists all cubes, measures, dimensions, and segments for the selected datasource.",
+          "POST /api/v1/load":
+            "Run a Cube.js query. Supports format=csv|jsonstat|arrow|json (default json).",
+          "GET  /api/v1/sql":
+            "Preview the generated SQL for a Cube.js query without executing it.",
+          "POST /api/v1/run-sql":
+            "Execute raw SQL against the datasource.",
+          "GET  /api/v1/test":
+            "Test the datasource connection.",
+          "GET  /api/v1/get-schema":
+            "Retrieve the Cube.js data model schema.",
+          "POST /api/v1/generate-models":
+            "Auto-generate Cube.js models from database tables.",
+          "POST /api/v1/smart-generate":
+            "AI-assisted model generation.",
+          "POST /api/v1/profile-table":
+            "Profile a database table (column stats).",
+          "POST /api/v1/column-values":
+            "Fetch distinct values for a column.",
+          "POST /api/v1/discover-nested":
+            "Discover nested/array columns in a datasource.",
+          "POST /api/v1/validate":
+            "Validate a Cube.js model file.",
+          "GET  /api/v1/pre-aggregations":
+            "List pre-aggregations for the datasource.",
+          "POST /api/v1/pre-aggregation-preview":
+            "Preview pre-aggregation results.",
+          "POST /api/v1/cubesql":
+            "Execute SQL against the semantic layer (streaming JSONL response).",
+          "GET  /api/v1/version":
+            "Schema-compiler version (public, no auth required).",
+        },
+      },
     });
   } catch (err) {
     const status = err.status || 500;

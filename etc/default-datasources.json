@@ -1,0 +1,26 @@
+[
+  {
+    "name": "dev-clickhouse",
+    "db_type": "CLICKHOUSE",
+    "db_params": {
+      "host": "host.docker.internal",
+      "port": "18123",
+      "user": "admin",
+      "database": "cst",
+      "ssl": false
+    },
+    "secret_key": "CLICKHOUSE_DEV_PASSWORD"
+  },
+  {
+    "name": "prod",
+    "db_type": "CLICKHOUSE",
+    "db_params": {
+      "host": "db.contextsuite.com",
+      "port": "443",
+      "user": "default",
+      "database": "cst",
+      "ssl": true
+    },
+    "secret_key": "CLICKHOUSE_PROD_PASSWORD"
+  }
+]

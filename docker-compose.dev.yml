@@ -35,11 +35,15 @@ services:
     volumes:
       - ./services/actions/src:/app/src
       - ./services/actions/index.js:/app/index.js
+      - ./etc/default-datasources.json:/etc/synmetrix/default-datasources.json:ro
     ports:
       - 3001:3000
     env_file:
       - .env
       - .dev.env
+    environment:
+      CLICKHOUSE_DEV_PASSWORD: ${CLICKHOUSE_DEV_PASSWORD:-}
+      CLICKHOUSE_PROD_PASSWORD: ${CLICKHOUSE_PROD_PASSWORD:-}
     networks:
       - synmetrix_default
 
