@@ -150,6 +150,14 @@ actions:
       forward_client_headers: true
     permissions:
       - role: user
+  - name: provision_default_datasources
+    definition:
+      kind: synchronous
+      handler: '{{ACTIONS_URL}}/rpc/provision_default_datasources'
+      forward_client_headers: true
+      timeout: 120
+    permissions:
+      - role: admin
   - name: send_test_alert
     definition:
       kind: synchronous
@@ -194,4 +202,6 @@ custom_types:
     - name: UpdateTeamPropertiesOutput
     - name: UpdateMemberPropertiesOutput
     - name: CopyDatasourceOutput
+    - name: ProvisionDefaultDatasourcesOutput
+    - name: ProvisionTeamResult
   scalars: []

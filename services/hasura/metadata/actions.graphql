@@ -119,6 +119,7 @@ type Mutation {
     selected_columns: [String]
     nested_filters: [NestedFilterInput]
     excluded_fields: [String]
+    skip_llm: Boolean
   ): SmartGenOutput
 }
 
@@ -384,5 +385,21 @@ type Mutation {
 type CopyDatasourceOutput {
   id: uuid
   name: String
+}
+
+type Mutation {
+  provision_default_datasources: ProvisionDefaultDatasourcesOutput
+}
+
+type ProvisionDefaultDatasourcesOutput {
+  teams_processed: Int!
+  datasources_created: Int!
+  results: [ProvisionTeamResult]
+}
+
+type ProvisionTeamResult {
+  team_id: uuid!
+  created: [String]
+  error: String
 }
 

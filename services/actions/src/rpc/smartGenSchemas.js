@@ -20,6 +20,7 @@ export default async (session, input, headers) => {
     selected_columns: selectedColumns,
     nested_filters: nestedFilters,
     excluded_fields: excludedFields,
+    skip_llm: skipLlm,
   } = input || {};
 
   const userId = session?.["x-hasura-user-id"];
@@ -51,6 +52,7 @@ export default async (session, input, headers) => {
       selected_columns: selectedColumns,
       nestedFilters,
       excluded_fields: excludedFields,
+      skip_llm: skipLlm,
     });
 
     // Ensure subsequent Explore/Meta requests resolve the latest branch version
