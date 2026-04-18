@@ -134,12 +134,16 @@ export default async (req, res, cubejs) => {
     if (profileData) {
       // Use cached profile data from the profile_table step — no ClickHouse queries
       emitter.emit('building', 'Using cached profile...', 0.5);
+      console.log('[smartGenerate] step: deserialize profile');
       const deserialized = deserializeProfile(profileData);
       profiledTable = deserialized.profiledTable;
       primaryKeys = deserialized.primaryKeys;
       // Ensure column order is stable even when profile_data transport reorders object keys.
+      console.log('[smartGenerate] step: create driver');
       driver = await cubejs.options.driverFactory({ securityContext });
+      console.log('[smartGenerate] step: hydrate column order');
       profiledTable = await hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table);
+      console.log('[smartGenerate] step: profile ready');
 
       // Load rewrite rules even on cached path — needed for required_fields
       try {
