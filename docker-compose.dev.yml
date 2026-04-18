@@ -41,9 +41,6 @@ services:
     env_file:
       - .env
       - .dev.env
-    environment:
-      CLICKHOUSE_DEV_PASSWORD: ${CLICKHOUSE_DEV_PASSWORD:-}
-      CLICKHOUSE_PROD_PASSWORD: ${CLICKHOUSE_PROD_PASSWORD:-}
     networks:
       - synmetrix_default
 

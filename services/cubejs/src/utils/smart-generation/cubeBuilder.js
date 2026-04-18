@@ -785,6 +785,7 @@ function buildRawCube(profiledTable, options) {
       dimensions: ['partition', ...preAggDimensions],
       measures: preAggMeasures,
       time_dimension: timeDim.name,
+      granularity: 'day',
       refresh_key: { every: '1 hour' },
       indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
     });
@@ -794,6 +795,7 @@ function buildRawCube(profiledTable, options) {
       dimensions: ['partition'],
       measures: preAggMeasures.slice(0, 5),
       time_dimension: timeDim.name,
+      granularity: 'month',
       refresh_key: { every: '1 hour' },
       indexes: [{ name: 'partition_idx', columns: ['partition'] }],
     });
@@ -1200,6 +1202,7 @@ export function buildCubes(profiledTable, options = {}) {
             dimensions: ['partition', ...preAggDimensions],
             measures: preAggMeasures,
             time_dimension: timeDim.name,
+            granularity: 'day',
             refresh_key: { every: '1 hour' },
             indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
           },
@@ -1209,6 +1212,7 @@ export function buildCubes(profiledTable, options = {}) {
             dimensions: ['partition'],
             measures: preAggMeasures.slice(0, 5),
             time_dimension: timeDim.name,
+            granularity: 'month',
             refresh_key: { every: '1 hour' },
             indexes: [{ name: 'partition_idx', columns: ['partition'] }],
           },

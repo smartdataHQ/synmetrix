@@ -356,6 +356,7 @@ export function generateJs(cubeDefinitions) {
           lines.push(`      dimensions: [${pa.dimensions.map((d) => `CUBE.${d}`).join(', ')}],`);
         }
         if (pa.time_dimension) lines.push(`      time_dimension: CUBE.${pa.time_dimension},`);
+        if (pa.granularity) lines.push(`      granularity: \`${pa.granularity}\`,`);
         if (pa.refresh_key) {
           if (pa.refresh_key.every) lines.push(`      refresh_key: { every: \`${pa.refresh_key.every}\` },`);
         }
