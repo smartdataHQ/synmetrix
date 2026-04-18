@@ -134,12 +134,16 @@ export default async (req, res, cubejs) => {
     if (profileData) {
       // Use cached profile data from the profile_table step — no ClickHouse queries
       emitter.emit('building', 'Using cached profile...', 0.5);
+
       const deserialized = deserializeProfile(profileData);
       profiledTable = deserialized.profiledTable;
       primaryKeys = deserialized.primaryKeys;
       // Ensure column order is stable even when profile_data transport reorders object keys.
+
       driver = await cubejs.options.driverFactory({ securityContext });
+
       profiledTable = await hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table);
+
 
       // Load rewrite rules even on cached path — needed for required_fields
       try {
