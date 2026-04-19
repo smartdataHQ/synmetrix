@@ -28,6 +28,7 @@ import smartGenerate from "./smartGenerate.js";
 import columnValues from "./columnValues.js";
 import discoverNested from "./discoverNested.js";
 import discover from "./discover.js";
+import metaAll from "./metaAll.js";
 import testConnection from "./testConnection.js";
 import validate from "./validate.js";
 import version from "./version.js";
@@ -268,6 +269,11 @@ export default ({ basePath, cubejs }) => {
 
   // Discovery endpoint — WorkOS auth only, no datasource selection required
   router.get(`${basePath}/v1/discover`, async (req, res) => discover(req, res));
+
+  // Aggregated meta across all visible datasources — WorkOS/FraiOS auth only
+  router.get(`${basePath}/v1/meta-all`, async (req, res) =>
+    metaAll(req, res, cubejs)
+  );
 
   // Version endpoint is public — returns only the schema-compiler version string
   router.get(`${basePath}/v1/version`, (req, res) => version(req, res));
