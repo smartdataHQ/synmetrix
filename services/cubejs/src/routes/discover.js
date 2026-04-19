@@ -160,6 +160,8 @@ export default async function discover(req, res) {
             "WebSocket endpoint for GraphQL subscriptions (proxied to Hasura). Same auth as /v1/graphql.",
           "GET  /api/v1/meta":
             "Cube metadata — lists all cubes, measures, dimensions, and segments for the selected datasource.",
+          "GET  /api/v1/meta-all":
+            "Aggregated cube summaries across every visible datasource. No datasource headers required. Returns cube name/title/description, measure/dimension/segment names, and cube-level meta.",
           "POST /api/v1/load":
             "Run a Cube.js query. Supports format=csv|jsonstat|arrow|json (default json).",
           "GET  /api/v1/sql":
