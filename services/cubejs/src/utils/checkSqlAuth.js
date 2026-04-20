@@ -36,19 +36,33 @@ const buildSqlSecurityContext = (sqlCredentials) => {
 
 /**
  * Check SQL authentication for a user.
- * Supports two authentication methods:
- * 1. WorkOS JWT as password (new): password is a JWT, username is datasource ID
- * 2. Legacy sql_credentials lookup (existing): username/password from sql_credentials table
  *
- * @param {null} _ - Unused parameter.
- * @param {Object} user - The user object with username and password.
- * @returns {Promise} - Resolves to { password, securityContext }
+ * Cube.js v1.6 invokes this callback as `checkSqlAuth(request, user, password)`
+ * (see @cubejs-backend/api-gateway/dist/src/sql-server.js — the callback is
+ * wrapped with three positional args). Earlier builds passed a single object
+ * `{ username, password }`; the defensive branches below keep backward-
+ * compatibility with that older shape.
+ *
+ * Supports two authentication methods:
+ * 1. WorkOS / FraiOS JWT as password: password is a JWT, username is the datasource ID
+ * 2. Legacy sql_credentials lookup: username/password from the sql_credentials table
+ *
+ * @param {Object} request - Cube.js SQL request metadata (protocol, method, apiType)
+ * @param {string|Object} userArg - Username string (v1.6+) or legacy { username, password } object
+ * @param {string} [passwordArg] - Password string (v1.6+); absent in legacy object-shape calls
+ * @returns {Promise<{ password: string, securityContext: Object }>}
  */
-const checkSqlAuth = async (_, user) => {
-  const password = typeof user === "string" ? user : user?.password;
-  const username = typeof user === "string" ? _ : user?.username;
+const checkSqlAuth = async (request, userArg, passwordArg) => {
+  // Resolve the two shapes Cube has used for this callback:
+  //   new: (request, username: string, password: string)
+  //   legacy: (_req, { username, password })
+  const username =
+    typeof userArg === "string" ? userArg : userArg?.username;
+  const password =
+    passwordArg ??
+    (typeof userArg === "string" ? undefined : userArg?.password);
 
-  // Detect if password looks like a JWT (WorkOS RS256)
+  // Detect if password looks like a JWT (WorkOS RS256 / FraiOS HS256)
   if (password && password.includes(".") && password.split(".").length === 3) {
     const tokenType = detectTokenType(password);
 
@@ -134,8 +148,12 @@ const checkSqlAuth = async (_, user) => {
     }
   }
 
-  // Legacy sql_credentials path (unchanged)
-  const sqlCredentials = await findSqlCredentials(username || user);
+  // Legacy sql_credentials path — lookup by the plaintext username.
+  // Cube.js compares the supplied password against `password` in the return value.
+  if (!username || typeof username !== "string") {
+    throw new Error("Incorrect user name or password");
+  }
+  const sqlCredentials = await findSqlCredentials(username);
 
   return {
     password: sqlCredentials?.password,
