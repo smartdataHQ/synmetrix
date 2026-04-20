@@ -1,0 +1,51 @@
+tests:
+  meta_single_cube_flow:
+    steps:
+      - name: reject_missing_auth
+        http:
+          url: http://cubejs:4000/api/v1/meta/cube/orders
+          method: GET
+          check:
+            status: 403
+
+      - name: reject_missing_datasource_id
+        http:
+          url: http://cubejs:4000/api/v1/meta/cube/orders
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+          check:
+            status: 400
+
+      - name: not_found_for_missing_cube
+        http:
+          url: http://cubejs:4000/api/v1/meta/cube/this_cube_does_not_exist
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.datasourceId}}
+          check:
+            status: 404
+            jsonpath:
+              $.code: "cube_not_found"
+
+      - name: happy_path_full_envelope
+        http:
+          url: http://cubejs:4000/api/v1/meta/cube/${{captures.cubeName}}
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.datasourceId}}
+          check:
+            status: 200
+            jsonpath:
+              $.cube.name: ${{captures.cubeName}}
+              $.cube.measures:
+                - isArray: true
+              $.cube.dimensions:
+                - isArray: true
+              $.datasourceId: ${{captures.datasourceId}}
+              $.branchId:
+                - isString: true
+              $.versionId:
+                - isString: true

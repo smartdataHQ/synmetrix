@@ -1,0 +1,26 @@
+name: circular-extends
+mode: append
+branchSeed:
+  - file: base.yml
+    code: |
+      cubes:
+        - name: base
+          extends: draft_cube
+          sql_table: public.base
+          measures:
+            - name: count
+              type: count
+draft:
+  fileName: draft_cube.yml
+  content: |
+    cubes:
+      - name: draft_cube
+        extends: base
+        sql_table: public.derived
+        measures:
+          - name: count
+            type: count
+expectedOutcome:
+  valid: false
+  errorCode: validate_unresolved_reference
+  referenceKind: extends

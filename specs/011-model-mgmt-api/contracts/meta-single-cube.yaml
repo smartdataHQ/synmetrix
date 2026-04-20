@@ -1,0 +1,111 @@
+openapi: 3.1.0
+info:
+  title: Synmetrix Model Management — Single-Cube Metadata
+  version: "011.2"
+paths:
+  /api/v1/meta/cube/{cubeName}:
+    get:
+      operationId: getSingleCubeMeta
+      summary: Fetch compiled metadata for a single cube on a specific branch.
+      description: |
+        Returns only the named cube's compiled metadata envelope. Uses the same visibility
+        and access-list filtering as the aggregate catalog endpoint (FR-010).
+        404 if the cube does not exist on the branch (FR-009) — never an empty list.
+        Always reads the **latest version** of the requested branch. Historical-version
+        reads are out of scope for this feature (see US4 acceptance criteria).
+
+        AUTH: datasource-scoped endpoint. Uses the existing `checkAuthMiddleware`;
+        `x-hasura-datasource-id` is mandatory by contract.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: cubeName
+          required: true
+          schema:
+            type: string
+        - in: header
+          name: x-hasura-datasource-id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: x-hasura-branch-id
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional; defaults to the datasource's active branch. The latest version of whichever branch is resolved is always used.
+      responses:
+        "200":
+          description: Cube metadata envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SingleCubeMeta' }
+        "403":
+          description: Missing/invalid auth or insufficient visibility.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Cube not found on the branch (FR-009). Returns `cube_not_found`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Canonical Synmetrix Model-Management API error code (FR-017).
+        Single source of truth: services/cubejs/src/utils/errorCodes.js.
+      enum:
+        - validate_invalid_mode
+        - validate_target_not_found
+        - validate_unresolved_reference
+        - refresh_branch_not_visible
+        - refresh_unauthorized
+        - delete_blocked_by_references
+        - delete_blocked_historical_version
+        - delete_blocked_authorization
+        - cube_not_found
+        - diff_cross_branch
+        - diff_invalid_request
+        - rollback_version_not_on_branch
+        - rollback_blocked_authorization
+        - rollback_invalid_request
+        - rollback_source_columns_missing
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+    SingleCubeMeta:
+      type: object
+      required: [cube, datasourceId, branchId, versionId]
+      properties:
+        cube:
+          type: object
+          required: [name, measures, dimensions, segments]
+          properties:
+            name: { type: string }
+            title: { type: [string, "null"] }
+            description: { type: [string, "null"] }
+            public: { type: boolean }
+            measures: { type: array, items: { type: object } }
+            dimensions: { type: array, items: { type: object } }
+            segments: { type: array, items: { type: object } }
+            hierarchies: { type: array, items: { type: object } }
+            meta:
+              type: [object, "null"]
+        datasourceId: { type: string, format: uuid }
+        branchId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }

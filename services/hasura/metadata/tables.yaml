@@ -600,6 +600,46 @@
                           - admin
                   - user_id:
                       _eq: X-Hasura-User-Id
+  delete_permissions:
+    - role: user
+      permission:
+        filter:
+          _and:
+            - datasource:
+                team:
+                  members:
+                    _and:
+                      - member_roles:
+                          team_role:
+                            _in:
+                              - owner
+                              - admin
+                      - user_id:
+                          _eq: X-Hasura-User-Id
+            - version:
+                is_current:
+                  _eq: true
+            - version:
+                branch:
+                  status:
+                    _eq: active
+  event_triggers:
+    - name: delete_dataschema_audit
+      definition:
+        enable_manual: false
+        delete:
+          columns: '*'
+      retry_conf:
+        interval_sec: 10
+        num_retries: 3
+        timeout_sec: 60
+      webhook: '{{ACTIONS_URL}}/rpc/audit_dataschema_delete'
+      cleanup_config:
+        batch_size: 10000
+        clean_invocation_logs: false
+        clear_older_than: 168
+        paused: false
+        schedule: 0 0 * * *
 - table:
     name: datasources
     schema: public
@@ -1631,6 +1671,7 @@
         columns:
           - branch_id
           - checksum
+          - origin
           - user_id
   select_permissions:
     - role: user
@@ -1640,7 +1681,9 @@
           - checksum
           - created_at
           - id
+          - is_current
           - markdown_doc
+          - origin
           - updated_at
           - user_id
         filter:
@@ -1673,4 +1716,33 @@
         clear_older_than: 168
         paused: true
         schedule: 0 0 * * *
+    - name: version_rollback_audit
+      definition:
+        enable_manual: false
+        insert:
+          columns: '*'
+      retry_conf:
+        interval_sec: 10
+        num_retries: 3
+        timeout_sec: 60
+      webhook: '{{ACTIONS_URL}}/rpc/audit_version_rollback'
+      cleanup_config:
+        batch_size: 10000
+        clean_invocation_logs: false
+        clear_older_than: 168
+        paused: false
+        schedule: 0 0 * * *
         timeout: 60
+- table:
+    name: audit_logs
+    schema: public
+  object_relationships:
+    - name: user
+      using:
+        foreign_key_constraint_on: user_id
+    - name: datasource
+      using:
+        foreign_key_constraint_on: datasource_id
+    - name: branch
+      using:
+        foreign_key_constraint_on: branch_id

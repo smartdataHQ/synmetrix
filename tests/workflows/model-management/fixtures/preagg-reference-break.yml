@@ -1,0 +1,45 @@
+name: preagg-reference-break
+mode: preview-delete
+branchSeed:
+  - file: orders.yml
+    code: |
+      cubes:
+        - name: orders
+          sql_table: public.orders
+          measures:
+            - name: count
+              type: count
+            - name: revenue
+              type: sum
+              sql: amount
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+            - name: created_at
+              sql: created_at
+              type: time
+  - file: order_rollup.yml
+    code: |
+      cubes:
+        - name: order_rollup
+          sql_table: public.orders
+          measures:
+            - name: count
+              type: count
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+          pre_aggregations:
+            - name: daily
+              measures: [orders.count, orders.revenue]
+              time_dimension: orders.created_at
+              granularity: day
+targetCube: orders
+expectedOutcome:
+  valid: false
+  errorCode: delete_blocked_by_references
+  referenceKind: pre_aggregation

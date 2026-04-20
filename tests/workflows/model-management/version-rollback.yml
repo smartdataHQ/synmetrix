@@ -1,0 +1,75 @@
+tests:
+  version_rollback_flow:
+    steps:
+      - name: reject_missing_auth
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            toVersionId: "00000000-0000-4000-8000-000000000002"
+          check:
+            status: 403
+
+      - name: reject_missing_body
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json: {}
+          check:
+            status: 400
+            jsonpath:
+              $.code: "rollback_invalid_request"
+
+      - name: reject_version_not_on_branch
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            toVersionId: ${{captures.otherBranchVersionId}}
+          check:
+            status: 400
+            jsonpath:
+              $.code: "rollback_version_not_on_branch"
+
+      - name: reject_unauthorized
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.memberOnlyToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            toVersionId: ${{captures.priorVersionId}}
+          check:
+            status: 403
+            jsonpath:
+              $.code: "rollback_blocked_authorization"
+
+      - name: happy_path
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            toVersionId: ${{captures.priorVersionId}}
+          check:
+            status: 200
+            jsonpath:
+              $.newVersionId:
+                - isString: true
+              $.clonedDataschemaCount:
+                - isNumber: true

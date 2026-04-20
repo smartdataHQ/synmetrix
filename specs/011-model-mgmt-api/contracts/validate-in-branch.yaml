@@ -1,0 +1,156 @@
+openapi: 3.1.0
+info:
+  title: Synmetrix Model Management — Contextual Validation
+  version: "011.2"
+paths:
+  /api/v1/validate-in-branch:
+    post:
+      operationId: validateInBranch
+      summary: Validate a draft model file against a branch's deployed cubes
+      description: |
+        Compiles the target branch's existing dataschemas together with the submitted draft
+        and returns a structured compile report. Modes: append (new file), replace (overwrite
+        an existing dataschema's code), preview-delete (simulate removal of a dataschema).
+        Returns 200 for valid OR structurally compiled drafts (the `valid` flag distinguishes).
+        Returns 4xx only for malformed requests or auth failures.
+
+        AUTH: branch-scoped endpoint. Uses direct-verify (mirrors /api/v1/meta-all), NOT
+        the datasource-scoped checkAuthMiddleware. No `x-hasura-datasource-id` header is
+        required or accepted — the branch id in the body is the sole scoping key.
+        Mode `append` accepts team members; modes `replace` and `preview-delete` require
+        owner or admin role on the datasource team (FR-015).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateInBranchRequest'
+      responses:
+        "200":
+          description: Compile report produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompileReport'
+        "400":
+          description: Malformed request (bad mode/field combination, non-uuid branchId, missing draft/target).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Missing/invalid auth, or caller lacks owner/admin role for a mutating mode.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Branch or target dataschema not found / not visible to caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Canonical Synmetrix Model-Management API error code (FR-017).
+        Single source of truth: services/cubejs/src/utils/errorCodes.js.
+      enum:
+        - validate_invalid_mode
+        - validate_target_not_found
+        - validate_unresolved_reference
+        - refresh_branch_not_visible
+        - refresh_unauthorized
+        - delete_blocked_by_references
+        - delete_blocked_historical_version
+        - delete_blocked_authorization
+        - cube_not_found
+        - diff_cross_branch
+        - diff_invalid_request
+        - rollback_version_not_on_branch
+        - rollback_blocked_authorization
+        - rollback_invalid_request
+        - rollback_source_columns_missing
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+    ValidateInBranchRequest:
+      type: object
+      required: [branchId, mode]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum: [append, replace, preview-delete]
+        draft:
+          $ref: '#/components/schemas/DraftFile'
+        targetDataschemaId:
+          type: string
+          format: uuid
+      allOf:
+        - description: >
+            Mode-conditional fields:
+            - append: draft REQUIRED, targetDataschemaId FORBIDDEN
+            - replace: draft REQUIRED, targetDataschemaId REQUIRED
+            - preview-delete: draft FORBIDDEN, targetDataschemaId REQUIRED
+    DraftFile:
+      type: object
+      required: [fileName, content]
+      properties:
+        fileName:
+          type: string
+          pattern: '^[A-Za-z0-9_\-.]+\.(yml|yaml|js)$'
+        content:
+          type: string
+          maxLength: 1048576
+    CompileReport:
+      type: object
+      required: [valid, errors, warnings]
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/CompileDiagnostic' }
+        warnings:
+          type: array
+          items: { $ref: '#/components/schemas/CompileDiagnostic' }
+        blockingReferences:
+          type: array
+          description: Present only when mode=preview-delete and valid=false.
+          items: { $ref: '#/components/schemas/BlockingReference' }
+    CompileDiagnostic:
+      type: object
+      required: [severity, message]
+      properties:
+        severity: { type: string, enum: [error, warning] }
+        message: { type: string }
+        fileName: { type: [string, "null"] }
+        startLine: { type: [integer, "null"] }
+        startColumn: { type: [integer, "null"] }
+        endLine: { type: [integer, "null"] }
+        endColumn: { type: [integer, "null"] }
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+    BlockingReference:
+      type: object
+      required: [referringCube, file, referenceKind]
+      properties:
+        referringCube: { type: string }
+        file: { type: string }
+        referenceKind:
+          type: string
+          enum: [joins, extends, sub_query, formula, segment, pre_aggregation, filter_params]
+        line: { type: [integer, "null"] }

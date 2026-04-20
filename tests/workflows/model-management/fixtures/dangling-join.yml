@@ -1,0 +1,38 @@
+name: dangling-join
+mode: append
+branchSeed:
+  - file: orders.yml
+    code: |
+      cubes:
+        - name: orders
+          sql_table: public.orders
+          measures:
+            - name: count
+              type: count
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+draft:
+  fileName: order_items.yml
+  content: |
+    cubes:
+      - name: order_items
+        sql_table: public.order_items
+        joins:
+          - name: nonexistent_cube
+            relationship: many_to_one
+            sql: "{CUBE}.nonexistent_cube_id = {nonexistent_cube}.id"
+        measures:
+          - name: count
+            type: count
+        dimensions:
+          - name: id
+            sql: id
+            type: number
+            primary_key: true
+expectedOutcome:
+  valid: false
+  errorCode: validate_unresolved_reference
+  referenceKind: joins

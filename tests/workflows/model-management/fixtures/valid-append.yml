@@ -1,0 +1,40 @@
+name: valid-append
+mode: append
+branchSeed:
+  - file: orders.yml
+    code: |
+      cubes:
+        - name: orders
+          sql_table: public.orders
+          measures:
+            - name: count
+              type: count
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+            - name: status
+              sql: status
+              type: string
+draft:
+  fileName: customers.yml
+  content: |
+    cubes:
+      - name: customers
+        sql_table: public.customers
+        measures:
+          - name: count
+            type: count
+        dimensions:
+          - name: id
+            sql: id
+            type: number
+            primary_key: true
+          - name: email
+            sql: email
+            type: string
+expectedOutcome:
+  valid: true
+  errorCode: null
+  referenceKind: null

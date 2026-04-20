@@ -1,0 +1,36 @@
+name: measure-to-measure-typo
+mode: append
+branchSeed:
+  - file: orders.yml
+    code: |
+      cubes:
+        - name: orders
+          sql_table: public.orders
+          measures:
+            - name: totals
+              type: sum
+              sql: amount
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+draft:
+  fileName: reports.yml
+  content: |
+    cubes:
+      - name: reports
+        sql_table: public.reports
+        measures:
+          - name: order_total
+            type: number
+            sql: "{orders.total}"
+        dimensions:
+          - name: id
+            sql: id
+            type: number
+            primary_key: true
+expectedOutcome:
+  valid: false
+  errorCode: validate_unresolved_reference
+  referenceKind: formula

@@ -1,0 +1,76 @@
+tests:
+  is_current_invariant:
+    steps:
+      # Inserts two versions on the same branch back-to-back and asserts the
+      # `is_current` invariant — exactly one row with is_current=true per branch.
+      - name: insert_version_one
+        http:
+          url: http://hasura:8080/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          json:
+            query: |
+              mutation ($branch_id: uuid!, $user_id: uuid!) {
+                insert_versions_one(object: {
+                  branch_id: $branch_id,
+                  user_id: $user_id,
+                  origin: "user"
+                }) { id is_current }
+              }
+            variables:
+              branch_id: ${{captures.branchId}}
+              user_id: ${{captures.userId}}
+          captures:
+            firstVersionId:
+              jsonpath: $.data.insert_versions_one.id
+          check:
+            status: 200
+
+      - name: insert_version_two
+        http:
+          url: http://hasura:8080/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          json:
+            query: |
+              mutation ($branch_id: uuid!, $user_id: uuid!) {
+                insert_versions_one(object: {
+                  branch_id: $branch_id,
+                  user_id: $user_id,
+                  origin: "user"
+                }) { id is_current }
+              }
+            variables:
+              branch_id: ${{captures.branchId}}
+              user_id: ${{captures.userId}}
+          captures:
+            secondVersionId:
+              jsonpath: $.data.insert_versions_one.id
+          check:
+            status: 200
+
+      - name: assert_exactly_one_is_current
+        http:
+          url: http://hasura:8080/v1/graphql
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          json:
+            query: |
+              query ($branch_id: uuid!) {
+                versions_aggregate(where: {
+                  branch_id: {_eq: $branch_id}
+                  is_current: {_eq: true}
+                }) { aggregate { count } }
+              }
+            variables:
+              branch_id: ${{captures.branchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.versions_aggregate.aggregate.count: 1

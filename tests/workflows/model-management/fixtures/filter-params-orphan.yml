@@ -1,0 +1,38 @@
+name: filter-params-orphan
+mode: preview-delete
+branchSeed:
+  - file: orders.yml
+    code: |
+      cubes:
+        - name: orders
+          sql_table: public.orders
+          measures:
+            - name: count
+              type: count
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+            - name: created_at
+              sql: created_at
+              type: time
+  - file: order_items.yml
+    code: |
+      cubes:
+        - name: order_items
+          sql_table: public.order_items
+          measures:
+            - name: count
+              type: count
+              sql: "CASE WHEN FILTER_PARAMS.orders.created_at.filter('created_at') THEN 1 ELSE 0 END"
+          dimensions:
+            - name: id
+              sql: id
+              type: number
+              primary_key: true
+targetCube: orders
+expectedOutcome:
+  valid: false
+  errorCode: delete_blocked_by_references
+  referenceKind: filter_params
