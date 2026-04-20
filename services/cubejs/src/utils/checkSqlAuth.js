@@ -26,11 +26,28 @@ const buildSqlSecurityContext = (sqlCredentials) => {
     teamId
   );
 
-  const dataSourceContext = buildSecurityContext(sqlCredentials?.datasource);
+  // Resolve team settings + per-member properties so queryRewrite rules can
+  // evaluate `property_source: team` / `property_source: member` lookups for
+  // SQL API logins. Without these, every rule blocks and queries get rewritten
+  // to the `__blocked_by_access_control__` sentinel.
+  const teamMember = Array.isArray(allMembers)
+    ? allMembers.find((m) => m.team_id === teamId)
+    : null;
+  const teamSettings = teamMember?.team?.settings || {};
+  const memberProperties = teamMember?.properties || {};
+
+  const dataSourceContext = buildSecurityContext(
+    sqlCredentials?.datasource,
+    undefined,
+    undefined,
+    teamSettings
+  );
 
   return {
     dataSource: dataSourceContext,
     ...dataSourceAccessList,
+    teamProperties: teamSettings,
+    memberProperties,
   };
 };
 
