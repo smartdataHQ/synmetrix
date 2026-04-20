@@ -92,6 +92,11 @@ const membersFragment = `
   members {
     id
     team_id
+    properties
+    team {
+      id
+      settings
+    }
     member_roles {
       id
       team_role
