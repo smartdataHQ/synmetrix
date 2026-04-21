@@ -1,0 +1,130 @@
+openapi: 3.1.0
+info:
+  title: Synmetrix Model Management — Version Diff
+  version: "011.2"
+paths:
+  /api/v1/version/diff:
+    post:
+      operationId: versionDiff
+      summary: Structured diff between two versions on the same branch.
+      description: |
+        Returns added/removed/modified cubes with per-field-level changes (measures,
+        dimensions, segments, meta). Rejects cross-branch pairs with `diff_cross_branch`
+        (FR-012).
+
+        AUTH: version-scoped endpoint. Direct-verify; no `x-hasura-datasource-id`
+        header required or accepted. The handler resolves branch and datasource
+        server-side from each version id in the body. Requires team membership.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VersionDiffRequest' }
+      responses:
+        "200":
+          description: Diff produced.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VersionDiffResponse' }
+        "400":
+          description: |
+            Malformed request. Possible codes: `diff_cross_branch`, `diff_invalid_request`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Missing/invalid auth or insufficient visibility.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: One of the versions not found or not visible.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Canonical Synmetrix Model-Management API error code (FR-017).
+        Single source of truth: services/cubejs/src/utils/errorCodes.js.
+      enum:
+        - validate_invalid_mode
+        - validate_target_not_found
+        - validate_unresolved_reference
+        - refresh_branch_not_visible
+        - refresh_unauthorized
+        - delete_blocked_by_references
+        - delete_blocked_historical_version
+        - delete_blocked_authorization
+        - cube_not_found
+        - diff_cross_branch
+        - diff_invalid_request
+        - rollback_version_not_on_branch
+        - rollback_blocked_authorization
+        - rollback_invalid_request
+        - rollback_source_columns_missing
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+    VersionDiffRequest:
+      type: object
+      required: [fromVersionId, toVersionId]
+      properties:
+        fromVersionId: { type: string, format: uuid }
+        toVersionId: { type: string, format: uuid }
+    VersionDiffResponse:
+      type: object
+      required: [branchId, fromVersionId, toVersionId, addedCubes, removedCubes, modifiedCubes]
+      properties:
+        branchId: { type: string, format: uuid }
+        fromVersionId: { type: string, format: uuid }
+        toVersionId: { type: string, format: uuid }
+        addedCubes:
+          type: array
+          items:
+            type: object
+            required: [cubeName, file]
+            properties:
+              cubeName: { type: string }
+              file: { type: string }
+        removedCubes:
+          type: array
+          items:
+            type: object
+            required: [cubeName, file]
+            properties:
+              cubeName: { type: string }
+              file: { type: string }
+        modifiedCubes:
+          type: array
+          items:
+            type: object
+            required: [cubeName, file, changes]
+            properties:
+              cubeName: { type: string }
+              file: { type: string }
+              changes:
+                type: array
+                items:
+                  type: object
+                  required: [field, added, removed, modified]
+                  properties:
+                    field:
+                      type: string
+                      enum: [measures, dimensions, segments, meta]
+                    added: { type: array, items: { type: string } }
+                    removed: { type: array, items: { type: string } }
+                    modified: { type: array, items: { type: string } }

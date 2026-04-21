@@ -1,0 +1,155 @@
+tests:
+  model_management_end_to_end:
+    steps:
+      # Setup: discover datasources + capture branchId + a minimally-typed cube name
+      - name: discover
+        http:
+          url: http://cubejs:4000/api/v1/discover
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+          captures:
+            datasourceId:
+              jsonpath: $.datasources[0].id
+            branchId:
+              jsonpath: $.datasources[0].branch_id
+            firstCubeName:
+              jsonpath: $.datasources[0].cubes[0].name
+          check:
+            status: 200
+
+      # SC-003 append happy path
+      - name: validate_append_happy
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            mode: append
+            draft:
+              fileName: "end_to_end_probe.yml"
+              content: |
+                cubes:
+                  - name: end_to_end_probe
+                    sql_table: public.end_to_end_probe
+                    measures:
+                      - name: count
+                        type: count
+                    dimensions:
+                      - name: id
+                        sql: id
+                        type: number
+                        primary_key: true
+          check:
+            status: 200
+            jsonpath:
+              $.valid: true
+
+      # SC-005 single-cube meta <= 90% of aggregate (asserted externally; here just shape)
+      - name: meta_single_cube
+        http:
+          url: http://cubejs:4000/api/v1/meta/cube/${{captures.firstCubeName}}
+          method: GET
+          headers:
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.datasourceId}}
+          check:
+            status: 200
+            jsonpath:
+              $.cube.name: ${{captures.firstCubeName}}
+
+      # SC-002 refresh returns evicted count + schemaVersion
+      - name: refresh_compiler
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.evicted:
+                - isNumber: true
+              $.schemaVersion:
+                - isString: true
+
+      # SC-002 second refresh idempotent
+      - name: refresh_again_idempotent
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.evicted: 0
+
+      # SC-008: member-only caller rejected from every mutating endpoint.
+      - name: sc008_unauthorized_refresh
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.memberOnlyToken}}
+          json:
+            branchId: ${{captures.branchId}}
+          check:
+            status: 403
+            jsonpath:
+              $.code: "refresh_unauthorized"
+
+      - name: sc008_unauthorized_delete
+        http:
+          url: http://cubejs:4000/api/v1/dataschema/${{captures.anyDataschemaId}}
+          method: DELETE
+          headers:
+            Authorization: Bearer ${{captures.memberOnlyToken}}
+          check:
+            status: 403
+            jsonpath:
+              $.code: "delete_blocked_authorization"
+
+      - name: sc008_unauthorized_rollback
+        http:
+          url: http://cubejs:4000/api/v1/version/rollback
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.memberOnlyToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            toVersionId: ${{captures.priorVersionId}}
+          check:
+            status: 403
+            jsonpath:
+              $.code: "rollback_blocked_authorization"
+
+      - name: sc008_unauthorized_validate_replace
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.memberOnlyToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            mode: replace
+            targetDataschemaId: ${{captures.anyDataschemaId}}
+            draft:
+              fileName: "end_to_end_probe.yml"
+              content: "cubes: []\n"
+          check:
+            status: 403
+            jsonpath:
+              $.code: "delete_blocked_authorization"

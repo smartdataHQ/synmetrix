@@ -1,0 +1,64 @@
+tests:
+  version_diff_flow:
+    steps:
+      - name: reject_missing_auth
+        http:
+          url: http://cubejs:4000/api/v1/version/diff
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            fromVersionId: "00000000-0000-4000-8000-000000000001"
+            toVersionId: "00000000-0000-4000-8000-000000000002"
+          check:
+            status: 403
+
+      - name: reject_invalid_request
+        http:
+          url: http://cubejs:4000/api/v1/version/diff
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json: {}
+          check:
+            status: 400
+            jsonpath:
+              $.code: "diff_invalid_request"
+
+      - name: reject_cross_branch
+        http:
+          url: http://cubejs:4000/api/v1/version/diff
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            fromVersionId: ${{captures.versionOnBranchA}}
+            toVersionId: ${{captures.versionOnBranchB}}
+          check:
+            status: 400
+            jsonpath:
+              $.code: "diff_cross_branch"
+
+      - name: happy_path
+        http:
+          url: http://cubejs:4000/api/v1/version/diff
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            fromVersionId: ${{captures.fromVersionId}}
+            toVersionId: ${{captures.toVersionId}}
+          check:
+            status: 200
+            jsonpath:
+              $.addedCubes:
+                - isArray: true
+              $.removedCubes:
+                - isArray: true
+              $.modifiedCubes:
+                - isArray: true
+              $.branchId:
+                - isString: true

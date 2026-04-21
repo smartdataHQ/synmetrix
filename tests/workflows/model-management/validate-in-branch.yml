@@ -1,0 +1,115 @@
+tests:
+  validate_in_branch_flow:
+    steps:
+      - name: reject_missing_auth
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            mode: append
+            draft:
+              fileName: "orders.yml"
+              content: "cubes: []\n"
+          check:
+            status: 403
+
+      - name: reject_invalid_mode
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            mode: "bogus"
+          check:
+            status: 400
+            jsonpath:
+              $.code: "validate_invalid_mode"
+
+      - name: reject_append_with_target
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            mode: append
+            targetDataschemaId: "00000000-0000-4000-8000-000000000002"
+            draft:
+              fileName: "orders.yml"
+              content: "cubes: []\n"
+          check:
+            status: 400
+            jsonpath:
+              $.code: "validate_invalid_mode"
+
+      - name: reject_replace_without_draft
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            mode: replace
+            targetDataschemaId: "00000000-0000-4000-8000-000000000002"
+          check:
+            status: 400
+            jsonpath:
+              $.code: "validate_invalid_mode"
+
+      - name: reject_preview_delete_with_draft
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+            mode: preview-delete
+            targetDataschemaId: "00000000-0000-4000-8000-000000000002"
+            draft:
+              fileName: "orders.yml"
+              content: "cubes: []\n"
+          check:
+            status: 400
+            jsonpath:
+              $.code: "validate_invalid_mode"
+
+      - name: append_happy_path
+        http:
+          url: http://cubejs:4000/api/v1/validate-in-branch
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+            mode: append
+            draft:
+              fileName: "customers.yml"
+              content: |
+                cubes:
+                  - name: customers
+                    sql_table: public.customers
+                    measures:
+                      - name: count
+                        type: count
+                    dimensions:
+                      - name: id
+                        sql: id
+                        type: number
+                        primary_key: true
+          check:
+            status: 200
+            jsonpath:
+              $.valid: true

@@ -184,6 +184,18 @@ export default async function discover(req, res) {
             "Discover nested/array columns in a datasource.",
           "POST /api/v1/validate":
             "Validate a Cube.js model file.",
+          "POST /api/v1/validate-in-branch":
+            "Validate a draft dataschema file in the context of a branch's deployed cubes (Model Management API). Modes: append | replace | preview-delete. Direct-verify auth — does NOT require x-hasura-datasource-id.",
+          "POST /api/v1/internal/refresh-compiler":
+            "Invalidate the compiler cache for a branch's dataschemas so the next metadata/query call recompiles. Owner/admin only. Direct-verify auth — does NOT require x-hasura-datasource-id.",
+          "DELETE /api/v1/dataschema/:dataschemaId":
+            "Delete a dataschema from the current version of the active branch. Blocks on cross-cube references (FR-008, seven kinds). Owner/admin only. Direct-verify auth — does NOT require x-hasura-datasource-id.",
+          "GET  /api/v1/meta/cube/:cubeName":
+            "Return the compiled metadata envelope for a single cube on the selected branch. Requires x-hasura-datasource-id; optional x-hasura-branch-id.",
+          "POST /api/v1/version/diff":
+            "Diff two versions on the same branch (added/removed/modified cubes). Direct-verify auth — does NOT require x-hasura-datasource-id.",
+          "POST /api/v1/version/rollback":
+            "Roll a branch back to a prior version by inserting a new version whose dataschemas are clones of the target. Owner/admin only. Direct-verify auth — does NOT require x-hasura-datasource-id.",
           "GET  /api/v1/pre-aggregations":
             "List pre-aggregations for the datasource.",
           "POST /api/v1/pre-aggregation-preview":

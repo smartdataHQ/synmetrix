@@ -1,5 +1,14 @@
 import express from "express";
 
+// Model Management API (feature 011-model-mgmt-api) adds six routes registered
+// below — each handler owns its own auth where indicated:
+//   POST   /api/v1/validate-in-branch         (direct-verify, US1)
+//   POST   /api/v1/internal/refresh-compiler  (direct-verify, US2)
+//   DELETE /api/v1/dataschema/:dataschemaId   (direct-verify, US3)
+//   GET    /api/v1/meta/cube/:cubeName        (checkAuthMiddleware, US4)
+//   POST   /api/v1/version/diff               (direct-verify, US5)
+//   POST   /api/v1/version/rollback           (direct-verify, US5)
+
 import checkAuthMiddleware from "../utils/checkAuth.js";
 import {
   invalidateUserCache,
@@ -30,7 +39,13 @@ import discoverNested from "./discoverNested.js";
 import discover from "./discover.js";
 import metaAll from "./metaAll.js";
 import testConnection from "./testConnection.js";
+import deleteDataschema from "./deleteDataschema.js";
+import metaSingleCube from "./metaSingleCube.js";
+import refreshCompiler from "./refreshCompiler.js";
 import validate from "./validate.js";
+import validateInBranch from "./validateInBranch.js";
+import versionDiff from "./versionDiff.js";
+import versionRollback from "./versionRollback.js";
 import version from "./version.js";
 
 const router = express.Router();
@@ -273,6 +288,41 @@ export default ({ basePath, cubejs }) => {
   // Aggregated meta across all visible datasources — WorkOS/FraiOS auth only
   router.get(`${basePath}/v1/meta-all`, async (req, res) =>
     metaAll(req, res, cubejs)
+  );
+
+  // Model Management API: contextual validation (US1).
+  // Direct-verify auth — NOT behind checkAuthMiddleware (no x-hasura-datasource-id header).
+  router.post(`${basePath}/v1/validate-in-branch`, async (req, res) =>
+    validateInBranch(req, res)
+  );
+
+  // Model Management API: compiler-cache refresh (US2). Owner/admin only.
+  router.post(`${basePath}/v1/internal/refresh-compiler`, async (req, res) =>
+    refreshCompiler(req, res, cubejs)
+  );
+
+  // Model Management API: delete a single dataschema (US3). Owner/admin only.
+  router.delete(
+    `${basePath}/v1/dataschema/:dataschemaId`,
+    async (req, res) => deleteDataschema(req, res)
+  );
+
+  // Model Management API: single-cube metadata (US4).
+  // Datasource-scoped: runs behind checkAuthMiddleware (x-hasura-datasource-id
+  // is mandatory by contract). The /cube/ path segment prevents collision
+  // with Cube.js's built-in aggregate /api/v1/meta endpoint.
+  router.get(
+    `${basePath}/v1/meta/cube/:cubeName`,
+    checkAuthMiddleware,
+    async (req, res) => metaSingleCube(req, res, cubejs)
+  );
+
+  // Model Management API: diff + rollback (US5).
+  router.post(`${basePath}/v1/version/diff`, async (req, res) =>
+    versionDiff(req, res)
+  );
+  router.post(`${basePath}/v1/version/rollback`, async (req, res) =>
+    versionRollback(req, res, cubejs)
   );
 
   // Version endpoint is public — returns only the schema-compiler version string

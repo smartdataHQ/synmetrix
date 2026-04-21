@@ -1,0 +1,129 @@
+openapi: 3.1.0
+info:
+  title: Synmetrix Model Management — Dataschema Deletion
+  version: "011.2"
+paths:
+  /api/v1/dataschema/{dataschemaId}:
+    delete:
+      operationId: deleteDataschema
+      summary: Delete a dataschema from the latest version of the active branch.
+      description: |
+        Removes the dataschema row via Hasura (`delete_dataschemas_by_pk`). Blocked if:
+        - The caller lacks owner/admin role on the datasource team (FR-006) → 403.
+        - The dataschema belongs to a version that is NOT the latest version of the
+          active branch (FR-007) → 409.
+        - Any other cube on the same branch references the target cube (FR-008) → 409.
+        The seven reference kinds detected are enumerated in FR-008 and in the
+        BlockingReference enum below.
+
+        AUTH: dataschema-scoped endpoint. Direct-verify; no `x-hasura-datasource-id`
+        header required or accepted. The handler resolves dataschema → version →
+        branch → datasource server-side from the path parameter.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dataschemaId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Dataschema deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteDataschemaResponse' }
+        "403":
+          description: |
+            Authorization failure. Possible codes:
+            - `delete_blocked_authorization` — caller lacks owner/admin role on the datasource team.
+            Missing or malformed JWT also returns 403 with a non-business-specific code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Dataschema not found or not visible to caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "409":
+          description: |
+            Delete blocked by a structural constraint. Possible codes:
+            - `delete_blocked_by_references` — cross-cube references still depend on the target (FR-008).
+            - `delete_blocked_historical_version` — the dataschema is not on the latest version of the active branch (FR-007).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeleteBlockedResponse' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Canonical Synmetrix Model-Management API error code (FR-017).
+        Single source of truth: services/cubejs/src/utils/errorCodes.js.
+      enum:
+        - validate_invalid_mode
+        - validate_target_not_found
+        - validate_unresolved_reference
+        - refresh_branch_not_visible
+        - refresh_unauthorized
+        - delete_blocked_by_references
+        - delete_blocked_historical_version
+        - delete_blocked_authorization
+        - cube_not_found
+        - diff_cross_branch
+        - diff_invalid_request
+        - rollback_version_not_on_branch
+        - rollback_blocked_authorization
+        - rollback_invalid_request
+        - rollback_source_columns_missing
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+    DeleteDataschemaResponse:
+      type: object
+      required: [deleted, dataschemaId]
+      properties:
+        deleted: { type: boolean }
+        dataschemaId: { type: string, format: uuid }
+    DeleteBlockedResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Subset of ErrorCode applicable to 409 outcomes.
+          enum:
+            - delete_blocked_by_references
+            - delete_blocked_historical_version
+        message: { type: string }
+        blockingReferences:
+          type: array
+          description: Present when code=delete_blocked_by_references.
+          items:
+            type: object
+            required: [referringCube, file, referenceKind]
+            properties:
+              referringCube: { type: string }
+              file: { type: string }
+              referenceKind:
+                type: string
+                enum:
+                  - joins
+                  - extends
+                  - sub_query
+                  - formula
+                  - segment
+                  - pre_aggregation
+                  - filter_params
+              line: { type: [integer, "null"] }

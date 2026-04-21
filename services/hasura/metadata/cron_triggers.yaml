@@ -4,3 +4,9 @@
   include_in_metadata: true
   payload: {}
   comment: ""
+- name: audit_logs_retention_90d
+  webhook: '{{ACTIONS_URL}}/rpc/audit_logs_retention'
+  schedule: '0 4 * * *'
+  include_in_metadata: true
+  payload: {}
+  comment: "Delete audit_logs rows older than 90 days (FR-016 retention)."

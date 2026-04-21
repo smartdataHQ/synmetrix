@@ -1,0 +1,105 @@
+openapi: 3.1.0
+info:
+  title: Synmetrix Model Management — Compiler Cache Refresh
+  version: "011.2"
+paths:
+  /api/v1/internal/refresh-compiler:
+    post:
+      operationId: refreshCompiler
+      summary: Asynchronously invalidate the compiled-model cache for a branch.
+      description: |
+        Evicts LRU entries whose appId suffix matches the branch's current schemaVersion.
+        Returns immediately after eviction; recompilation happens on the next metadata/query
+        request and any compile error surfaces there (FR-004a).
+        Does NOT touch the pre-aggregation cache or user-scope caches (FR-004, Clarification Q1).
+        Idempotent per (branch, schemaVersion) pair (FR-005) — two refreshes against the
+        same schemaVersion do the same work; a schemaVersion change between calls is a
+        different logical operation.
+
+        AUTH: branch-scoped endpoint. Direct-verify; no `x-hasura-datasource-id` header
+        required or accepted. The handler resolves the datasource server-side from the
+        branch id in the body. **Requires owner or admin role** on the target datasource's
+        team (FR-015) — refresh affects the compiled view that every other user of the
+        branch sees, so it is gated at the same bar as delete and rollback.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshCompilerRequest'
+      responses:
+        "200":
+          description: Eviction complete.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefreshCompilerResponse' }
+        "400":
+          description: Malformed request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "403":
+          description: Missing/invalid auth, or caller lacks owner/admin role on the datasource team.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Branch not found or not visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        Canonical Synmetrix Model-Management API error code (FR-017).
+        Single source of truth: services/cubejs/src/utils/errorCodes.js.
+      enum:
+        - validate_invalid_mode
+        - validate_target_not_found
+        - validate_unresolved_reference
+        - refresh_branch_not_visible
+        - refresh_unauthorized
+        - delete_blocked_by_references
+        - delete_blocked_historical_version
+        - delete_blocked_authorization
+        - cube_not_found
+        - diff_cross_branch
+        - diff_invalid_request
+        - rollback_version_not_on_branch
+        - rollback_blocked_authorization
+        - rollback_invalid_request
+        - rollback_source_columns_missing
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+    RefreshCompilerRequest:
+      type: object
+      required: [branchId]
+      properties:
+        branchId:
+          type: string
+          format: uuid
+    RefreshCompilerResponse:
+      type: object
+      required: [evicted, schemaVersion]
+      properties:
+        evicted:
+          type: integer
+          minimum: 0
+          description: Count of LRU entries removed (may be 0 if the branch had never been compiled).
+        schemaVersion:
+          type: string
+          description: The md5 hash whose cache entries were targeted.

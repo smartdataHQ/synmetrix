@@ -1,0 +1,71 @@
+tests:
+  refresh_compiler_flow:
+    steps:
+      - name: reject_missing_auth
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            branchId: "00000000-0000-4000-8000-000000000001"
+          check:
+            status: 403
+
+      - name: reject_missing_branch_id
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json: {}
+          check:
+            status: 400
+            jsonpath:
+              $.code: "refresh_invalid_request"
+
+      - name: reject_invisible_branch
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: "ffffffff-ffff-4fff-8fff-ffffffffffff"
+          check:
+            status: 404
+            jsonpath:
+              $.code: "refresh_branch_not_visible"
+
+      - name: happy_path_returns_schema_version
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.schemaVersion:
+                - isString: true
+              $.evicted:
+                - isNumber: true
+
+      - name: second_call_is_idempotent
+        http:
+          url: http://cubejs:4000/api/v1/internal/refresh-compiler
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          json:
+            branchId: ${{captures.branchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.evicted: 0

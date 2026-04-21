@@ -4,7 +4,9 @@
   "scripts": {
     "start": "node index.js",
     "start.dev": "nodemon --exitcrash --inspect=0.0.0.0  --max-old-space-size=8096 --max-http-header-size=32768 --watch src --watch index.js",
-    "jsdoc": "jsdoc index.js -r src -d docs"
+    "jsdoc": "jsdoc index.js -r src -d docs",
+    "test": "node --test 'src/**/__tests__/*.test.js'",
+    "lint:error-codes": "node ../../scripts/lint-error-codes.mjs"
   },
   "dependencies": {
     "@cubejs-backend/api-gateway": "^1.6.37",

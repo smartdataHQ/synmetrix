@@ -96,15 +96,32 @@ Docker Compose files per environment: `docker-compose.dev.yml`, `docker-compose.
 
 ## Key File Locations
 
-- `services/actions/src/rpc/` — 22 RPC handlers (one file per action)
+- `services/actions/src/rpc/` — 25 RPC handlers (one file per action), includes `auditDataschemaDelete`, `auditVersionRollback`, `auditLogsRetention`
 - `services/cubejs/src/utils/driverFactory.js` — Database driver creation (25+ drivers)
 - `services/cubejs/src/utils/checkAuth.js` — JWT verification and security context setup
 - `services/cubejs/src/utils/defineUserScope.js` — Branch/version/access resolution
 - `services/cubejs/src/utils/buildSecurityContext.js` — Content-hashed context for cache isolation
-- `services/cubejs/src/routes/` — 7 REST API endpoints (run-sql, test, get-schema, generate-models, etc.)
+- `services/cubejs/src/utils/compilerCacheInvalidator.js` — Branch-scoped compiler-cache eviction (011-model-mgmt-api)
+- `services/cubejs/src/utils/referenceScanner.js` — Seven-kind cross-cube reference detector (FR-008)
+- `services/cubejs/src/utils/directVerifyAuth.js` — Shared direct-verify helper for branch-scoped routes
+- `services/cubejs/src/utils/metaForBranch.js` — Helper that returns raw visibility-filtered metaConfig
+- `services/cubejs/src/utils/auditWriter.js` — Best-effort audit-log writer with retry
+- `services/cubejs/src/utils/errorCodes.js` — Canonical Model Management API error codes (FR-017)
+- `services/cubejs/src/utils/requireOwnerOrAdmin.js` — Owner/admin team-role check
+- `services/cubejs/src/utils/mapHasuraErrorCode.js` — Hasura extensions.code → stable error code
+- `services/cubejs/src/utils/versionDiff.js` — Per-cube diff adapter over smart-generation/diffModels
+- `services/cubejs/src/routes/` — 13 REST API endpoints, now including:
+  - `validateInBranch.js` (POST /api/v1/validate-in-branch, US1)
+  - `refreshCompiler.js` (POST /api/v1/internal/refresh-compiler, US2)
+  - `deleteDataschema.js` (DELETE /api/v1/dataschema/:id, US3)
+  - `metaSingleCube.js` (GET /api/v1/meta/cube/:cubeName, US4)
+  - `versionDiff.js` + `versionRollback.js` (POST /api/v1/version/{diff,rollback}, US5)
 - `services/hasura/metadata/actions.yaml` — GraphQL action definitions (maps to Actions RPC)
 - `services/hasura/metadata/tables.yaml` — Table definitions, relationships, and permissions
-- `services/hasura/migrations/` — 96+ SQL migration directories
+- `services/hasura/metadata/cron_triggers.yaml` — Cron triggers (now includes `audit_logs_retention_90d`)
+- `services/hasura/migrations/` — 97+ SQL migration directories
+- `scripts/lint-error-codes.mjs` — Fails CI when FR-017 error-code enum drifts across contracts
+- `tests/workflows/model-management/` — StepCI workflows + SC-003 fixtures for all six endpoints
 
 ## Release Process
 
@@ -273,6 +290,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - N/A — no database schema changes. Query results are transient. (009-query-output)
 - JavaScript (ES modules), Node.js 22+ + Cube.js v1.6.x (CubeJS service), Express 4.18.2, `openai` npm v6.x (NEW), React 18 + Vite + Ant Design 5 (client-v2), URQL (GraphQL client) (010-dynamic-models-ii)
 - PostgreSQL via Hasura (versions, dataschemas), ClickHouse (profiling target — read-only) (010-dynamic-models-ii)
+- JavaScript (ES modules), Node.js 22.x (already current in cubejs service after 003-update-deps) + `@cubejs-backend/schema-compiler` ^1.6.19 (existing; `prepareCompiler` powers validation), `@cubejs-backend/server-core` ^1.6.19 (existing; exposes `cubejs.compilerCache` LRU-cache), `@cubejs-backend/api-gateway` ^1.6.19 (existing; `getCompilerApi` + `filterVisibleItemsInMeta`), `jose` (existing; FraiOS/WorkOS JWT verification), Express 4.x (existing router). No new dependencies. (011-model-mgmt-api)
+- PostgreSQL via Hasura (existing `dataschemas`, `versions`, `branches` tables — one new Hasura delete-permission migration on `dataschemas`). In-memory LRU compiler cache inside the cubejs process (existing). No new tables. (011-model-mgmt-api)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

@@ -1,3 +1,5 @@
+import { createHash } from "crypto";
+
 import { fetchGraphQL } from "./graphql.js";
 import { fetchWorkOSUserProfile } from "./workosAuth.js";
 
@@ -210,6 +212,35 @@ const dataschemasQuery = `
   }
 `;
 
+const versionDataschemasQuery = `
+  query VersionDataschemas($versionId: uuid!) {
+    dataschemas(where: {version_id: {_eq: $versionId}}) {
+      id
+      name
+      code
+      checksum
+    }
+  }
+`;
+
+const versionBranchQuery = `
+  query VersionBranch($versionId: uuid!) {
+    versions_by_pk(id: $versionId) {
+      id
+      branch_id
+      branch {
+        id
+        status
+        datasource_id
+        datasource {
+          id
+          team_id
+        }
+      }
+    }
+  }
+`;
+
 export const findUser = async ({ userId }) => {
   const cached = getUserCacheEntry(userId);
   if (cached) return cached;
@@ -280,6 +311,108 @@ export const findDataSchemasByIds = async ({ ids }) => {
 
   return dataSchemas;
 };
+
+/**
+ * Load every dataschema attached to a single version.
+ * Returns `[{id, name, code, checksum}]`.
+ */
+export const findVersionDataschemas = async ({ versionId }) => {
+  const res = await fetchGraphQL(versionDataschemasQuery, { versionId });
+  return res?.data?.dataschemas || [];
+};
+
+/**
+ * Resolve the branch + datasource ownership of a version in one query.
+ * Returns `{versionId, branchId, branchStatus, datasourceId, teamId}`
+ * or `null` if the version does not exist / the caller cannot see it.
+ */
+export const findVersionBranch = async ({ versionId }) => {
+  const res = await fetchGraphQL(versionBranchQuery, { versionId });
+  const row = res?.data?.versions_by_pk;
+  if (!row) return null;
+  return {
+    versionId: row.id,
+    branchId: row.branch_id,
+    branchStatus: row.branch?.status,
+    datasourceId: row.branch?.datasource_id || row.branch?.datasource?.id,
+    teamId: row.branch?.datasource?.team_id,
+  };
+};
+
+/**
+ * Insert a new version on `branchId` whose dataschemas are byte-identical
+ * clones of `toVersionId`'s dataschemas. FR-013 / FR-013a:
+ *  - only dataschemas are cloned (no explorations/alerts/alerts),
+ *  - the new row uses `origin: 'rollback'`,
+ *  - the caller's minted Hasura token is used so owner/admin permission
+ *    policies are enforced at the database layer.
+ *
+ * Returns `{newVersionId, clonedDataschemaCount}` on success,
+ * `{errors}` on any Hasura permission/constraint failure so the caller can
+ * map the extensions.code via mapHasuraErrorCode().
+ */
+export const rollbackVersion = async ({
+  branchId,
+  toVersionId,
+  userId,
+  datasourceId,
+  authToken,
+}) => {
+  const originals = await findVersionDataschemas({ versionId: toVersionId });
+  // The `set_public_dataschemas_checksum` BEFORE-INSERT trigger computes
+  // dataschema-level checksums; we do NOT set one here or Hasura's insert
+  // permission rejects the extra column.
+  const clonedData = originals.map((row) => ({
+    name: row.name,
+    code: row.code,
+    user_id: userId,
+    datasource_id: datasourceId,
+  }));
+
+  // Version-level checksum: md5 over the concatenated dataschema codes in
+  // a stable order. Matches the `version.checksum` NOT NULL constraint.
+  const versionChecksum = md5OfCode(
+    originals
+      .map((r) => r.name)
+      .sort()
+      .map((n) => `${n}:${originals.find((x) => x.name === n)?.code || ""}`)
+      .join("\n")
+  );
+
+  const object = {
+    branch_id: branchId,
+    user_id: userId,
+    origin: "rollback",
+    checksum: versionChecksum,
+    dataschemas: { data: clonedData },
+  };
+
+  const res = await fetchGraphQL(
+    upsertVersionMutation,
+    { object },
+    authToken,
+    { preserveErrors: true }
+  );
+
+  if (res?.errors) {
+    return { errors: res.errors };
+  }
+
+  const newVersionId = res?.data?.insert_versions_one?.id;
+  if (!newVersionId) {
+    return {
+      errors: [
+        { message: "insert_versions_one returned no id", extensions: {} },
+      ],
+    };
+  }
+
+  return { newVersionId, clonedDataschemaCount: clonedData.length };
+};
+
+function md5OfCode(code) {
+  return createHash("md5").update(String(code)).digest("hex");
+}
 
 // --- Identity resolution functions (T007) ---
 
