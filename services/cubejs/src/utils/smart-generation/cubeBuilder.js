@@ -158,6 +158,28 @@ function filtersToSqlConditions(filters) {
   return conditions.join(' AND ');
 }
 
+/** Quote a column identifier for use in generated SELECT lists (simple names unquoted). */
+function quoteChIdentForSelectList(name) {
+  if (!name || typeof name !== 'string') return null;
+  if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) return name;
+  return `\`${name.replace(/`/g, '')}\``;
+}
+
+/**
+ * `SELECT *` plus explicit ALIAS column names (comma-separated) for ClickHouse.
+ *
+ * @param {string} qualifiedTable - e.g. db.table
+ * @param {string[]} [aliasColumnNames]
+ * @returns {string}
+ */
+function formatSelectStarWithAliasColumns(qualifiedTable, aliasColumnNames) {
+  const extras = (aliasColumnNames || [])
+    .map((n) => quoteChIdentForSelectList(n))
+    .filter(Boolean);
+  const starSuffix = extras.length > 0 ? `, ${extras.join(', ')}` : '';
+  return `SELECT *${starSuffix} FROM ${qualifiedTable}`;
+}
+
 /**
  * Build the SQL expression for the cube source.
  *
@@ -171,9 +193,10 @@ function filtersToSqlConditions(filters) {
  * @param {string|null} partition - Partition value
  * @param {boolean} isInternal - Whether the table is in internalTables
  * @param {Array<{ column: string, operator: string, value: * }>} [filters]
+ * @param {string[]} [aliasColumnNames] - ClickHouse ALIAS columns to list after SELECT *
  * @returns {{ sql_table?: string, sql?: string }}
  */
-function buildCubeSource(schema, table, partition, isInternal, filters) {
+function buildCubeSource(schema, table, partition, isInternal, filters, aliasColumnNames = []) {
   const qualifiedTable = schema ? `${schema}.${table}` : table;
   const conditions = [];
 
@@ -187,7 +210,12 @@ function buildCubeSource(schema, table, partition, isInternal, filters) {
 
   if (conditions.length > 0) {
     return {
-      sql: `SELECT * FROM ${qualifiedTable} WHERE ${conditions.join(' AND ')}`,
+      sql: `${formatSelectStarWithAliasColumns(qualifiedTable, aliasColumnNames)} WHERE ${conditions.join(' AND ')}`,
+    };
+  }
+  if (aliasColumnNames && aliasColumnNames.length > 0) {
+    return {
+      sql: formatSelectStarWithAliasColumns(qualifiedTable, aliasColumnNames),
     };
   }
   return { sql_table: qualifiedTable };
@@ -673,6 +701,7 @@ function buildRawCube(profiledTable, options) {
     primaryKeys = [],
     cubeName: cubeNameOverride,
     filters = [],
+    aliasColumnNames = [],
   } = options;
   const arrayJoinGroups = nestedFilters.map((nf) => nf.group);
 
@@ -681,7 +710,7 @@ function buildRawCube(profiledTable, options) {
   const cubeName = cubeNameOverride || sanitizeCubeName(table);
   const isInternal = internalTables.includes(table);
 
-  const source = buildCubeSource(schema, table, partition, isInternal, filters);
+  const source = buildCubeSource(schema, table, partition, isInternal, filters, aliasColumnNames);
 
   const { dimensions, measures, mapKeysDiscovered, columnsProfiled, columnsSkipped } =
     processColumns(profiledTable.columns, {
@@ -851,6 +880,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     partition = null,
     internalTables = [],
     nestedFilters = [],
+    aliasColumnNames = [],
   } = options;
 
   const schema = profiledTable.database;
@@ -925,6 +955,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     // The ARRAY JOIN aliases must also be in the SELECT so they're visible
     // when Cube.js wraps this in a subquery.
     const selectParts = [];
+    const basePhysicalNames = new Set();
     for (const [colName, colData] of profiledTable.columns) {
       // Skip ALL nested/grouped columns — they're Array types and can't be
       // used directly in SQL. ARRAY JOIN group children are added below as
@@ -932,9 +963,16 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
       // they don't have ARRAY JOIN expansion in this cube.
       if (colData.columnType === ColumnType.GROUPED) continue;
       if (colData.columnType === ColumnType.NESTED) continue;
+      basePhysicalNames.add(colName);
       // Only backtick-quote names with dots or special chars; simple names stay unquoted
       const needsQuote = /[^a-zA-Z0-9_]/.test(colName);
       selectParts.push(needsQuote ? `  \`${colName}\`` : `  ${colName}`);
+    }
+    // ALIAS columns may be omitted from the profiler map but must appear in SELECT
+    for (const aliasName of aliasColumnNames) {
+      if (basePhysicalNames.has(aliasName)) continue;
+      const needsQuote = /[^a-zA-Z0-9_]/.test(aliasName);
+      selectParts.push(needsQuote ? `  \`${aliasName}\`` : `  ${aliasName}`);
     }
     // Add ARRAY JOIN alias names (scalar after JOIN) so they project into
     // Cube.js subquery scope. Use the alias name only (not "x AS y" again).
@@ -950,7 +988,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     }
     sql = `SELECT\n${selectParts.join(',\n')}\nFROM ${schema}.${table}\nLEFT ARRAY JOIN\n${ajParts.join(',\n')}`;
   } else {
-    sql = `SELECT * FROM ${schema}.${table}`;
+    sql = formatSelectStarWithAliasColumns(`${schema}.${table}`, aliasColumnNames);
   }
 
   // Collect WHERE conditions — use aliased names (dots → underscores)
@@ -1105,6 +1143,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
  *   @param {Array<{column: string, alias: string}>} [options.arrayJoinColumns] - Columns for ARRAY JOIN
  *   @param {number} [options.maxMapKeys] - Max Map keys per column (default 500)
  *   @param {string[]} [options.primaryKeys] - Primary key column names
+ *   @param {string[]} [options.aliasColumnNames] - ClickHouse ALIAS columns to append after SELECT *
  * @returns {{
  *   cubes: object[],
  *   summary: {
@@ -1232,7 +1271,11 @@ export function buildCubes(profiledTable, options = {}) {
       legacyCube.name = sanitizeCubeName(`${profiledTable.table}_${ajDef.alias}`);
       const qualifiedTable = `${profiledTable.database}.${profiledTable.table}`;
       const isInternal = (options.internalTables || []).includes(profiledTable.table);
-      let legacySql = `SELECT *, ${ajDef.column} AS ${ajDef.alias} FROM ${qualifiedTable} LEFT ARRAY JOIN ${ajDef.column} AS ${ajDef.alias}`;
+      const aliasExtra = (options.aliasColumnNames || [])
+        .map((n) => quoteChIdentForSelectList(n))
+        .filter(Boolean);
+      const aliasPrefix = aliasExtra.length > 0 ? `, ${aliasExtra.join(', ')}` : '';
+      let legacySql = `SELECT *${aliasPrefix}, ${ajDef.column} AS ${ajDef.alias} FROM ${qualifiedTable} LEFT ARRAY JOIN ${ajDef.column} AS ${ajDef.alias}`;
       if (isInternal && options.partition) {
         legacySql += ` WHERE partition = '${options.partition}'`;
       }

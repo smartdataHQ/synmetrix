@@ -243,4 +243,18 @@ describe('yamlGenerator – generateJs advanced properties', () => {
     const js = generateJs([cube]);
     assert.ok(js.includes('${total_amount}'), 'should convert {measure} to ${measure}');
   });
+
+  it('emits cube-level sql with JSON string so ClickHouse backticks are not escaped (no \\\\`)', () => {
+    const sql = 'SELECT *, `commerce.total`, duration_ratio FROM dev.semantic_events';
+    const cube = {
+      name: 'semantic_events',
+      sql,
+      meta: { auto_generated: true },
+      dimensions: [],
+      measures: [],
+    };
+    const js = generateJs([cube]);
+    assert.ok(js.includes('sql: "SELECT *, `commerce.total`, duration_ratio FROM dev.semantic_events"'), js);
+    assert.ok(!js.includes('\\`commerce'), 'should not escape inner backticks with backslash');
+  });
 });

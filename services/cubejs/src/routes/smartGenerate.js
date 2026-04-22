@@ -15,6 +15,7 @@ import { deserializeProfile } from '../utils/smart-generation/profileSerializer.
 import { diffModels, parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
 import { loadRules } from '../utils/queryRewrite.js';
 import { validateModelSyntax, smokeTestQuery } from '../utils/smart-generation/modelValidator.js';
+import { fetchClickHouseAliasColumnNames } from '../utils/smart-generation/clickHouseAliasColumns.js';
 
 function reorderProfileColumns(profiledTable) {
   if (!profiledTable?.columns || !(profiledTable.columns instanceof Map)) return profiledTable;
@@ -216,7 +217,12 @@ export default async (req, res, cubejs) => {
       profiledTable = { ...profiledTable, columns: filtered, columnOrder: filteredOrder };
     }
 
-    // Build cubes
+    // Build cubes — include ClickHouse ALIAS columns explicitly in cube sql (after SELECT *)
+    let aliasColumnNames = [];
+    if (driver) {
+      aliasColumnNames = await fetchClickHouseAliasColumnNames(driver, schema, table);
+    }
+
     emitter.emit('building', 'Building cube definitions...', 0.6);
     const cubeResult = buildCubes(profiledTable, {
       partition,
@@ -227,6 +233,7 @@ export default async (req, res, cubejs) => {
       cubeName: cubeNameOverride,
       filters,
       nestedFilters,
+      aliasColumnNames,
     });
 
     // Store filters in cube-level meta for provenance tracking

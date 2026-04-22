@@ -55,6 +55,23 @@ describe('cubeBuilder – buildCubes', () => {
       assert.strictEqual(cubes[0].sql_table, 'test_db.events');
     });
 
+    it('should list ClickHouse ALIAS columns after SELECT * when aliasColumnNames is provided', () => {
+      const { cubes } = buildCubes(table, { aliasColumnNames: ['duration_ratio'] });
+      assert.strictEqual(cubes[0].sql, 'SELECT *, duration_ratio FROM test_db.events');
+      assert.strictEqual(cubes[0].sql_table, undefined);
+    });
+
+    it('should append ALIAS columns to filtered cube sql', () => {
+      const { cubes } = buildCubes(table, {
+        aliasColumnNames: ['duration_ratio'],
+        filters: [{ column: 'id', operator: '=', value: 'x' }],
+      });
+      assert.strictEqual(
+        cubes[0].sql,
+        "SELECT *, duration_ratio FROM test_db.events WHERE id = 'x'"
+      );
+    });
+
     it('should produce dimensions for string and date columns', () => {
       const { cubes } = buildCubes(table);
       const dimNames = cubes[0].dimensions.map((d) => d.name);
