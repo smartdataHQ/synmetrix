@@ -75,7 +75,12 @@ export default async function tokenHandler(req, res) {
           return { accessToken: freshJwt, workosAccessToken: refreshResult.accessToken };
         })();
         inflightRefreshes.set(sessionId, refreshPromise);
-        refreshPromise.finally(() => inflightRefreshes.delete(sessionId));
+        // Swallow the rejection on this branch — `await refreshPromise` below owns the error.
+        // Without the catch, `.finally()` returns an unhandled rejected promise when refresh fails,
+        // which crashes the process via unhandledRejection.
+        refreshPromise
+          .finally(() => inflightRefreshes.delete(sessionId))
+          .catch(() => {});
       }
 
       try {
