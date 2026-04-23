@@ -171,6 +171,54 @@ function sqlToJsTemplate(sql) {
 }
 
 /**
+ * Convert `{CUBE}` / `{measure}` refs the same way as sqlToJsTemplate, without escaping.
+ */
+function cubeSqlRefsToJsInterpolation(sql) {
+  return sql.replace(/(?<!\$)\{([^}]+)\}/g, '${$1}');
+}
+
+/**
+ * Cube base `sql` / `sql_table` — use JSON.stringify whenever possible so
+ * ClickHouse `` `col` `` appears as real backticks in the file (not `\\``).
+ * Template literals are only needed when SQL embeds `{CUBE}` / `{FILTER_PARAMS…}`.
+ *
+ * @param {string} sql
+ * @returns {boolean}
+ */
+function cubeBaseSqlNeedsTemplateLiteral(sql) {
+  if (!sql || typeof sql !== 'string') return false;
+  return /\{CUBE\}/.test(sql) || /\{FILTER_PARAMS/.test(sql);
+}
+
+/**
+ * Emit cube-level `sql` or `sql_table` for generated JS models.
+ *
+ * @param {string} sql
+ * @returns {string} JS expression source
+ */
+function emitCubeBaseSqlForJsModel(sql) {
+  if (cubeBaseSqlNeedsTemplateLiteral(sql)) {
+    return `\`${sqlToJsTemplate(sql)}\``;
+  }
+  return JSON.stringify(sql);
+}
+
+/**
+ * Emit dimension / measure / segment sql in generated JS: JSON.stringify when
+ * there is no `${…}` after Cube ref conversion; otherwise template literal.
+ *
+ * @param {string} sql
+ * @returns {string} JS expression source (e.g. `"SELECT …"` or `` `…${CUBE}…` ``)
+ */
+function emitSqlForJsModel(sql) {
+  const withRefs = cubeSqlRefsToJsInterpolation(sql);
+  if (/\$\{/.test(withRefs)) {
+    return `\`${sqlToJsTemplate(sql)}\``;
+  }
+  return JSON.stringify(withRefs);
+}
+
+/**
  * Serialize a meta object as a JS object literal string.
  * @param {object} meta
  * @param {number} indent - base indentation level
@@ -211,11 +259,11 @@ export function generateJs(cubeDefinitions) {
 
     lines.push(`cube(\`${formatted.name}\`, {`);
 
-    // Source
+    // Source — cube-level SQL: prefer JSON.stringify so CH `` `col` `` is not escaped as \\`
     if (formatted.sql_table) {
-      lines.push(`  sql_table: \`${escapeTemplateLiteral(formatted.sql_table)}\`,`);
+      lines.push(`  sql_table: ${emitCubeBaseSqlForJsModel(formatted.sql_table)},`);
     } else if (formatted.sql) {
-      lines.push(`  sql: \`${sqlToJsTemplate(formatted.sql)}\`,`);
+      lines.push(`  sql: ${emitCubeBaseSqlForJsModel(formatted.sql)},`);
     }
 
     // Cube-level scalar properties
@@ -238,7 +286,7 @@ export function generateJs(cubeDefinitions) {
       lines.push('  dimensions: {');
       for (const dim of formatted.dimensions) {
         lines.push(`    ${dim.name}: {`);
-        lines.push(`      sql: \`${sqlToJsTemplate(dim.sql)}\`,`);
+        lines.push(`      sql: ${emitSqlForJsModel(dim.sql)},`);
         lines.push(`      type: \`${dim.type}\`,`);
         if (dim.description) {
           lines.push(`      description: ${JSON.stringify(dim.description)},`);
@@ -276,7 +324,7 @@ export function generateJs(cubeDefinitions) {
       lines.push('  measures: {');
       for (const m of formatted.measures) {
         lines.push(`    ${m.name}: {`);
-        lines.push(`      sql: \`${sqlToJsTemplate(m.sql)}\`,`);
+        lines.push(`      sql: ${emitSqlForJsModel(m.sql)},`);
         lines.push(`      type: \`${m.type}\`,`);
         if (m.description) {
           lines.push(`      description: ${JSON.stringify(m.description)},`);
@@ -326,7 +374,7 @@ export function generateJs(cubeDefinitions) {
       lines.push('  segments: {');
       for (const seg of formatted.segments) {
         lines.push(`    ${seg.name}: {`);
-        lines.push(`      sql: \`${sqlToJsTemplate(seg.sql)}\`,`);
+        lines.push(`      sql: ${emitSqlForJsModel(seg.sql)},`);
         if (seg.title) {
           lines.push(`      title: ${JSON.stringify(seg.title)},`);
         }
