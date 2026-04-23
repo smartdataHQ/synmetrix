@@ -109,6 +109,10 @@ if (String(CUBEJS_SQL_API) === "true") {
 app.use((err, req, res, next) => {
   console.error(err.stack);
 
+  if (res.headersSent) {
+    return next(err);
+  }
+
   res.status(err.status || 500).send(err.message);
 });
 
