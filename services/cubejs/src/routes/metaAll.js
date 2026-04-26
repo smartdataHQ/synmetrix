@@ -11,7 +11,7 @@ import {
   provisionUserFromFraiOS,
 } from "../utils/dataSourceHelpers.js";
 import { compileMetaForBranch } from "../utils/metaForBranch.js";
-import { extractCubes, resolvePartitionTeamIds } from "./discover.js";
+import { extractCubes } from "./discover.js";
 
 function getRequestId(req) {
   return (
@@ -129,11 +129,14 @@ async function metaForDatasource(
 /**
  * GET /api/v1/meta-all
  *
- * Aggregated cube catalog across every datasource the caller can see.
- * One request walks all partition-filtered datasources, resolves their
- * active branch + latest version, compiles each, and returns a summary
- * per cube (name, title, description, measures, dimensions, segments, meta,
- * `dataschema_id`, `file_name`).
+ * Aggregated cube catalog scoped to the JWT's active team (partition).
+ * The caller may be a member of multiple teams across orgs; this endpoint
+ * returns only the datasources of the team that matches the JWT partition,
+ * matched by `team.name === partition` OR `team.settings.partition ===
+ * partition`. The dual match avoids the failure mode where a team's
+ * `settings.partition` drifted from its name (e.g. after a copy/migration)
+ * and the user — though a member of the right-named team — got an empty
+ * catalog because the soft setting didn't agree with the JWT.
  *
  * Auth: WorkOS RS256 or FraiOS HS256 Bearer token (same as /discover).
  *
@@ -189,11 +192,24 @@ export default async function metaAll(req, res, cubejs) {
       return res.json({ datasources: [] });
     }
 
-    const partitionTeamIds = resolvePartitionTeamIds(
-      user.members,
-      payload.partition
+    // Scope to the partition's team. A team matches the JWT partition if
+    // `team.name === partition` (canonical, set at team-creation by
+    // deriveTeamName) OR `team.settings.partition === partition` (soft
+    // setting). Either is sufficient — see route docstring for why both.
+    const partition = payload.partition;
+    const partitionTeamIds = new Set(
+      (user.members || [])
+        .filter((m) => {
+          const t = m?.team;
+          if (!t) return false;
+          if (!partition) return false;
+          return (
+            t.name === partition || t.settings?.partition === partition
+          );
+        })
+        .map((m) => m.team_id)
     );
-    const filtered = partitionTeamIds
+    const filtered = partition
       ? user.dataSources.filter((ds) => partitionTeamIds.has(ds.team_id))
       : user.dataSources;
 

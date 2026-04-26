@@ -139,6 +139,7 @@ const userQuery = `
       team_id
       properties
       team {
+        name
         settings
         datasources {
           ${sourceFragment}
