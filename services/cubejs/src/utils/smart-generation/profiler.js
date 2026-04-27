@@ -51,8 +51,7 @@ export function buildWhereClause(schema, table, partition, internalTables, filte
   //  (b) internalTables is not configured (empty/missing) — all tables are internal
   let partitionClause = '';
   if (partition) {
-    const hasExplicitList = Array.isArray(internalTables) && internalTables.length > 0;
-    if (!hasExplicitList || internalTables.includes(table)) {
+    if (Array.isArray(internalTables) && internalTables.length > 0 && internalTables.includes(table)) {
       partitionClause = `partition IN ('${partition}')`;
     }
   }
@@ -105,11 +104,22 @@ async function detectSampling(driver, schema, table, whereClause, sampleRatio, r
 // ---------------------------------------------------------------------------
 
 /**
+ * True if the ClickHouse type string is Enum8 / Enum16 (possibly wrapped
+ * in LowCardinality, Nullable, etc.). Comparing enums to '' in SQL is invalid
+ * and can fail the whole initial profile query.
+ */
+function isChEnumType(rawType) {
+  if (typeof rawType !== 'string') return false;
+  return /\bEnum(8|16)\b/.test(rawType);
+}
+
+/**
  * Build the initial profile SQL — one query that gathers:
  *   - count()
  *   - min/max/avg for scalar NUMBER and BOOLEAN (Int8) columns
  *   - min/max for scalar DATE columns
- *   - uniq() for scalar STRING columns
+ *   - uniq() / uniqIf for scalar STRING columns (enums: uniq only)
+ *   - value_rows + distinct for Array columns (same as deep profile)
  *   - uniq(mapKeys()) for Map columns
  *   - max(length(sentinel)) for each nested parent group
  *
@@ -126,6 +136,8 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
 
     if (col.columnType === ColumnType.MAP) {
       parts.push(`uniq(mapKeys(\`${name}\`)) as ${alias}__key_count`);
+    } else if (col.columnType === ColumnType.ARRAY) {
+      parts.push(...arrayColumnSql(name, col.valueType, alias));
     } else if (col.valueType === ValueType.DATE) {
       parts.push(`min(\`${name}\`) as ${alias}__min`);
       parts.push(`max(\`${name}\`) as ${alias}__max`);
@@ -134,8 +146,12 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
       parts.push(`max(\`${name}\`) as ${alias}__max`);
       parts.push(`avg(\`${name}\`) as ${alias}__avg`);
     } else if (col.valueType === ValueType.STRING) {
-      // Exclude empty strings from unique count — they add no analytical value
-      parts.push(`uniqIf(\`${name}\`, \`${name}\` != '') as ${alias}__count`);
+      // Excluding '' in uniqIf is invalid for CH enums; use plain uniq
+      if (isChEnumType(col.rawType)) {
+        parts.push(`uniq(\`${name}\`) as ${alias}__count`);
+      } else {
+        parts.push(`uniqIf(\`${name}\`, \`${name}\` != '') as ${alias}__count`);
+      }
     } else if (col.valueType === ValueType.UUID) {
       parts.push(`uniq(\`${name}\`) as ${alias}__count`);
     }
@@ -160,8 +176,9 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
  * Apply initial profile results to column profiles and parent groups.
  */
 function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
-  const rowCount = typeof row.row_count === 'number'
-    ? row.row_count : Number(row.row_count) || 0;
+  const n = row.row_count;
+  const asNum = typeof n === 'number' ? n : Number(n);
+  const rowCount = Number.isFinite(asNum) && asNum >= 0 ? asNum : 0;
 
   for (const [name, col] of columns) {
     if (emptyColumns.has(name)) continue;
@@ -175,6 +192,12 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
       profile.uniqueValues = keyCount;
       profile.hasValues = keyCount > 0;
       profile.valueRows = keyCount > 0 ? rowCount : 0;
+    } else if (col.columnType === ColumnType.ARRAY) {
+      const valueRows = Number(row[`${alias}__value_rows`]) || 0;
+      const distinctCount = Number(row[`${alias}__distinct_count`]) || 0;
+      profile.valueRows = valueRows;
+      profile.uniqueValues = distinctCount;
+      profile.hasValues = valueRows > 0;
     } else if (col.valueType === ValueType.DATE) {
       profile.minValue = row[`${alias}__min`] ?? null;
       profile.maxValue = row[`${alias}__max`] ?? null;
@@ -209,15 +232,20 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
 // Pass 2: Deep profiling SQL helpers
 // ---------------------------------------------------------------------------
 
-function basicColumnSql(colExpr, valueType, alias) {
+function basicColumnSql(colExpr, valueType, alias, rawType) {
   const parts = [];
   if (valueType === ValueType.NUMBER || valueType === ValueType.DATE) {
     parts.push(`min(\`${colExpr}\`) as ${alias}__min_value`);
     parts.push(`max(\`${colExpr}\`) as ${alias}__max_value`);
     parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
   } else if (valueType === ValueType.STRING) {
-    parts.push(`uniqIf(\`${colExpr}\`, \`${colExpr}\` != '') as ${alias}__distinct_count`);
-    parts.push(`countIf(\`${colExpr}\` IS NOT NULL and \`${colExpr}\` != '') as ${alias}__value_rows`);
+    if (isChEnumType(rawType)) {
+      parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
+      parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
+    } else {
+      parts.push(`uniqIf(\`${colExpr}\`, \`${colExpr}\` != '') as ${alias}__distinct_count`);
+      parts.push(`countIf(\`${colExpr}\` IS NOT NULL and \`${colExpr}\` != '') as ${alias}__value_rows`);
+    }
   } else {
     parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
     parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
@@ -268,7 +296,7 @@ function columnSqlParts(col) {
     case ColumnType.GROUPED:
     case ColumnType.BASIC:
     default:
-      return basicColumnSql(colExpr, col.valueType, alias);
+      return basicColumnSql(colExpr, col.valueType, alias, col.rawType);
   }
 }
 
