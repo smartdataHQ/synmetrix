@@ -261,6 +261,42 @@ describe('profileTable — initial profile', () => {
     assert.equal(profile.hasValues, true);
   });
 
+  it('profiles Enum8 in initial query with uniq (not empty-string compare)', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'access_type', type: "Enum8('a' = 1, 'b' = 2)" },
+      ],
+      initialProfileRow: { row_count: 10, access_type__count: 3 },
+    });
+    const result = await profileTable(driver, 'db', 'tbl');
+    const initialSql = driver.calls.find((q) => q.includes('count() as row_count'));
+    assert.ok(initialSql);
+    assert.match(initialSql, /uniq\(`access_type`\)/);
+    assert.doesNotMatch(initialSql, /`access_type` != ''/);
+    const profile = result.columns.get('access_type').profile;
+    assert.equal(profile.uniqueValues, 3);
+    assert.equal(profile.valueRows, 10);
+  });
+
+  it('profiles Array(String) in initial pass using array SQL (value_rows + distinct)', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'tags', type: 'Array(String)' }],
+      initialProfileRow: {
+        row_count: 20,
+        tags__value_rows: 12,
+        tags__distinct_count: 5,
+      },
+    });
+    const result = await profileTable(driver, 'db', 'tbl');
+    const initialSql = driver.calls.find((q) => q.includes('count() as row_count'));
+    assert.ok(initialSql);
+    assert.match(initialSql, /arrayFilter/);
+    const profile = result.columns.get('tags').profile;
+    assert.equal(profile.valueRows, 12);
+    assert.equal(profile.uniqueValues, 5);
+    assert.equal(profile.hasValues, true);
+  });
+
   it('profiles DATE columns with min/max from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'ts', type: 'DateTime' }],
@@ -866,7 +902,7 @@ describe('profileTable — emitter', () => {
     await profileTable(driver, 'db', 'tbl', { emitter });
 
     const steps = events.map((e) => e.step);
-    assert.ok(steps.includes('schema_analysis'));
+    assert.ok(steps.includes('init'));
     assert.ok(steps.includes('initial_profile'));
     assert.ok(steps.includes('profiling'));
     assert.ok(events.length >= 4);
