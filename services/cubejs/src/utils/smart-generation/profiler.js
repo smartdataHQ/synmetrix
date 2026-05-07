@@ -30,6 +30,28 @@ const SUBQUERY_LIMIT_MAX = 200_000;
 const SINGLE_QUERY_LIMIT = 50;
 const LC_THRESHOLD = 60;
 
+/**
+ * Normalize aggregate cells from ClickHouse drivers (UInt64 as string/BigInt)
+ * so fill-rate math does not silently become zero.
+ *
+ * @param {*} v
+ * @returns {number}
+ */
+export function coerceAggNum(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'bigint') {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  }
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (typeof v === 'string') {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  }
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
 // ---------------------------------------------------------------------------
 // WHERE clause helper
 // ---------------------------------------------------------------------------
@@ -104,21 +126,11 @@ async function detectSampling(driver, schema, table, whereClause, sampleRatio, r
 // ---------------------------------------------------------------------------
 
 /**
- * True if the ClickHouse type string is Enum8 / Enum16 (possibly wrapped
- * in LowCardinality, Nullable, etc.). Comparing enums to '' in SQL is invalid
- * and can fail the whole initial profile query.
- */
-function isChEnumType(rawType) {
-  if (typeof rawType !== 'string') return false;
-  return /\bEnum(8|16)\b/.test(rawType);
-}
-
-/**
  * Build the initial profile SQL — one query that gathers:
  *   - count()
  *   - min/max/avg for scalar NUMBER and BOOLEAN (Int8) columns
  *   - min/max for scalar DATE columns
- *   - uniq() / uniqIf for scalar STRING columns (enums: uniq only)
+ *   - uniq() / uniqIf for scalar STRING columns (enums / IPv*: uniq only — '' compare invalid)
  *   - value_rows + distinct for Array columns (same as deep profile)
  *   - uniq(mapKeys()) for Map columns
  *   - max(length(sentinel)) for each nested parent group
@@ -137,7 +149,7 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
     if (col.columnType === ColumnType.MAP) {
       parts.push(`uniq(mapKeys(\`${name}\`)) as ${alias}__key_count`);
     } else if (col.columnType === ColumnType.ARRAY) {
-      parts.push(...arrayColumnSql(name, col.valueType, alias));
+      parts.push(...arrayColumnSql(name, col.valueType, alias, col.arrayElementUnsafe));
     } else if (col.valueType === ValueType.DATE) {
       parts.push(`min(\`${name}\`) as ${alias}__min`);
       parts.push(`max(\`${name}\`) as ${alias}__max`);
@@ -146,16 +158,19 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
       parts.push(`max(\`${name}\`) as ${alias}__max`);
       parts.push(`avg(\`${name}\`) as ${alias}__avg`);
     } else if (col.valueType === ValueType.STRING) {
-      // Excluding '' in uniqIf is invalid for CH enums; use plain uniq
-      if (isChEnumType(col.rawType)) {
-        parts.push(`uniq(\`${name}\`) as ${alias}__count`);
-      } else {
-        parts.push(`uniqIf(\`${name}\`, \`${name}\` != '') as ${alias}__count`);
-      }
+      parts.push(
+        col.unsafeEmptyCompare
+          ? `uniq(\`${name}\`) as ${alias}__count`
+          : `uniqIf(\`${name}\`, \`${name}\` != '') as ${alias}__count`,
+      );
     } else if (col.valueType === ValueType.UUID) {
       parts.push(`uniq(\`${name}\`) as ${alias}__count`);
+    } else if (col.columnType === ColumnType.NESTED) {
+      parts.push(`countIf(length(\`${name}\`) > 0) as ${alias}__presence`);
+    } else if (col.valueType === ValueType.OTHER) {
+      // Tuple, JSON, Variant… — skip heavy aggregates; presence drives fill %
+      parts.push(`countIf(\`${name}\` IS NOT NULL) as ${alias}__presence`);
     }
-    // OTHER: skip — unprofilable
   }
 
   // One sentinel per nested parent group
@@ -173,12 +188,57 @@ function buildInitialProfileParts(columns, parentGroupInfo, emptyColumns) {
 }
 
 /**
+ * When the full initial SELECT fails but we still have a row_count, derive
+ * per-column presence (non-null / non-empty collection) alone — fixes UI fill %
+ * that would otherwise stay 0.
+ */
+function buildPresenceOnlyParts(columns, emptyColumns) {
+  const parts = [];
+  for (const [name, col] of columns) {
+    if (emptyColumns.has(name)) continue;
+    if (col.columnType === ColumnType.GROUPED) continue;
+
+    const alias = name.replace(/\./g, '_');
+
+    if (col.columnType === ColumnType.MAP) {
+      parts.push(`countIf(length(mapKeys(\`${name}\`)) > 0) as ${alias}__presence`);
+    } else if (col.columnType === ColumnType.ARRAY) {
+      parts.push(`countIf(length(\`${name}\`) > 0) as ${alias}__presence`);
+    } else if (col.columnType === ColumnType.NESTED) {
+      parts.push(`countIf(length(\`${name}\`) > 0) as ${alias}__presence`);
+    } else {
+      parts.push(`countIf(\`${name}\` IS NOT NULL) as ${alias}__presence`);
+    }
+  }
+  return parts;
+}
+
+/** @returns {boolean} True if any column received a presence cell */
+function applyPresenceOnlyRow(row, columns, emptyColumns, rowCount) {
+  let any = false;
+  for (const [name, col] of columns) {
+    if (emptyColumns.has(name)) continue;
+    if (col.columnType === ColumnType.GROUPED) continue;
+
+    const alias = name.replace(/\./g, '_');
+    const raw = row[`${alias}__presence`];
+    if (raw === undefined) continue;
+
+    any = true;
+    const pres = coerceAggNum(raw);
+    const capped = Math.min(pres, rowCount);
+    col.profile.valueRows = capped;
+    col.profile.hasValues = capped > 0;
+  }
+  return any;
+}
+
+/**
  * Apply initial profile results to column profiles and parent groups.
  */
 function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
   const n = row.row_count;
-  const asNum = typeof n === 'number' ? n : Number(n);
-  const rowCount = Number.isFinite(asNum) && asNum >= 0 ? asNum : 0;
+  const rowCount = coerceAggNum(n);
 
   for (const [name, col] of columns) {
     if (emptyColumns.has(name)) continue;
@@ -188,13 +248,13 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
     const profile = col.profile;
 
     if (col.columnType === ColumnType.MAP) {
-      const keyCount = Number(row[`${alias}__key_count`]) || 0;
+      const keyCount = coerceAggNum(row[`${alias}__key_count`]);
       profile.uniqueValues = keyCount;
       profile.hasValues = keyCount > 0;
       profile.valueRows = keyCount > 0 ? rowCount : 0;
     } else if (col.columnType === ColumnType.ARRAY) {
-      const valueRows = Number(row[`${alias}__value_rows`]) || 0;
-      const distinctCount = Number(row[`${alias}__distinct_count`]) || 0;
+      const valueRows = coerceAggNum(row[`${alias}__value_rows`]);
+      const distinctCount = coerceAggNum(row[`${alias}__distinct_count`]);
       profile.valueRows = valueRows;
       profile.uniqueValues = distinctCount;
       profile.hasValues = valueRows > 0;
@@ -207,14 +267,21 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
       profile.minValue = row[`${alias}__min`] ?? null;
       profile.maxValue = row[`${alias}__max`] ?? null;
       const avg = row[`${alias}__avg`];
-      profile.avgValue = avg != null ? Math.round(Number(avg) * 1000) / 1000 : null;
+      profile.avgValue = avg != null ? Math.round(coerceAggNum(avg) * 1000) / 1000 : null;
       profile.hasValues = profile.minValue != null;
       profile.valueRows = profile.hasValues ? rowCount : 0;
     } else if (col.valueType === ValueType.STRING || col.valueType === ValueType.UUID) {
-      const count = Number(row[`${alias}__count`]) || 0;
+      const count = coerceAggNum(row[`${alias}__count`]);
       profile.uniqueValues = count;
       profile.hasValues = count > 0;
       profile.valueRows = count > 0 ? rowCount : 0;
+    } else if (col.columnType === ColumnType.NESTED || col.valueType === ValueType.OTHER) {
+      if (row[`${alias}__presence`] !== undefined && row[`${alias}__presence`] !== null) {
+        const pres = coerceAggNum(row[`${alias}__presence`]);
+        const capped = Math.min(pres, rowCount);
+        profile.valueRows = capped;
+        profile.hasValues = capped > 0;
+      }
     }
   }
 
@@ -222,7 +289,7 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
   for (const [parent, info] of parentGroupInfo) {
     const alias = parent.replace(/\./g, '_');
     const val = row[`${alias}__max_length`];
-    info.maxLength = val != null ? Number(val) || 0 : 0;
+    info.maxLength = val != null ? coerceAggNum(val) : 0;
   }
 
   return rowCount;
@@ -232,25 +299,25 @@ function applyInitialProfile(row, columns, parentGroupInfo, emptyColumns) {
 // Pass 2: Deep profiling SQL helpers
 // ---------------------------------------------------------------------------
 
-function basicColumnSql(colExpr, valueType, alias, rawType) {
-  const parts = [];
+function basicColumnSql(colExpr, valueType, alias, unsafeEmptyCompare) {
   if (valueType === ValueType.NUMBER || valueType === ValueType.DATE) {
-    parts.push(`min(\`${colExpr}\`) as ${alias}__min_value`);
-    parts.push(`max(\`${colExpr}\`) as ${alias}__max_value`);
-    parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
-  } else if (valueType === ValueType.STRING) {
-    if (isChEnumType(rawType)) {
-      parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
-      parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
-    } else {
-      parts.push(`uniqIf(\`${colExpr}\`, \`${colExpr}\` != '') as ${alias}__distinct_count`);
-      parts.push(`countIf(\`${colExpr}\` IS NOT NULL and \`${colExpr}\` != '') as ${alias}__value_rows`);
-    }
-  } else {
-    parts.push(`uniq(\`${colExpr}\`) as ${alias}__distinct_count`);
-    parts.push(`countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`);
+    return [
+      `min(\`${colExpr}\`) as ${alias}__min_value`,
+      `max(\`${colExpr}\`) as ${alias}__max_value`,
+      `countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`,
+    ];
   }
-  return parts;
+  if (valueType === ValueType.STRING && !unsafeEmptyCompare) {
+    return [
+      `uniqIf(\`${colExpr}\`, \`${colExpr}\` != '') as ${alias}__distinct_count`,
+      `countIf(\`${colExpr}\` IS NOT NULL and \`${colExpr}\` != '') as ${alias}__value_rows`,
+    ];
+  }
+  // STRING enum/IP and all other types: '' compare invalid → use plain uniq + non-null
+  return [
+    `uniq(\`${colExpr}\`) as ${alias}__distinct_count`,
+    `countIf(\`${colExpr}\` IS NOT NULL) as ${alias}__value_rows`,
+  ];
 }
 
 function mapColumnSql(colExpr, alias) {
@@ -260,10 +327,8 @@ function mapColumnSql(colExpr, alias) {
   ];
 }
 
-function arrayColumnSql(colExpr, valueType, alias) {
-  if (valueType === ValueType.STRING) {
-    // For string arrays: exclude arrays that only contain empty strings
-    // arrayFilter removes empty elements; length check ensures at least one non-empty
+function arrayColumnSql(colExpr, valueType, alias, arrayElementUnsafe) {
+  if (valueType === ValueType.STRING && !arrayElementUnsafe) {
     return [
       `countIf(length(arrayFilter(x -> x != '', \`${colExpr}\`)) > 0) as ${alias}__value_rows`,
       `uniq(arrayFilter(x -> x != '', \`${colExpr}\`)) as ${alias}__distinct_count`,
@@ -292,11 +357,11 @@ function columnSqlParts(col) {
     case ColumnType.MAP:
       return mapColumnSql(colExpr, alias);
     case ColumnType.ARRAY:
-      return arrayColumnSql(colExpr, col.valueType, alias);
+      return arrayColumnSql(colExpr, col.valueType, alias, col.arrayElementUnsafe);
     case ColumnType.GROUPED:
     case ColumnType.BASIC:
     default:
-      return basicColumnSql(colExpr, col.valueType, alias, col.rawType);
+      return basicColumnSql(colExpr, col.valueType, alias, col.unsafeEmptyCompare);
   }
 }
 
@@ -321,7 +386,7 @@ function applyResultRow(row, columnsByAlias) {
         profile.uniqueValues = profile.uniqueKeys.length;
         break;
       case 'distinct_count':
-        profile.uniqueValues = typeof value === 'number' ? value : Number(value) || 0;
+        profile.uniqueValues = coerceAggNum(value);
         break;
       case 'min_value':
         profile.minValue = value ?? null;
@@ -330,7 +395,7 @@ function applyResultRow(row, columnsByAlias) {
         profile.maxValue = value ?? null;
         break;
       case 'value_rows':
-        profile.valueRows = typeof value === 'number' ? value : Number(value) || 0;
+        profile.valueRows = coerceAggNum(value);
         profile.hasValues = profile.valueRows > 0;
         break;
     }
@@ -483,18 +548,21 @@ export async function profileTable(driver, schema, table, options = {}) {
 
   tracker.emit('init', 'Querying table metadata, column types, and descriptions...');
 
-  // When a partition filter or user filter is active, system.parts_columns
-  // metadata is unreliable — it reports bytes across ALL partitions, not
-  // per-partition. A column may be empty table-wide but populated in the
-  // target partition/filtered subset.
-  const useMetadata = !partitionOnlyClause && normalizedFilters.length === 0;
+  // system.parts_columns "zero-byte column skip" is an optimization only.
+  // Drivers / CH builds differ; wrong signals skip all aggregates and the UI shows 0% fill.
+  // Opt in with PROFILE_SKIP_EMPTY_COLUMNS=1 when you trust metadata.
+  const useMetadataEnv =
+    String(process.env.PROFILE_SKIP_EMPTY_COLUMNS ?? '').trim() === '1';
+  // Keep disabled when partitioned/filtered — bytes are table-wide then.
+  const useMetadata =
+    useMetadataEnv && !partitionOnlyClause && normalizedFilters.length === 0;
 
   const metaPromise = useMetadata
     ? driver.query(
-        `SELECT column, sum(column_data_uncompressed_bytes) as bytes ` +
+        `SELECT \`column\`, sum(column_data_uncompressed_bytes) AS bytes ` +
         `FROM system.parts_columns ` +
         `WHERE database = '${schema}' AND table = '${table}' AND active ` +
-        `GROUP BY column`
+        `GROUP BY \`column\``
       ).catch(metaErr => {
         console.warn(`[profiler] Metadata check failed (non-fatal): ${metaErr.message}`);
         return [];
@@ -544,18 +612,7 @@ export async function profileTable(driver, schema, table, options = {}) {
   // Extract table description
   const tableDescription = tableCommentRows.length > 0 ? (tableCommentRows[0].comment || null) : null;
 
-  // Empty columns from system metadata (only when not partition-filtered)
-  const emptyColumns = new Set();
-  for (const row of metaResult) {
-    const bytes = typeof row.bytes === 'number' ? row.bytes : Number(row.bytes) || 0;
-    if (bytes === 0) emptyColumns.add(row.column);
-  }
-
   tracker.markStepTime(); // Pass 0 complete
-
-  if (emptyColumns.size > 0) {
-    tracker.emit('init', `Found ${emptyColumns.size} columns with zero bytes — will skip`, { empty_columns: emptyColumns.size });
-  }
 
   // Build a stable DDL order map from system.columns.position
   const ddlPositionByName = new Map();
@@ -589,6 +646,9 @@ export async function profileTable(driver, schema, table, options = {}) {
       valueType: parsed.valueType,
       keyDataType: parsed.keyDataType ?? null,
       valueDataType: parsed.valueDataType ?? null,
+      unsafeEmptyCompare: parsed.unsafeEmptyCompare,
+      arrayElementUnsafe: parsed.arrayElementUnsafe,
+      mapValueUnsafe: parsed.mapValueUnsafe,
       isNullable: parsed.isNullable,
       parentName: parsed.parentName,
       childName: parsed.childName,
@@ -608,6 +668,30 @@ export async function profileTable(driver, schema, table, options = {}) {
   }
 
   tracker.emit('init', `Discovered ${columns.size} columns`, { column_count: columns.size });
+
+  // Zero-byte column skip uses system.parts_columns. Drivers often omit rename `bytes`;
+  // treating missing bytes as 0 marks every column empty and skips all aggregates → 0% fill.
+  const emptyColumns = new Set();
+  for (const row of metaResult) {
+    if (typeof row?.column !== 'string' || !columns.has(row.column)) continue;
+    if (row.bytes == null || row.bytes === '') continue;
+    if (coerceAggNum(row.bytes) === 0) emptyColumns.add(row.column);
+  }
+
+  if (emptyColumns.size > 0 && emptyColumns.size === columns.size) {
+    tracker.emit(
+      'init',
+      'parts_columns reports zero bytes for every column (metadata unreliable) — profiling all columns',
+      { empty_columns_cleared: columns.size },
+    );
+    emptyColumns.clear();
+  }
+
+  if (emptyColumns.size > 0) {
+    tracker.emit('init', `Found ${emptyColumns.size} columns with zero bytes — will skip`, {
+      empty_columns: emptyColumns.size,
+    });
+  }
 
   // Build ARRAY JOIN clause now that we have the column list.
   // ClickHouse Nested columns (stored as parallel arrays with dotted names)
@@ -709,10 +793,28 @@ export async function profileTable(driver, schema, table, options = {}) {
     }
   } catch (err) {
     console.warn(`[profiler] Initial profile failed, falling back to legacy flow: ${err.message}`);
-    // Fallback: at least get row count
+    // Fallback: row count + per-column presence (non-null) so UI fill % is not stuck at 0
     try {
       const countRows = await driver.query(`SELECT count() as cnt FROM ${schema}.\`${table}\`${arrayJoinClause}${whereClause}`);
-      rowCount = countRows.length > 0 ? (Number(countRows[0].cnt) || 0) : 0;
+      rowCount = countRows.length > 0 ? coerceAggNum(countRows[0].cnt) : 0;
+      if (rowCount > 0) {
+        const presParts = buildPresenceOnlyParts(columns, emptyColumns);
+        if (presParts.length > 0) {
+          try {
+            const presSql =
+              `SELECT ${presParts.join(', ')} FROM ${schema}.\`${table}\`${arrayJoinClause}${whereClause}`;
+            const prow = await driver.query(presSql);
+            if (prow.length > 0 && applyPresenceOnlyRow(prow[0], columns, emptyColumns, rowCount)) {
+              tracker.emit(
+                'initial_profile',
+                'Used presence-only aggregates after initial profile failure (distinct/ranges may be missing)',
+              );
+            }
+          } catch (e2) {
+            console.warn(`[profiler] Presence-only fallback failed: ${e2.message}`);
+          }
+        }
+      }
     } catch (e) { /* give up */ }
   }
 
@@ -898,8 +1000,10 @@ export async function profileTable(driver, schema, table, options = {}) {
           if (isNumericMap) {
             mapStatsCandidates.push({ name, key });
           } else if (!isBooleanMap) {
-            // String map keys need cardinality check before LC probing
-            mapStatsCandidates.push({ name, key, isString: true });
+            // UUID + Enum/IPv* values cannot use `expr != ''` for cardinality
+            const unsafeKeyCardinality =
+              col.valueDataType === ValueType.UUID || col.mapValueUnsafe;
+            mapStatsCandidates.push({ name, key, isString: true, unsafeKeyCardinality });
           }
         }
       }
@@ -957,7 +1061,7 @@ export async function profileTable(driver, schema, table, options = {}) {
               col.profile.keyStats[candidate.key] = {
                 min: minVal ?? null,
                 max: maxVal ?? null,
-                avg: avgVal != null ? Math.round(Number(avgVal) * 1000) / 1000 : null,
+                avg: avgVal != null ? Math.round(coerceAggNum(avgVal) * 1000) / 1000 : null,
               };
             }
           }
@@ -983,7 +1087,11 @@ export async function profileTable(driver, schema, table, options = {}) {
           const alias = candidate.name.replace(/\./g, '_');
           const keyAlias = `${alias}_k_${candidate.key.replace(/[^a-zA-Z0-9]/g, '_')}`;
           const expr = `\`${candidate.name}\`['${candidate.key}']`;
-          selectParts.push(`uniqIf(${expr}, ${expr} != '') as ${keyAlias}__uniq`);
+          if (candidate.unsafeKeyCardinality) {
+            selectParts.push(`uniq(${expr}) as ${keyAlias}__uniq`);
+          } else {
+            selectParts.push(`uniqIf(${expr}, ${expr} != '') as ${keyAlias}__uniq`);
+          }
         }
 
         const sql = `SELECT ${selectParts.join(', ')} FROM ${lcFrom}`;
@@ -997,7 +1105,7 @@ export async function profileTable(driver, schema, table, options = {}) {
               const col = columns.get(candidate.name);
               if (!col) continue;
 
-              const uniqCount = Number(row[`${keyAlias}__uniq`]) || 0;
+              const uniqCount = coerceAggNum(row[`${keyAlias}__uniq`]);
 
               // Store per-key cardinality in keyStats
               if (!col.profile.keyStats) col.profile.keyStats = {};
@@ -1041,13 +1149,21 @@ export async function profileTable(driver, schema, table, options = {}) {
 
         for (const candidate of batch) {
           const alias = candidate.name.replace(/\./g, '_');
+          const colMeta = columns.get(candidate.name);
           if (candidate.type === 'basic') {
+            // Enum/IPv* must be CAST to String for groupUniqArray to be comparable
+            const expr = colMeta?.unsafeEmptyCompare
+              ? `CAST(\`${candidate.name}\` AS String)`
+              : `\`${candidate.name}\``;
             selectParts.push(
-              `arraySort(groupUniqArray(${LC_THRESHOLD})(\`${candidate.name}\`)) as ${alias}__lc_values`
+              `arraySort(groupUniqArray(${LC_THRESHOLD})(${expr})) as ${alias}__lc_values`
             );
           } else if (candidate.type === 'array_grouped') {
+            const expr = colMeta?.arrayElementUnsafe
+              ? `arrayMap(x -> CAST(x AS String), \`${candidate.name}\`)`
+              : `\`${candidate.name}\``;
             selectParts.push(
-              `arraySort(groupUniqArrayArray(${LC_THRESHOLD})(\`${candidate.name}\`)) as ${alias}__lc_values`
+              `arraySort(groupUniqArrayArray(${LC_THRESHOLD})(${expr})) as ${alias}__lc_values`
             );
           } else if (candidate.type === 'map_key') {
             const keyAlias = `${alias}_k_${candidate.key.replace(/[^a-zA-Z0-9]/g, '_')}`;
