@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { profileTable, buildWhereClause } from '../profiler.js';
+import { profileTable, buildWhereClause, coerceAggNum } from '../profiler.js';
 import { ColumnType, ValueType } from '../typeParser.js';
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,7 @@ import { ColumnType, ValueType } from '../typeParser.js';
  * @param {Array}  opts.describeRows       Rows for DESCRIBE TABLE
  * @param {Object} opts.initialProfileRow  Row for initial profile query (Pass 1)
  * @param {Object} opts.deepProfileResult  Row for deep profiling (Pass 2)
+ * @param {Array} [opts.partsColumnsRows]   Rows for system.parts_columns (default [])
  * @param {Function} [opts.onQuery]        Spy interceptor
  * @param {Function} [opts.queryImpl]      Full override
  * @returns {{ query: Function, calls: string[] }}
@@ -29,6 +30,7 @@ function createMockDriver(opts = {}) {
     describeRows = [],
     initialProfileRow = {},
     deepProfileResult = {},
+    partsColumnsRows,
     onQuery,
     queryImpl,
   } = opts;
@@ -41,9 +43,9 @@ function createMockDriver(opts = {}) {
 
     if (queryImpl) return queryImpl(sql, calls);
 
-    // system.parts_columns metadata check — return empty (no optimization)
+    // system.parts_columns — default empty (no zero-byte optimization)
     if (sql.includes('system.parts_columns')) {
-      return [];
+      return partsColumnsRows ?? [];
     }
     if (sql.startsWith('DESCRIBE TABLE')) {
       return describeRows;
@@ -58,7 +60,17 @@ function createMockDriver(opts = {}) {
     }
     // Fallback count query (only if initial profile fails)
     if (sql.includes('count() as cnt')) {
-      return [{ cnt: initialProfileRow.row_count || 0 }];
+      return [{ cnt: initialProfileRow.row_count ?? 0 }];
+    }
+    // Presence-only fills after initial-profile failure
+    if (sql.includes('__presence')) {
+      const row = {};
+      const base = coerceAggNum(initialProfileRow.row_count ?? initialProfileRow.cnt ?? 0);
+      for (const dr of describeRows) {
+        const alias = dr.name.replace(/\./g, '_');
+        row[`${alias}__presence`] = base;
+      }
+      return [row];
     }
     // Deep profiling / LC probe / map stats
     return [deepProfileResult];
@@ -66,6 +78,68 @@ function createMockDriver(opts = {}) {
 
   return { query, calls };
 }
+
+// ---------------------------------------------------------------------------
+// coerceAggNum
+// ---------------------------------------------------------------------------
+
+describe('coerceAggNum', () => {
+  it('normalizes BigInt and numeric strings from drivers', () => {
+    assert.equal(coerceAggNum(7), 7);
+    assert.equal(coerceAggNum('3000'), 3000);
+    assert.equal(coerceAggNum(BigInt('2999')), 2999);
+    assert.equal(coerceAggNum('notnum'), 0);
+    assert.equal(coerceAggNum(null), 0);
+  });
+});
+
+describe('profileTable — parts_columns empty-column heuristic', () => {
+  it('ignores meta rows without a bytes field so drivers do not get 100% stale emptyColumns', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'x', type: 'Int32' }],
+      partsColumnsRows: [{ column: 'x' }],
+      initialProfileRow: {
+        row_count: 3000,
+        x__min: 1,
+        x__max: 10,
+        x__avg: 5,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+    const p = result.columns.get('x').profile;
+    assert.equal(p.valueRows, 3000);
+    assert.equal(p.hasValues, true);
+  });
+
+  it('drops emptyColumns when meta reports zero bytes for every DESCRIBE column', async () => {
+    const driver = createMockDriver({
+      describeRows: [
+        { name: 'a', type: 'Int32' },
+        { name: 'b', type: 'Int32' },
+      ],
+      partsColumnsRows: [
+        { column: 'a', bytes: 0 },
+        { column: 'b', bytes: 0 },
+      ],
+      initialProfileRow: {
+        row_count: 100,
+        a__min: 0,
+        a__max: 1,
+        a__avg: 0.5,
+        b__min: 0,
+        b__max: 1,
+        b__avg: 0.5,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+    assert.equal(result.columns.get('a').profile.valueRows, 100);
+    assert.equal(result.columns.get('b').profile.valueRows, 100);
+    assert.equal(result.columns.get('a').profile.hasValues, true);
+    assert.equal(result.columns.get('b').profile.hasValues, true);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // buildWhereClause
@@ -297,6 +371,50 @@ describe('profileTable — initial profile', () => {
     assert.equal(profile.hasValues, true);
   });
 
+  it('profiles IPv4 (modelled as STRING) with uniq, not uniqIf vs empty string', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'ip', type: 'IPv4' }],
+      initialProfileRow: { row_count: 10, ip__count: 4 },
+    });
+    await profileTable(driver, 'db', 'tbl');
+    const initialSql = driver.calls.find((q) => q.includes('count() as row_count'));
+    assert.ok(initialSql);
+    assert.match(initialSql, /uniq\(`ip`\)/);
+    assert.doesNotMatch(initialSql, /`ip` != ''/);
+  });
+
+  it('coerces string row_count / uniq aggregates from ClickHouse', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'period', type: 'LowCardinality(String)' }],
+      initialProfileRow: {
+        row_count: '3000',
+        period__count: '42',
+      },
+    });
+    const result = await profileTable(driver, 'db', 'tbl');
+    assert.equal(result.row_count, 3000);
+    const p = result.columns.get('period').profile;
+    assert.equal(p.uniqueValues, 42);
+    assert.equal(p.valueRows, 3000);
+    assert.equal(p.hasValues, true);
+  });
+
+  it('profiles Array(Enum8) without arrayFilter x != \'\'', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'tags', type: "Array(Enum8('a' = 1, 'b' = 2))" }],
+      initialProfileRow: {
+        row_count: 15,
+        tags__value_rows: 8,
+        tags__distinct_count: 4,
+      },
+    });
+    await profileTable(driver, 'db', 'tbl');
+    const initialSql = driver.calls.find((q) => q.includes('count() as row_count'));
+    assert.ok(initialSql);
+    assert.match(initialSql, /uniq\(`tags`\)/);
+    assert.doesNotMatch(initialSql, /arrayFilter/);
+  });
+
   it('profiles DATE columns with min/max from initial profile', async () => {
     const driver = createMockDriver({
       describeRows: [{ name: 'ts', type: 'DateTime' }],
@@ -396,6 +514,21 @@ describe('profileTable — initial profile', () => {
     );
     assert.equal(deepQueries.length, 0);
   });
+
+  it('profiles ValueType.OTHER (e.g. JSON) with countIf presence so fill rate is non-zero', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'payload', type: 'JSON' }],
+      initialProfileRow: {
+        row_count: 50,
+        payload__presence: 47,
+      },
+    });
+
+    const result = await profileTable(driver, 'db', 'tbl');
+    const p = result.columns.get('payload').profile;
+    assert.equal(p.valueRows, 47);
+    assert.equal(p.hasValues, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -461,6 +594,9 @@ describe('profileTable — initial profile failure fallback', () => {
         if (sql.includes('count() as cnt')) {
           return [{ cnt: 100 }];
         }
+        if (sql.includes('__presence')) {
+          return [{ a__presence: BigInt('95'), b__presence: '100' }];
+        }
         if (sql.includes('SAMPLE') && sql.includes('LIMIT 1')) {
           throw new Error("Storage doesn't support sampling");
         }
@@ -470,10 +606,11 @@ describe('profileTable — initial profile failure fallback', () => {
 
     const result = await profileTable(driver, 'db', 'tbl');
 
-    // Row count should still be available from fallback
     assert.equal(result.row_count, 100);
-    // But columns won't have profile data (initial profile failed)
-    assert.equal(result.columns.get('a').profile.hasValues, false);
+    assert.equal(result.columns.get('a').profile.valueRows, 95);
+    assert.equal(result.columns.get('a').profile.hasValues, true);
+    assert.equal(result.columns.get('b').profile.valueRows, 100);
+    assert.equal(result.columns.get('b').profile.hasValues, true);
   });
 });
 
