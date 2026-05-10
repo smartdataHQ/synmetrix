@@ -5,7 +5,7 @@
  * Ported from Python prototype: cxs-inbox/cube/utils/cube_builder.py
  */
 
-import { processColumn, sanitizeFieldName } from './fieldProcessors.js';
+import { processColumn, sanitizeFieldName, buildPathCandidates } from './fieldProcessors.js';
 import { ColumnType, ValueType } from './typeParser.js';
 
 // -- Helpers ----------------------------------------------------------------
@@ -40,6 +40,54 @@ function sanitizeCubeName(name) {
   }
   sanitized = sanitized.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
   return sanitized || 'cube';
+}
+
+/**
+ * Pick the shortest unique name for each field from its `_nameCandidates`.
+ *
+ * Each field's `_nameCandidates` is ordered from leaf (most readable) to
+ * fully-qualified. Initially every field is at index 0. When multiple fields
+ * share a name, every claimant that has a longer candidate available advances
+ * one step. Repeats until no advances. Fields with only one candidate (basic
+ * scalars) hold their position; longer-candidate fields step around them.
+ *
+ * Residual collisions (multiple fields exhausted candidates with the same
+ * final name) fall through to deduplicateFields, which appends a suffix.
+ *
+ * @param {object[]} fields - Each entry should have `_nameCandidates: string[]`.
+ *   When absent, the existing `name` is treated as the only candidate.
+ * @returns {object[]} The same array, with `name` set to the resolved choice.
+ */
+function resolveNames(fields) {
+  for (const f of fields) {
+    if (!Array.isArray(f._nameCandidates) || f._nameCandidates.length === 0) {
+      f._nameCandidates = [f.name];
+    }
+    f._candidateIdx = 0;
+    f.name = f._nameCandidates[0];
+  }
+
+  const MAX_ITER = 32;
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    const byName = new Map();
+    for (const f of fields) {
+      if (!byName.has(f.name)) byName.set(f.name, []);
+      byName.get(f.name).push(f);
+    }
+    let advanced = false;
+    for (const [, group] of byName) {
+      if (group.length <= 1) continue;
+      for (const f of group) {
+        if (f._candidateIdx + 1 < f._nameCandidates.length) {
+          f._candidateIdx++;
+          f.name = f._nameCandidates[f._candidateIdx];
+          advanced = true;
+        }
+      }
+    }
+    if (!advanced) break;
+  }
+  return fields;
 }
 
 /**
@@ -381,6 +429,63 @@ function processColumns(columns, options) {
       }
     }
 
+    // Skip fields whose only present value is empty / zero — they carry no
+    // analytical signal and clutter the model. Three signals are checked:
+    //   - String/UUID: uniqueValues===1 with the single LC-probed value being
+    //     "", "0", or whitespace-only. (Plain empty strings are already filtered
+    //     by uniqIf upstream, but "0"-as-text and whitespace can still slip in.)
+    //   - Number basic: min===max===0. min/max are computed for all numeric
+    //     scalars during the initial profile pass.
+    //   - Number array (nested numeric sub-column): min===max===0 from the
+    //     minArray/maxArray aggregates added in profiler.arrayColumnSql.
+    if (profile && profile.hasValues) {
+      if (
+        (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
+        details.columnType !== ColumnType.MAP &&
+        profile.uniqueValues === 1 &&
+        Array.isArray(profile.lcValues) &&
+        profile.lcValues.length === 1
+      ) {
+        const only = profile.lcValues[0];
+        const isEmpty =
+          only == null ||
+          only === '' ||
+          (typeof only === 'string' && only.trim() === '') ||
+          only === '0' ||
+          only === 0;
+        if (isEmpty) {
+          columnsSkipped++;
+          continue;
+        }
+      }
+
+      if (
+        details.valueType === ValueType.NUMBER &&
+        profile.minValue != null &&
+        profile.maxValue != null &&
+        Number(profile.minValue) === 0 &&
+        Number(profile.maxValue) === 0
+      ) {
+        columnsSkipped++;
+        continue;
+      }
+
+      // Boolean / Int8-as-bool: always-same value (true OR false) carries no
+      // signal. Two signals — basic columns get min/max from Pass 1 but no
+      // uniqueValues; array sub-columns get uniqueValues from uniqArray. Use
+      // either: minValue === maxValue ⇔ a single distinct value for booleans.
+      if (details.valueType === ValueType.BOOLEAN) {
+        const singleByCount = profile.uniqueValues === 1;
+        const singleByRange = profile.minValue != null
+          && profile.maxValue != null
+          && profile.minValue === profile.maxValue;
+        if (singleByCount || singleByRange) {
+          columnsSkipped++;
+          continue;
+        }
+      }
+    }
+
     columnsProfiled++;
 
     // ---------------------------------------------------------------
@@ -395,14 +500,21 @@ function processColumns(columns, options) {
 
         if (columnName === lookup.lookupColumn) {
           // This IS the lookup key → emit a filter dimension.
+          // Candidates: prefer plain `type` when no clash, then parent_type,
+          // then deeper qualifiers. After resolveNames runs we rewrite the
+          // FILTER_PARAMS refs in every field's SQL to use the final resolved
+          // name (see "rebind FILTER_PARAMS lookup refs" below).
           const filterDimName = `${sanitizeFieldName(parentName)}_type`;
           const filterDimRef = `${cubeName}.${filterDimName}`;
+          const typeCandidates = buildPathCandidates(`${parentName}.type`);
           const field = {
             name: filterDimName,
+            _nameCandidates: typeCandidates,
             sql: `toString({FILTER_PARAMS.${filterDimRef}.filter((v) => v)})`,
             type: 'string',
             fieldType: 'dimension',
             _sourceColumn: columnName,
+            _lookupKeyDim: filterDimName, // marks this as the lookup-key dim
             meta: {
               auto_generated: true,
               source_column: columnName,
@@ -432,9 +544,55 @@ function processColumns(columns, options) {
             continue;
           }
 
+          // Same "single empty/zero value" skip as the basic-column path —
+          // applied here so nested AJ children with constant garbage (e.g.
+          // products.discount_amount that's always 0) don't pollute the cube.
+          if (arrayJoinGroups.includes(details.parentName) && profile && profile.hasValues) {
+            if (
+              (details.valueType === ValueType.STRING || details.valueType === ValueType.UUID) &&
+              profile.uniqueValues === 1 &&
+              Array.isArray(profile.lcValues) &&
+              profile.lcValues.length === 1
+            ) {
+              const only = profile.lcValues[0];
+              const isEmpty =
+                only == null ||
+                only === '' ||
+                (typeof only === 'string' && only.trim() === '') ||
+                only === '0' ||
+                only === 0;
+              if (isEmpty) {
+                columnsSkipped++;
+                continue;
+              }
+            }
+            if (
+              details.valueType === ValueType.NUMBER &&
+              profile.minValue != null &&
+              profile.maxValue != null &&
+              Number(profile.minValue) === 0 &&
+              Number(profile.maxValue) === 0
+            ) {
+              columnsSkipped++;
+              continue;
+            }
+            if (details.valueType === ValueType.BOOLEAN) {
+              const singleByCount = profile.uniqueValues === 1;
+              const singleByRange = profile.minValue != null
+                && profile.maxValue != null
+                && profile.minValue === profile.maxValue;
+              if (singleByCount || singleByRange) {
+                columnsSkipped++;
+                continue;
+              }
+            }
+          }
+
           // This is a data sub-column → emit FILTER_PARAMS-resolved dimension
           const fieldName = `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}`;
           const filterDimRef = `${cubeName}.${sanitizeFieldName(parentName)}_type`;
+          // Walk parent.child path so the resolver can drop redundant prefixes
+          const dataDimCandidates = buildPathCandidates(`${parentName}.${childName}`);
 
           // Determine type from the child column
           const isCoordinate = /^(lat|latitude|lon|lng|longitude)$/i.test(childName);
@@ -454,6 +612,7 @@ function processColumns(columns, options) {
           const elemExpr = `arrayElementOrNull(${arrRef}, ${idxExpr})`;
           const field = {
             name: fieldName,
+            _nameCandidates: dataDimCandidates,
             sql: `if(${idxExpr} > 0, toString(${elemExpr}), toString(${arrRef}))`,
             type: 'string',
             fieldType: 'dimension',
@@ -606,6 +765,8 @@ function processColumns(columns, options) {
       const colDescription = columnDescriptions.get(columnName) || null;
       const nativeMapField = {
         name: mapFieldName,
+        // Already qualified by `_map` suffix — no shorter useful candidate
+        _nameCandidates: [mapFieldName],
         sql: `toString({CUBE}.\`${columnName}\`)`,
         type: 'string',
         fieldType: 'dimension',
@@ -624,7 +785,31 @@ function processColumns(columns, options) {
     }
   }
 
-  // Deduplicate field names
+  // Resolve each field to its shortest unique name (drops `parent_` /
+  // `mapname_` prefixes when there's no clash), then suffix-dedupe any
+  // residual collisions.
+  resolveNames(allFields);
+
+  // After resolution, lookup-key dimensions may have been renamed (e.g. from
+  // `commerce_products_type` to `type`). Their FILTER_PARAMS refs were baked
+  // into both their own SQL and any data-dim SQL that points at them, so we
+  // rewrite those refs to use the resolved name. Without this step every
+  // FILTER_PARAMS expression on a renamed lookup dim would point at a non-
+  // existent dimension.
+  for (const lookupField of allFields) {
+    if (!lookupField._lookupKeyDim) continue;
+    const oldName = lookupField._lookupKeyDim;
+    const newName = lookupField.name;
+    if (oldName === newName) continue;
+    const oldRef = `FILTER_PARAMS.${cubeName}.${oldName}.`;
+    const newRef = `FILTER_PARAMS.${cubeName}.${newName}.`;
+    for (const f of allFields) {
+      if (typeof f.sql === 'string' && f.sql.includes(oldRef)) {
+        f.sql = f.sql.split(oldRef).join(newRef);
+      }
+    }
+  }
+
   deduplicateFields(allFields);
 
   // Final ordering guard: keep generated fields in DDL column order.
@@ -797,38 +982,11 @@ function buildRawCube(profiledTable, options) {
     }
   }
 
-  // -- Heuristics: default pre-aggregations -----------------------------------
-  const preAggDimensions = dimensions
-    .filter((d) => d.type === 'string' && d.public !== false)
-    .slice(0, 5)
-    .map((d) => d.name);
-  const preAggMeasures = measures
-    .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
-    .slice(0, 10)
-    .map((m) => m.name);
-  const pre_aggregations = [];
-  if (timeDim && preAggMeasures.length > 0) {
-    pre_aggregations.push({
-      name: 'daily_rollup',
-      type: 'rollup',
-      dimensions: ['partition', ...preAggDimensions],
-      measures: preAggMeasures,
-      time_dimension: timeDim.name,
-      granularity: 'day',
-      refresh_key: { every: '1 hour' },
-      indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
-    });
-    pre_aggregations.push({
-      name: 'monthly_rollup',
-      type: 'rollup',
-      dimensions: ['partition'],
-      measures: preAggMeasures.slice(0, 5),
-      time_dimension: timeDim.name,
-      granularity: 'month',
-      refresh_key: { every: '1 hour' },
-      indexes: [{ name: 'partition_idx', columns: ['partition'] }],
-    });
-  }
+  // Pre-aggregations are intentionally not auto-generated. The smart-gen
+  // path emits the cube without rollups; users add pre-aggregations
+  // explicitly when they understand the query patterns. Auto-rollups based
+  // on heuristics tend to bloat CubeStore with unused materializations and
+  // surprise users with hidden refresh schedules.
 
   const cube = {
     name: cubeName,
@@ -838,10 +996,48 @@ function buildRawCube(profiledTable, options) {
     meta,
     dimensions,
     measures,
-    pre_aggregations,
   };
 
   return { cube, mapKeysDiscovered, columnsProfiled, columnsSkipped };
+}
+
+/**
+ * Derive a cube name from flat row filters.
+ * Only `=` and `IN` filters contribute — other operators (`!=`, `LIKE`, range,
+ * IS NULL) produce ambiguous names and are ignored.
+ *
+ * E.g., [{ column: 'event', operator: '=', value: 'Stockout Ended' }]
+ *   → "stockout_ended"
+ *
+ * @param {Array<{column: string, operator: string, value: *}>} filters
+ * @param {object} [options]
+ * @param {number} [options.maxLength=60] - Cap on the produced identifier length
+ * @returns {string} Sanitized identifier or empty string
+ */
+export function deriveCubeNameFromFlatFilters(filters, { maxLength = 60 } = {}) {
+  if (!filters || filters.length === 0) return '';
+
+  const parts = [];
+  for (const f of filters) {
+    const op = String(f?.operator || '').toUpperCase();
+    if (op !== '=' && op !== 'IN') continue;
+
+    const values = Array.isArray(f.value) ? f.value : [f.value];
+    for (const v of values) {
+      if (v == null) continue;
+      const slug = String(v)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      if (slug) parts.push(slug);
+    }
+  }
+
+  if (parts.length === 0) return '';
+
+  let joined = parts.join('_');
+  if (joined.length > maxLength) joined = joined.slice(0, maxLength).replace(/_+$/, '');
+  return sanitizeCubeName(joined);
 }
 
 /**
@@ -1063,40 +1259,54 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     ...measures.map((m) => m.name),
   ]);
 
+  // Collect new fields with shortest-unique candidate lists, then run a
+  // local resolver that respects the names already taken by carried-over
+  // dimensions/measures. This drops `parent_` prefixes when the leaf is
+  // unique, e.g. `commerce_products_id` → `id` when nothing else owns `id`.
+  const newAjFields = [];
   for (const [group, cols] of groupColumns) {
     for (const col of cols) {
-      // The ARRAY JOIN alias is the full dotted name with dots → underscores
       const colAlias = col.name.replace(/\./g, '_');
-      const dimName = sanitizeFieldName(colAlias);
-      let finalName = dimName;
-      if (existingNames.has(finalName)) {
-        finalName = `${finalName}_${existingNames.size}`;
-      }
-      existingNames.add(finalName);
+      const candidates = buildPathCandidates(col.name);
+      // Always include the dotted-underscore alias as a final fallback so
+      // existing collision behavior still has somewhere to land.
+      if (!candidates.includes(colAlias)) candidates.push(colAlias);
 
-      // Map value types to Cube.js types
       let cubeType = 'string';
       if (col.valueType === ValueType.NUMBER) cubeType = 'number';
       else if (col.valueType === ValueType.DATE) cubeType = 'time';
       else if (col.valueType === ValueType.BOOLEAN) cubeType = 'boolean';
 
-      // Numeric child columns become measures; strings become dimensions
+      const sql = `{CUBE}.${colAlias}`;
+      const meta = { auto_generated: true, source_column: col.name, source_group: group };
       if (col.valueType === ValueType.NUMBER) {
-        measures.push({
-          name: finalName,
-          sql: `{CUBE}.${colAlias}`,
-          type: 'sum',
-          meta: { auto_generated: true, source_column: col.name, source_group: group },
+        newAjFields.push({
+          name: candidates[0], _nameCandidates: candidates,
+          sql, type: 'sum', meta, _bucket: 'measure',
         });
       } else {
-        dimensions.push({
-          name: finalName,
-          sql: `{CUBE}.${colAlias}`,
-          type: cubeType,
-          meta: { auto_generated: true, source_column: col.name, source_group: group },
+        newAjFields.push({
+          name: candidates[0], _nameCandidates: candidates,
+          sql, type: cubeType, meta, _bucket: 'dimension',
         });
       }
     }
+  }
+
+  // Pin already-taken names by giving them single-candidate placeholders;
+  // resolveNames will then route the new AJ fields around them.
+  const resolveSet = [
+    ...[...existingNames].map((name) => ({ name, _nameCandidates: [name] })),
+    ...newAjFields,
+  ];
+  resolveNames(resolveSet);
+  for (const f of newAjFields) {
+    if (f._bucket === 'measure') {
+      measures.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta });
+    } else {
+      dimensions.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta });
+    }
+    existingNames.add(f.name);
   }
 
   // Titles on all fields
@@ -1223,42 +1433,7 @@ export function buildCubes(profiledTable, options = {}) {
       if (PLUMBING_PATTERN.test(dim.name)) dim.public = false;
     }
 
-    // - Pre-aggregations
-    if (timeDim) {
-      const preAggDimensions = ajCube.dimensions
-        .filter((d) => d.type === 'string' && d.public !== false)
-        .slice(0, 5)
-        .map((d) => d.name);
-      const preAggMeasures = ajCube.measures
-        .filter((m) => ['count', 'sum', 'min', 'max'].includes(m.type))
-        .slice(0, 10)
-        .map((m) => m.name);
-      if (preAggMeasures.length > 0) {
-        ajCube.pre_aggregations = [
-          {
-            name: 'daily_rollup',
-            type: 'rollup',
-            dimensions: ['partition', ...preAggDimensions],
-            measures: preAggMeasures,
-            time_dimension: timeDim.name,
-            granularity: 'day',
-            refresh_key: { every: '1 hour' },
-            indexes: [{ name: 'partition_time_idx', columns: ['partition', timeDim.name] }],
-          },
-          {
-            name: 'monthly_rollup',
-            type: 'rollup',
-            dimensions: ['partition'],
-            measures: preAggMeasures.slice(0, 5),
-            time_dimension: timeDim.name,
-            granularity: 'month',
-            refresh_key: { every: '1 hour' },
-            indexes: [{ name: 'partition_idx', columns: ['partition'] }],
-          },
-        ];
-      }
-    }
-
+    // Pre-aggregations intentionally omitted — see buildRawCube comment.
     cubes.push(ajCube);
   } else if (arrayJoinColumns.length > 0) {
     // Legacy ARRAY JOIN path: raw cube + separate flattened cubes
@@ -1282,6 +1457,25 @@ export function buildCubes(profiledTable, options = {}) {
       legacyCube.sql = legacySql;
       legacyCube.meta.array_join_column = ajDef.column;
       legacyCube.meta.array_join_alias = ajDef.alias;
+
+      // Surface the user-supplied AJ alias as a dimension. Without this the
+      // exploded array element has no addressable name in the cube — the SQL
+      // exposes `<alias>` as a column but no Cube.js dimension maps to it.
+      // Skip if a dimension with that name already exists (collision-safe).
+      const aliasName = sanitizeFieldName(ajDef.alias);
+      if (aliasName && !legacyCube.dimensions.some((d) => d.name === aliasName)) {
+        legacyCube.dimensions.push({
+          name: aliasName,
+          sql: `{CUBE}.${aliasName}`,
+          type: 'string',
+          meta: {
+            auto_generated: true,
+            source_column: ajDef.column,
+            array_join_alias: ajDef.alias,
+          },
+        });
+      }
+
       cubes.push(legacyCube);
     }
   } else {

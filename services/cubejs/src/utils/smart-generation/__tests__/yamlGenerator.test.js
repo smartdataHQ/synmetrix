@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { generateYaml, generateFileName, generateJs } from '../yamlGenerator.js';
+import {
+  generateYaml,
+  generateFileName,
+  generateJs,
+  requiresJsOutput,
+  transpileArrowsForYaml,
+} from '../yamlGenerator.js';
 
 describe('yamlGenerator – generateYaml', () => {
   function makeCube(overrides = {}) {
@@ -256,5 +262,73 @@ describe('yamlGenerator – generateJs advanced properties', () => {
     const js = generateJs([cube]);
     assert.ok(js.includes('sql: "SELECT *, `commerce.total`, duration_ratio FROM dev.semantic_events"'), js);
     assert.ok(!js.includes('\\`commerce'), 'should not escape inner backticks with backslash');
+  });
+});
+
+describe('yamlGenerator – arrow → lambda transpile for YAML', () => {
+  it('rewrites identity arrow to Python lambda', () => {
+    assert.strictEqual(
+      transpileArrowsForYaml('{FILTER_PARAMS.cube.dim.filter((v) => v)}'),
+      '{FILTER_PARAMS.cube.dim.filter(lambda v: v)}'
+    );
+  });
+
+  it('rewrites every occurrence in a single string', () => {
+    const input =
+      'indexOf({CUBE}.`p.c`, toString({FILTER_PARAMS.cube.dim.filter((v) => v)})) ' +
+      '+ {FILTER_PARAMS.cube.dim2.filter((x) => x)}';
+    const out = transpileArrowsForYaml(input);
+    assert.ok(out.includes('lambda v: v'));
+    assert.ok(out.includes('lambda x: x'));
+    assert.ok(!out.includes('=>'));
+  });
+
+  it('leaves non-identity arrows untouched', () => {
+    const input = '{FILTER_PARAMS.cube.d.filter((from, to) => `c BETWEEN ${from}`)}';
+    assert.strictEqual(transpileArrowsForYaml(input), input);
+  });
+
+  it('passes through values without arrows', () => {
+    assert.strictEqual(transpileArrowsForYaml('{CUBE}.col'), '{CUBE}.col');
+    assert.strictEqual(transpileArrowsForYaml(''), '');
+    assert.strictEqual(transpileArrowsForYaml(null), null);
+  });
+
+  it('emits lambda form in generated YAML for identity-arrow dimensions', () => {
+    const cube = {
+      name: 'events',
+      sql: 'SELECT * FROM db.events',
+      meta: { auto_generated: true },
+      dimensions: [
+        {
+          name: 'event_type',
+          sql: 'toString({FILTER_PARAMS.events.event_type_filter.filter((v) => v)})',
+          type: 'string',
+          meta: { auto_generated: true },
+        },
+      ],
+      measures: [],
+    };
+    const yaml = generateYaml([cube]);
+    assert.ok(yaml.includes('lambda v: v'), yaml);
+    assert.ok(!yaml.includes('=>'), 'YAML should not contain arrow syntax');
+  });
+
+  it('requiresJsOutput returns false for identity-arrow-only cubes', () => {
+    const cubes = [{
+      name: 'c',
+      dimensions: [{ name: 'd', sql: '{FILTER_PARAMS.c.x.filter((v) => v)}', type: 'string' }],
+      measures: [],
+    }];
+    assert.strictEqual(requiresJsOutput(cubes), false);
+  });
+
+  it('requiresJsOutput returns true for non-identity arrows', () => {
+    const cubes = [{
+      name: 'c',
+      dimensions: [{ name: 'd', sql: '{FILTER_PARAMS.c.x.filter((from, to) => `x BETWEEN ${from}`)}', type: 'string' }],
+      measures: [],
+    }];
+    assert.strictEqual(requiresJsOutput(cubes), true);
   });
 });

@@ -5,14 +5,18 @@ import {
 import createMd5Hex from '../utils/md5Hex.js';
 import { profileTable } from '../utils/smart-generation/profiler.js';
 import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
-import { buildCubes, mergeAIMetrics } from '../utils/smart-generation/cubeBuilder.js';
-import { generateJs, generateFileName } from '../utils/smart-generation/yamlGenerator.js';
+import { buildCubes, mergeAIMetrics, deriveCubeNameFromFlatFilters } from '../utils/smart-generation/cubeBuilder.js';
+import {
+  generateJs,
+  generateYaml,
+  requiresJsOutput,
+} from '../utils/smart-generation/yamlGenerator.js';
 import { enrichWithAIMetrics } from '../utils/smart-generation/llmEnricher.js';
 import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
 import { adviseModel, applyAdvisoryPasses } from '../utils/smart-generation/modelAdvisor.js';
 import { mergeModels, extractAIMetrics } from '../utils/smart-generation/merger.js';
 import { deserializeProfile } from '../utils/smart-generation/profileSerializer.js';
-import { diffModels, parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
+import { diffModels, parseCubeContent } from '../utils/smart-generation/diffModels.js';
 import { loadRules } from '../utils/queryRewrite.js';
 import { validateModelSyntax, smokeTestQuery } from '../utils/smart-generation/modelValidator.js';
 import { fetchClickHouseAliasColumnNames } from '../utils/smart-generation/clickHouseAliasColumns.js';
@@ -101,8 +105,20 @@ export default async (req, res, cubejs) => {
   const fileNameOverride = typeof rawFileName === 'string' && rawFileName.trim() ? rawFileName.trim() : null;
   // Derive cube name from file name if not explicitly set (strip extension)
   const explicitCubeName = typeof rawCubeName === 'string' && rawCubeName.trim() ? rawCubeName.trim() : null;
+  const fileDerivedCubeName = fileNameOverride
+    ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '')
+    : null;
+  // Auto-derive a model name from `=` / `IN` filter values when the user has
+  // not supplied an explicit cube/file name. This produces e.g. `stockout_ended`
+  // for a filter `event = 'Stockout Ended'`, keeping the model semantically
+  // distinct from the source table when filtering rows. Falls back to the table
+  // name (handled in buildRawCube) when no usable filter is present.
+  const filterDerivedCubeName = (!explicitCubeName && !fileDerivedCubeName && filters.length > 0)
+    ? deriveCubeNameFromFlatFilters(filters)
+    : '';
   const cubeNameOverride = explicitCubeName
-    || (fileNameOverride ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '') : null);
+    || fileDerivedCubeName
+    || (filterDerivedCubeName || null);
   // When provided, only these AI metric names are merged into the model (user selection from preview)
   const selectedAIMetrics = Array.isArray(rawSelectedAIMetrics) ? new Set(rawSelectedAIMetrics) : null;
   // When provided, these fully-qualified field names (cube.field) are excluded from the final model
@@ -245,19 +261,51 @@ export default async (req, res, cubejs) => {
     }
 
     // Fetch existing schemas early (needed for AI superset regeneration and merge)
-    // When nested filters produce a different cube name, use that for the file name
-    // so file name matches cube name (required for Cube.js resolution).
     const cubeName = cubeResult.cubes[0]?.name;
-    const effectiveFileNameOverride = (nestedFilters.length > 0 && cubeName)
-      ? `${cubeName}.js`
-      : fileNameOverride;
-    const fileName = effectiveFileNameOverride
-      ? (effectiveFileNameOverride.endsWith('.js') || effectiveFileNameOverride.endsWith('.yml') ? effectiveFileNameOverride : `${effectiveFileNameOverride}.js`)
-      : generateFileName(table, true);
+    // File name follows the cube name when the cube name was derived from
+    // filters (flat or nested) — required so Cube.js can resolve the model
+    // and so re-running the same filter set updates the same file.
+    const fileShouldFollowCube = cubeName && (
+      nestedFilters.length > 0
+      || (filterDerivedCubeName && cubeName === filterDerivedCubeName)
+    );
+    const baseName = fileShouldFollowCube
+      ? cubeName
+      : (fileNameOverride
+          ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '')
+          : table);
+    const explicitFileName = fileNameOverride && /\.(js|yml|yaml)$/.test(fileNameOverride)
+      ? fileNameOverride
+      : null;
+
     emitter.emit('versioning', 'Checking existing schemas...', 0.62);
     // Use admin secret (no authToken) for internal Hasura calls — the user's
     // JWT may expire during the long-running profiling + LLM enrichment flow.
     const existingSchemas = await findDataSchemas({ branchId });
+
+    // Filename + format resolution (YAML-first):
+    //   1. Explicit `file_name` with extension wins.
+    //   2. Otherwise, if a model already exists by base name, reuse its
+    //      extension — preserves continuity for files originally created as JS.
+    //   3. Otherwise, default to .yml.
+    // Safety: if cubes contain non-translatable arrow callbacks
+    // (FILTER_PARAMS lambda forms beyond `(v) => v`), force JS even when YAML
+    // would otherwise be chosen, so the model stays correct.
+    const existingByBase = explicitFileName
+      ? null
+      : existingSchemas.find((f) =>
+          f.name.replace(/\.(js|yml|yaml)$/, '') === baseName
+        ) || null;
+    const cubesNeedJs = requiresJsOutput(cubeResult.cubes);
+    let fileName;
+    if (explicitFileName) {
+      fileName = explicitFileName;
+    } else if (existingByBase) {
+      fileName = existingByBase.name;
+    } else {
+      fileName = `${baseName}.${cubesNeedJs ? 'js' : 'yml'}`;
+    }
+    const useJsOutput = cubesNeedJs || /\.js$/.test(fileName);
     const existingFileIndex = existingSchemas.findIndex((f) => f.name === fileName);
     const existingCode = existingFileIndex >= 0
       ? existingSchemas[existingFileIndex].code
@@ -412,7 +460,9 @@ export default async (req, res, cubejs) => {
     let advisorResult = null;
     if (!dryRun && !skipLlm) {
       emitter.emit('advising', 'Running LLM advisory passes...', 0.65);
-      const generatedPreAdvise = generateJs(cubeResult.cubes);
+      const generatedPreAdvise = useJsOutput
+        ? generateJs(cubeResult.cubes)
+        : generateYaml(cubeResult.cubes);
 
       const profileSummaryForAdvisor = {
         table,
@@ -626,18 +676,22 @@ export default async (req, res, cubejs) => {
       cubeResult.summary.measures_count = totalMeasures;
     }
 
-    // Generate JS model
-    emitter.emit('generating', 'Generating JS model...', 0.7);
-    const yamlContent = generateJs(cubeResult.cubes);
+    // Generate model — YAML by default, JS when FILTER_PARAMS arrow callbacks
+    // require it (YAML can't represent arrow functions).
+    emitter.emit('generating', `Generating ${useJsOutput ? 'JS' : 'YAML'} model...`, 0.7);
+    const yamlContent = useJsOutput
+      ? generateJs(cubeResult.cubes)
+      : generateYaml(cubeResult.cubes);
 
     // Apply merge strategy
     emitter.emit('merging', 'Applying merge strategy...', 0.78);
 
-    // Extract previous generation filters from existing model (if any)
+    // Extract previous generation filters from existing model (if any).
+    // parseCubeContent auto-detects YAML vs JS so this works for both formats.
     let previousFilters = null;
     if (existingCode) {
       try {
-        const existingCubes = parseCubesFromJs(existingCode);
+        const { cubes: existingCubes } = parseCubeContent(existingCode);
         if (existingCubes) {
           for (const cube of existingCubes) {
             if (cube.meta?.generation_filters) {

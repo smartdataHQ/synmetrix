@@ -182,9 +182,11 @@ describe('LC probe – cubeBuilder propagation', () => {
     ]);
 
     const { cubes } = buildCubes({ database: 'db', table: 'test', partition: null, columns });
-    const envDim = cubes[0].dimensions.find(d => d.name === 'props_env');
-    const regionDim = cubes[0].dimensions.find(d => d.name === 'props_region');
-    assert.ok(envDim);
+    // After the shortest-unique resolver, map keys land at their bare leaf
+    // names when nothing else claims them.
+    const envDim = cubes[0].dimensions.find(d => d.name === 'env');
+    const regionDim = cubes[0].dimensions.find(d => d.name === 'region');
+    assert.ok(envDim, `expected 'env' dim. Got: ${cubes[0].dimensions.map(d => d.name).join(', ')}`);
     assert.ok(regionDim);
     assert.deepStrictEqual(envDim.meta.lc_values, ['prod', 'staging']);
     assert.deepStrictEqual(regionDim.meta.lc_values, ['us', 'eu']);

@@ -313,6 +313,7 @@ describe('MapFieldProcessor', () => {
     assert.equal(result.length, 2);
     assert.deepEqual(result[0], {
       name: 'tags_color',
+      _nameCandidates: ['color', 'tags_color'],
       sql: "{CUBE}.tags['color']",
       type: 'string',
       fieldType: 'dimension',
@@ -320,6 +321,7 @@ describe('MapFieldProcessor', () => {
     });
     assert.deepEqual(result[1], {
       name: 'tags_size',
+      _nameCandidates: ['size', 'tags_size'],
       sql: "{CUBE}.tags['size']",
       type: 'string',
       fieldType: 'dimension',
@@ -341,6 +343,7 @@ describe('MapFieldProcessor', () => {
     assert.equal(result.length, 1);
     assert.deepEqual(result[0], {
       name: 'metrics_latency',
+      _nameCandidates: ['latency', 'metrics_latency'],
       sql: "CAST({CUBE}.metrics['latency'] AS Float64)",
       type: 'sum',
       fieldType: 'measure',
@@ -408,6 +411,7 @@ describe('MapFieldProcessor', () => {
 
     assert.deepEqual(result[0], {
       name: 'flags_enabled',
+      _nameCandidates: ['enabled', 'flags_enabled'],
       sql: "({CUBE}.flags['enabled']) = 1",
       type: 'boolean',
       fieldType: 'dimension',
@@ -429,6 +433,7 @@ describe('MapFieldProcessor', () => {
 
     assert.deepEqual(result[0], {
       name: 'settings_dark_mode',
+      _nameCandidates: ['dark_mode', 'settings_dark_mode'],
       sql: "{CUBE}.settings['dark_mode']",
       type: 'boolean',
       fieldType: 'dimension',

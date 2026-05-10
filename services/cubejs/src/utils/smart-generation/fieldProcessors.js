@@ -32,6 +32,37 @@ export function sanitizeFieldName(name) {
   return sanitized;
 }
 
+/**
+ * Build a candidate-name list from a dotted column path, ordered from
+ * shortest (just the leaf) to fully-qualified.
+ *
+ * Used by the shortest-unique name resolver in cubeBuilder.resolveNames so
+ * fields shed their qualifying prefixes whenever there's no clash.
+ *
+ * @example
+ *   buildPathCandidates('commerce.products.id')
+ *     → ['id', 'products_id', 'commerce_products_id']
+ *   buildPathCandidates('id') → ['id']
+ *
+ * @param {string} columnPath
+ * @returns {string[]} de-duplicated candidate names, shortest first
+ */
+export function buildPathCandidates(columnPath) {
+  if (!columnPath) return [];
+  const parts = String(columnPath).split('.').filter(Boolean);
+  if (parts.length === 0) return [];
+  const candidates = [];
+  const seen = new Set();
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const joined = parts.slice(i).map(sanitizeFieldName).join('_');
+    if (!joined) continue;
+    if (seen.has(joined)) continue;
+    seen.add(joined);
+    candidates.push(joined);
+  }
+  return candidates;
+}
+
 // -- CubeField factory ------------------------------------------------------
 
 /**
@@ -44,8 +75,16 @@ export function sanitizeFieldName(name) {
  * @param {string} opts.fieldType - "dimension" | "measure"
  * @returns {{ name: string, sql: string, type: string, fieldType: string }}
  */
-function cubeField({ name, sql, type, fieldType }) {
-  return { name, sql, type, fieldType };
+function cubeField({ name, sql, type, fieldType, nameCandidates }) {
+  const f = { name, sql, type, fieldType };
+  // _nameCandidates lets the post-pass resolver shorten names that don't
+  // collide. Shortest (most readable) candidate goes first; the fully-
+  // qualified name is the last fallback. If omitted, the resolver treats
+  // `name` itself as the only candidate (no shortening).
+  if (Array.isArray(nameCandidates) && nameCandidates.length > 0) {
+    f._nameCandidates = nameCandidates;
+  }
+  return f;
 }
 
 // -- Shared logic -----------------------------------------------------------
@@ -229,10 +268,19 @@ export class MapFieldProcessor {
     // valueType is always OTHER for Map columns; valueDataType holds the actual type.
     const effectiveValueType = columnDetails.valueDataType || columnDetails.valueType;
 
+    const sanitizedColumn = sanitizeFieldName(columnName);
+
     for (const key of profile.uniqueKeys) {
       try {
         const sanitizedKey = sanitizeFieldName(key);
         const fieldName = `${columnName}_${sanitizedKey}`;
+        // Candidate list: prefer the bare key when unique, fall back to
+        // `<columnName>_<key>` on clash. Skip the qualified form when it
+        // would just duplicate the leaf (column == key, unlikely in practice).
+        const qualified = `${sanitizedColumn}_${sanitizedKey}`;
+        const nameCandidates = sanitizedKey === qualified
+          ? [sanitizedKey]
+          : [sanitizedKey, qualified];
         let field;
 
         if (effectiveValueType === ValueType.NUMBER) {
@@ -240,6 +288,7 @@ export class MapFieldProcessor {
           if (valueSubtype.includes('int8')) {
             field = cubeField({
               name: fieldName,
+              nameCandidates,
               sql: `({CUBE}.${columnName}['${key}']) = 1`,
               type: 'boolean',
               fieldType: 'dimension',
@@ -260,6 +309,7 @@ export class MapFieldProcessor {
 
           field = cubeField({
             name: fieldName,
+            nameCandidates,
             sql: `CAST({CUBE}.${columnName}['${key}'] AS ${castTarget})`,
             type: 'sum',
             fieldType: 'measure',
@@ -276,6 +326,7 @@ export class MapFieldProcessor {
 
           field = cubeField({
             name: fieldName,
+            nameCandidates,
             sql: boolSql,
             type: 'boolean',
             fieldType: 'dimension',
@@ -284,6 +335,7 @@ export class MapFieldProcessor {
           // STRING / OTHER -> string dimension
           field = cubeField({
             name: fieldName,
+            nameCandidates,
             sql: `{CUBE}.${columnName}['${key}']`,
             type: 'string',
             fieldType: 'dimension',
@@ -387,12 +439,19 @@ export class NestedFieldProcessor {
         ? `${sanitizeFieldName(parentName)}_${sanitizeFieldName(childName)}`
         : sanitizeFieldName(childName);
 
+      // Candidate list walks the dotted path from leaf upward so the
+      // resolver can drop redundant `parent_` prefixes when the leaf is
+      // already unique. Falls back through every level until fully-qualified.
+      const fullPath = parentName ? `${parentName}.${childName}` : childName;
+      const nameCandidates = buildPathCandidates(fullPath);
+
       const fieldType = determineFieldType(columnDetails, profile);
       const cubeType = fieldType === 'measure' ? 'sum' : getCubeType(columnDetails, profile);
       const sql = generateSqlExpression(columnDetails, profile);
 
       return cubeField({
         name: fieldName,
+        nameCandidates,
         sql,
         type: cubeType,
         fieldType,
