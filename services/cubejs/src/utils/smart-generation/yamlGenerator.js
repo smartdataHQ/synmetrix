@@ -8,16 +8,49 @@
 import YAML from 'yaml';
 
 /**
- * Check if any cube definition contains FILTER_PARAMS callbacks
- * that require JS output (YAML parser can't handle arrow functions).
+ * Identity-arrow pattern emitted by smart-gen: `(v) => v`.
+ *
+ * Cube.js FILTER_PARAMS in YAML accepts a Python lambda where JS uses an arrow
+ * (see https://cube.dev/docs/product/data-modeling/reference/context-variables).
+ * `(v) => v` translates 1:1 to `lambda v: v`, so YAML can express it.
+ * Any other arrow shape (e.g. multi-arg, expression body) we don't currently
+ * emit — if one shows up, requiresJsOutput() flags it and we fall back to JS.
+ */
+const IDENTITY_ARROW_RE = /\(([a-zA-Z_]\w*)\)\s*=>\s*\1\b/g;
+
+/**
+ * Translate JS arrow callbacks inside FILTER_PARAMS to Python lambda syntax
+ * for YAML output. Currently only handles the identity arrow `(v) => v`
+ * (the only pattern smart-generation emits).
+ *
+ * @param {string} sql
+ * @returns {string}
+ */
+export function transpileArrowsForYaml(sql) {
+  if (!sql || typeof sql !== 'string') return sql;
+  return sql.replace(IDENTITY_ARROW_RE, 'lambda $1: $1');
+}
+
+/**
+ * Check if any cube definition contains an arrow callback that we cannot
+ * translate to YAML. Identity arrows (`(v) => v`) are translatable; anything
+ * else forces JS output.
  *
  * @param {object[]} cubeDefinitions
  * @returns {boolean}
  */
 export function requiresJsOutput(cubeDefinitions) {
   for (const cube of cubeDefinitions) {
-    for (const field of [...(cube.dimensions || []), ...(cube.measures || [])]) {
-      if (field.sql && field.sql.includes('FILTER_PARAMS')) return true;
+    const fields = [...(cube.dimensions || []), ...(cube.measures || [])];
+    for (const field of fields) {
+      if (!field.sql) continue;
+      const stripped = field.sql.replace(IDENTITY_ARROW_RE, '');
+      if (/=>/.test(stripped)) return true;
+    }
+    // Cube-level sql may also contain arrows
+    if (cube.sql) {
+      const stripped = cube.sql.replace(IDENTITY_ARROW_RE, '');
+      if (/=>/.test(stripped)) return true;
     }
   }
   return false;
@@ -52,7 +85,7 @@ function formatField(field) {
 
   const entry = {
     name: field.name,
-    sql: field.sql,
+    sql: transpileArrowsForYaml(field.sql),
     type: field.type,
     meta,
   };
@@ -96,7 +129,7 @@ function formatCube(cube) {
   if (cube.sql_table) {
     entry.sql_table = cube.sql_table;
   } else if (cube.sql) {
-    entry.sql = cube.sql;
+    entry.sql = transpileArrowsForYaml(cube.sql);
   }
 
   entry.meta = {

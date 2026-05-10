@@ -354,7 +354,7 @@ export function parseCubesFromJs(jsContent) {
  * @param {string|Array|null} content
  * @returns {{ cubes: Array|null, doc: object|null }} cubes array or null if unparseable
  */
-function parseCubeContent(content) {
+export function parseCubeContent(content) {
   if (!content) return { cubes: null, doc: null };
 
   // Already structured cube array (from cubeBuilder output)

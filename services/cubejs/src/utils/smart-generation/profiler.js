@@ -328,15 +328,59 @@ function mapColumnSql(colExpr, alias) {
 }
 
 function arrayColumnSql(colExpr, valueType, alias, arrayElementUnsafe) {
-  if (valueType === ValueType.STRING && !arrayElementUnsafe) {
+  // ClickHouse Nested(...) is stored as parallel `Array(...)` siblings that
+  // MUST share the same length per row. So `length(col) > 0` for any one
+  // sibling is identical for every sibling — it tells you "this row has nested
+  // data" but not "this sibling carries any signal". A bool sub-column where
+  // every element is NULL or always `false` still reports the same value_rows
+  // as the populated `id` sibling, which makes useless fields look populated.
+  //
+  // Counting distinct values has the same trap:
+  //   uniq(arr)          counts distinct ARRAYS (one row's array as a whole)
+  //   uniqArray(arr)     counts distinct ELEMENTS across all rows (Array combinator)
+  // Smart-gen's downstream consumers (LC threshold gate, lcValues probing,
+  // nested-lookup-key detection) all want element-level cardinality.
+  //
+  // Below we filter elements down to "carries signal" before counting:
+  //   string:   non-null AND non-empty
+  //   number:   non-null AND non-zero
+  //   other:    non-null
+  // value_rows then = rows where >=1 element survives the filter.
+  //
+  // arrayElementUnsafe: some element types (e.g. Enum8 inside Array) can't be
+  // safely fed through arrayFilter / arrayElement comparisons in ClickHouse.
+  // Fall back to whole-array uniq() + length() in that case — less precise but
+  // type-safe.
+  if (arrayElementUnsafe) {
     return [
-      `countIf(length(arrayFilter(x -> x != '', \`${colExpr}\`)) > 0) as ${alias}__value_rows`,
-      `uniq(arrayFilter(x -> x != '', \`${colExpr}\`)) as ${alias}__distinct_count`,
+      `countIf(length(\`${colExpr}\`) > 0) as ${alias}__value_rows`,
+      `uniq(\`${colExpr}\`) as ${alias}__distinct_count`,
     ];
   }
+  if (valueType === ValueType.STRING) {
+    const meaningful = `arrayFilter(x -> x IS NOT NULL AND x != '', \`${colExpr}\`)`;
+    return [
+      `countIf(length(${meaningful}) > 0) as ${alias}__value_rows`,
+      `uniqArray(${meaningful}) as ${alias}__distinct_count`,
+    ];
+  }
+  if (valueType === ValueType.NUMBER) {
+    // minArray/maxArray ignore NULL natively; pair with non-null/non-zero
+    // value_rows so columns of all-zero (or all-null) get hasValues=false.
+    const nonNull = `arrayFilter(x -> x IS NOT NULL, \`${colExpr}\`)`;
+    const nonZero = `arrayFilter(x -> x IS NOT NULL AND x != 0, \`${colExpr}\`)`;
+    return [
+      `countIf(length(${nonZero}) > 0) as ${alias}__value_rows`,
+      `uniqArray(${nonNull}) as ${alias}__distinct_count`,
+      `minArray(\`${colExpr}\`) as ${alias}__min_value`,
+      `maxArray(\`${colExpr}\`) as ${alias}__max_value`,
+    ];
+  }
+  // BOOLEAN, DATE, UUID, OTHER — count anything that's non-null
+  const nonNull = `arrayFilter(x -> x IS NOT NULL, \`${colExpr}\`)`;
   return [
-    `countIf(length(\`${colExpr}\`) > 0) as ${alias}__value_rows`,
-    `uniq(\`${colExpr}\`) as ${alias}__distinct_count`,
+    `countIf(length(${nonNull}) > 0) as ${alias}__value_rows`,
+    `uniqArray(${nonNull}) as ${alias}__distinct_count`,
   ];
 }
 

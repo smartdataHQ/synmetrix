@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { buildCubes } from '../cubeBuilder.js';
+import { buildCubes, deriveCubeNameFromFlatFilters } from '../cubeBuilder.js';
 import { ColumnType, ValueType } from '../typeParser.js';
 
 /**
@@ -100,7 +100,7 @@ describe('cubeBuilder – buildCubes', () => {
   });
 
   describe('Map key expansion', () => {
-    it('should expand Map column into separate fields per unique key', () => {
+    it('expands Map columns and prefers the bare key when no clash', () => {
       const t = makeTable({
         columns: new Map([
           col('props', 'Map(String, String)', ColumnType.MAP, ValueType.OTHER, {
@@ -111,8 +111,32 @@ describe('cubeBuilder – buildCubes', () => {
 
       const { cubes } = buildCubes(t);
       const dimNames = cubes[0].dimensions.map((d) => d.name);
-      assert.ok(dimNames.includes('props_color'));
-      assert.ok(dimNames.includes('props_size'));
+      // Shortest-unique resolver drops the `props_` prefix when nothing else
+      // wants `color` / `size`.
+      assert.ok(dimNames.includes('color'), `expected 'color' in ${JSON.stringify(dimNames)}`);
+      assert.ok(dimNames.includes('size'), `expected 'size' in ${JSON.stringify(dimNames)}`);
+      // Native map accessor keeps its qualified name (already includes the column name).
+      assert.ok(dimNames.includes('props_map'));
+    });
+
+    it('falls back to the qualified name when the bare key clashes', () => {
+      // A basic `color` column already owns the leaf name → map key advances
+      // to `props_color`.
+      const t = makeTable({
+        columns: new Map([
+          col('color', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 5,
+          }),
+          col('props', 'Map(String, String)', ColumnType.MAP, ValueType.OTHER, {
+            uniqueKeys: ['color', 'size'],
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const dimNames = cubes[0].dimensions.map((d) => d.name);
+      assert.ok(dimNames.includes('color'), 'basic column keeps its leaf name');
+      assert.ok(dimNames.includes('props_color'), 'map key falls back to qualified name on clash');
+      assert.ok(dimNames.includes('size'), `'size' should still be unique → bare leaf. Got: ${JSON.stringify(dimNames)}`);
     });
   });
 
@@ -150,6 +174,115 @@ describe('cubeBuilder – buildCubes', () => {
     });
   });
 
+  describe('single empty/zero value exclusion', () => {
+    it('skips numeric columns whose only value is 0', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('amount', 'Float64', ColumnType.BASIC, ValueType.NUMBER, {
+            hasValues: true, uniqueValues: 1, minValue: 0, maxValue: 0,
+          }),
+          col('count', 'Int32', ColumnType.BASIC, ValueType.NUMBER, {
+            hasValues: true, uniqueValues: 5, minValue: 0, maxValue: 42,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const names = cubes[0].measures.map((m) => m.name);
+      assert.ok(!names.includes('amount'), 'all-zero numeric should be skipped');
+      assert.ok(names.includes('count'), 'numeric with non-zero values must remain');
+    });
+
+    it('skips string columns whose only LC-probed value is empty / whitespace / "0"', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('blank_text', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 1, lcValues: [''],
+          }),
+          col('whitespace', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 1, lcValues: ['   '],
+          }),
+          col('zero_text', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 1, lcValues: ['0'],
+          }),
+          col('useful', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 1, lcValues: ['active'],
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const names = cubes[0].dimensions.map((d) => d.name);
+      assert.ok(!names.includes('blank_text'));
+      assert.ok(!names.includes('whitespace'));
+      assert.ok(!names.includes('zero_text'));
+      assert.ok(names.includes('useful'), 'meaningful constant string should be kept');
+    });
+
+    it('keeps numeric column when min!==max even if min is 0', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('score', 'Float64', ColumnType.BASIC, ValueType.NUMBER, {
+            hasValues: true, uniqueValues: 10, minValue: 0, maxValue: 100,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const names = cubes[0].measures.map((m) => m.name);
+      assert.ok(names.includes('score'));
+    });
+
+    it('skips boolean column with single distinct value (always-true OR always-false)', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('always_false_flag', 'Bool', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, uniqueValues: 1,
+          }),
+          col('always_true_flag', 'Bool', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, uniqueValues: 1,
+          }),
+          col('mixed_flag', 'Bool', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, uniqueValues: 2,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const names = [
+        ...cubes[0].dimensions.map((d) => d.name),
+        ...cubes[0].measures.map((m) => m.name),
+      ];
+      assert.ok(!names.includes('always_false_flag'), 'always-same bool should be skipped');
+      assert.ok(!names.includes('always_true_flag'), 'always-same bool should be skipped');
+      assert.ok(names.includes('mixed_flag'), 'genuinely-varying bool should be kept');
+    });
+
+    it('skips Int8/Bool basic columns by min===max (initial profile has no uniqueValues)', () => {
+      // Reproduces the `customer_facing Int8 Min 0 Max 0 Avg 0` case: the
+      // profiler's initial pass writes min/max/avg for BOOLEAN scalars but
+      // doesn't compute uniqueValues — so the skip must be range-based too.
+      const t = makeTable({
+        columns: new Map([
+          col('customer_facing', 'Int8', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, minValue: 0, maxValue: 0, avgValue: 0,
+            // uniqueValues intentionally omitted — matches real profiler output
+          }),
+          col('always_one', 'Int8', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, minValue: 1, maxValue: 1, avgValue: 1,
+          }),
+          col('actually_used', 'Int8', ColumnType.BASIC, ValueType.BOOLEAN, {
+            hasValues: true, minValue: 0, maxValue: 1, avgValue: 0.3,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const names = [
+        ...cubes[0].dimensions.map((d) => d.name),
+        ...cubes[0].measures.map((m) => m.name),
+      ];
+      assert.ok(!names.includes('customer_facing'), 'all-zero Int8 should be skipped via min===max');
+      assert.ok(!names.includes('always_one'), 'all-one Int8 should be skipped via min===max');
+      assert.ok(names.includes('actually_used'), 'mixed Int8 should be kept');
+    });
+  });
+
   describe('max Map key limit enforcement', () => {
     it('should truncate Map keys when exceeding maxMapKeys', () => {
       // Create 10 keys but set limit to 3
@@ -165,9 +298,13 @@ describe('cubeBuilder – buildCubes', () => {
       const { cubes } = buildCubes(t, { maxMapKeys: 3 });
       const dimNames = cubes[0].dimensions.map((d) => d.name);
 
-      // Should have exactly 3 expanded fields + 1 native map accessor
-      const mapFields = dimNames.filter((n) => n.startsWith('big_map_'));
-      assert.strictEqual(mapFields.length, 4); // 3 expanded + big_map_map
+      // Resolver shortens unique keys → expanded keys land as their leaf
+      // names. Plus the native `big_map_map` accessor.
+      const allMapFields = cubes[0].dimensions.filter(
+        (d) => d.meta?.source_column === 'big_map'
+      );
+      assert.strictEqual(allMapFields.length, 4); // 3 expanded + big_map_map
+      assert.ok(dimNames.includes('big_map_map'));
     });
 
     it('should keep all keys when under the limit', () => {
@@ -182,8 +319,11 @@ describe('cubeBuilder – buildCubes', () => {
 
       const { cubes } = buildCubes(t, { maxMapKeys: 500 });
       const dimNames = cubes[0].dimensions.map((d) => d.name);
-      const mapFields = dimNames.filter((n) => n.startsWith('small_map_'));
-      assert.strictEqual(mapFields.length, 4); // 3 expanded + small_map_map
+      const allMapFields = cubes[0].dimensions.filter(
+        (d) => d.meta?.source_column === 'small_map'
+      );
+      assert.strictEqual(allMapFields.length, 4); // 3 expanded + small_map_map
+      assert.ok(dimNames.includes('small_map_map'));
     });
   });
 
@@ -261,5 +401,199 @@ describe('cubeBuilder – buildCubes', () => {
       assert.ok(!cubes[0].name.includes('-'));
       assert.ok(!cubes[0].name.includes('.'));
     });
+
+    it('should use the cubeName override when provided', () => {
+      const { cubes } = buildCubes(table, { cubeName: 'stockout_ended' });
+      assert.strictEqual(cubes[0].name, 'stockout_ended');
+    });
+  });
+});
+
+describe('cubeBuilder – shortest-unique field naming', () => {
+  function nestedCol(parent, child, valueType = ValueType.STRING) {
+    const name = `${parent}.${child}`;
+    return [name, {
+      name,
+      rawType: valueType === ValueType.NUMBER ? 'Float64' : 'String',
+      columnType: ColumnType.GROUPED,
+      valueType,
+      parentName: parent,
+      childName: child,
+      isNullable: false,
+      profile: { hasValues: true, uniqueValues: 5 },
+    }];
+  }
+
+  it('drops parent prefix from nested fields when the leaf is unique', () => {
+    const t = {
+      database: 'db',
+      table: 'events',
+      partition: null,
+      columns: new Map([
+        nestedCol('location', 'lat', ValueType.NUMBER),
+        nestedCol('location', 'lng', ValueType.NUMBER),
+      ]),
+    };
+    const { cubes } = buildCubes(t);
+    const all = [
+      ...cubes[0].dimensions.map((d) => d.name),
+      ...cubes[0].measures.map((m) => m.name),
+    ];
+    assert.ok(all.includes('lat'), `expected 'lat'. Got: ${JSON.stringify(all)}`);
+    assert.ok(all.includes('lng'));
+  });
+
+  it('keeps parent prefix on nested field when leaf clashes with a basic column', () => {
+    // `score` (basic NUMBER, doesn't match the coordinate regex) → measure.
+    // `metrics.score` (nested NUMBER) → also a measure. Same leaf → resolver
+    // forces the nested one to advance to `metrics_score`.
+    const t = {
+      database: 'db',
+      table: 'events',
+      partition: null,
+      columns: new Map([
+        ['score', {
+          name: 'score', rawType: 'Float64', columnType: ColumnType.BASIC, valueType: ValueType.NUMBER,
+          isNullable: false,
+          profile: { hasValues: true, minValue: 1, maxValue: 100, avgValue: 50 },
+        }],
+        nestedCol('metrics', 'score', ValueType.NUMBER),
+      ]),
+    };
+    const { cubes } = buildCubes(t);
+    const measureNames = cubes[0].measures.map((m) => m.name);
+    assert.ok(measureNames.includes('score'), `top-level score keeps the bare name. Got: ${JSON.stringify(measureNames)}`);
+    assert.ok(measureNames.includes('metrics_score'), `nested score falls back to metrics_score. Got: ${JSON.stringify(measureNames)}`);
+  });
+
+  it('falls back through deeper levels when multiple nested fields share a leaf and a parent', () => {
+    const t = {
+      database: 'db',
+      table: 'events',
+      partition: null,
+      columns: new Map([
+        nestedCol('commerce.products', 'id', ValueType.STRING),
+        nestedCol('commerce.shipping.products', 'id', ValueType.STRING),
+      ]),
+    };
+    const { cubes } = buildCubes(t);
+    const dimNames = cubes[0].dimensions.map((d) => d.name);
+    assert.ok(
+      dimNames.includes('commerce_products_id') || dimNames.includes('shipping_products_id'),
+      `expected qualified names. Got: ${JSON.stringify(dimNames)}`
+    );
+    // Both must be unique
+    assert.strictEqual(new Set(dimNames).size, dimNames.length, 'all dim names must be unique');
+  });
+
+  it('rebinds FILTER_PARAMS refs when a lookup-key dimension is shortened', () => {
+    // Build a synthetic nested group with a `_type` lookup key + one data sibling.
+    const t = {
+      database: 'db',
+      table: 'events',
+      partition: null,
+      columns: new Map([
+        ['commerce.products.entry_type', {
+          name: 'commerce.products.entry_type',
+          rawType: 'Array(String)',
+          columnType: ColumnType.GROUPED,
+          valueType: ValueType.STRING,
+          parentName: 'commerce.products',
+          childName: 'entry_type',
+          isNullable: false,
+          profile: {
+            hasValues: true, uniqueValues: 3,
+            lcValues: ['Line Item', 'Cart Item', 'Order'],
+          },
+        }],
+        ['commerce.products.value', {
+          name: 'commerce.products.value',
+          rawType: 'Array(String)',
+          columnType: ColumnType.GROUPED,
+          valueType: ValueType.STRING,
+          parentName: 'commerce.products',
+          childName: 'value',
+          isNullable: false,
+          profile: { hasValues: true, uniqueValues: 50 },
+        }],
+      ]),
+    };
+    const { cubes } = buildCubes(t);
+    const dimNames = cubes[0].dimensions.map((d) => d.name);
+    // Lookup-key dim should land on `type` (no clash for that name)
+    assert.ok(dimNames.includes('type'), `expected resolved 'type'. Got: ${JSON.stringify(dimNames)}`);
+    // Every FILTER_PARAMS ref in any dim sql must point at `type`, not the old name
+    for (const d of cubes[0].dimensions) {
+      if (typeof d.sql === 'string' && d.sql.includes('FILTER_PARAMS')) {
+        assert.ok(
+          d.sql.includes(`FILTER_PARAMS.${cubes[0].name}.type.`),
+          `FILTER_PARAMS ref should point at resolved 'type' dim. SQL: ${d.sql}`
+        );
+        assert.ok(
+          !d.sql.includes('commerce_products_type'),
+          `Old qualified ref must be rewritten. SQL: ${d.sql}`
+        );
+      }
+    }
+  });
+});
+
+describe('cubeBuilder – deriveCubeNameFromFlatFilters', () => {
+  it('returns empty for no filters', () => {
+    assert.strictEqual(deriveCubeNameFromFlatFilters([]), '');
+    assert.strictEqual(deriveCubeNameFromFlatFilters(null), '');
+  });
+
+  it('builds an identifier from a single equality filter value', () => {
+    const name = deriveCubeNameFromFlatFilters([
+      { column: 'event', operator: '=', value: 'Stockout Ended' },
+    ]);
+    assert.strictEqual(name, 'stockout_ended');
+  });
+
+  it('joins multiple filter values with underscores', () => {
+    const name = deriveCubeNameFromFlatFilters([
+      { column: 'event', operator: '=', value: 'Stockout Ended' },
+      { column: 'store_id', operator: '=', value: 42 },
+    ]);
+    assert.strictEqual(name, 'stockout_ended_42');
+  });
+
+  it('expands IN values', () => {
+    const name = deriveCubeNameFromFlatFilters([
+      { column: 'event', operator: 'IN', value: ['Order Placed', 'Order Shipped'] },
+    ]);
+    assert.strictEqual(name, 'order_placed_order_shipped');
+  });
+
+  it('ignores non-equality operators', () => {
+    assert.strictEqual(
+      deriveCubeNameFromFlatFilters([{ column: 'event', operator: '!=', value: 'X' }]),
+      ''
+    );
+    assert.strictEqual(
+      deriveCubeNameFromFlatFilters([{ column: 'event', operator: 'LIKE', value: '%foo%' }]),
+      ''
+    );
+    assert.strictEqual(
+      deriveCubeNameFromFlatFilters([{ column: 'event', operator: 'IS NULL', value: null }]),
+      ''
+    );
+  });
+
+  it('prefixes purely numeric names so they are valid identifiers', () => {
+    const name = deriveCubeNameFromFlatFilters([
+      { column: 'store_id', operator: '=', value: 42 },
+    ]);
+    assert.ok(!/^\d/.test(name));
+    assert.strictEqual(name, 'cube_42');
+  });
+
+  it('caps absurdly long names', () => {
+    const longValue = 'x'.repeat(200);
+    const name = deriveCubeNameFromFlatFilters([
+      { column: 'event', operator: '=', value: longValue },
+    ]);
+    assert.ok(name.length <= 60);
   });
 });

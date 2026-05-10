@@ -158,10 +158,14 @@ describe('buildWhereClause', () => {
     assert.equal(buildWhereClause('db', 'events', '', ['events']), '');
   });
 
-  it('returns empty string when internalTables is not an array', () => {
+  it('returns empty when internalTables is missing or non-array', () => {
+    // Current semantics: partition filter only applies when internalTables is
+    // a non-empty array that includes this table. Missing / non-array / empty
+    // allowlist means "no internal-table partition pushdown" — return ''.
     assert.equal(buildWhereClause('db', 'events', '2024-01', null), '');
     assert.equal(buildWhereClause('db', 'events', '2024-01', undefined), '');
     assert.equal(buildWhereClause('db', 'events', '2024-01', 'events'), '');
+    assert.equal(buildWhereClause('db', 'events', '2024-01', []), '');
   });
 
   it('returns empty string when table is not in internalTables', () => {
@@ -1039,9 +1043,12 @@ describe('profileTable — emitter', () => {
     await profileTable(driver, 'db', 'tbl', { emitter });
 
     const steps = events.map((e) => e.step);
-    assert.ok(steps.includes('init'));
-    assert.ok(steps.includes('initial_profile'));
-    assert.ok(steps.includes('profiling'));
+    // Current pass names from profiler.js: 'init' (DESCRIBE / metadata),
+    // 'initial_profile' (Pass 1), 'profiling' (Pass 2 deep), plus optional
+    // 'map_stats' / 'lc_probe' phases.
+    assert.ok(steps.includes('init'), `expected 'init' step. Got: ${JSON.stringify(steps)}`);
+    assert.ok(steps.includes('initial_profile'), `expected 'initial_profile'. Got: ${JSON.stringify(steps)}`);
+    assert.ok(steps.includes('profiling'), `expected 'profiling'. Got: ${JSON.stringify(steps)}`);
     assert.ok(events.length >= 4);
   });
 });
@@ -1170,5 +1177,108 @@ describe('profileTable — generated SQL', () => {
     assert.ok(deepSql, 'Expected deep profiling query for nested column');
     assert.ok(deepSql.includes('nested_field__'), 'Alias should replace dots with underscores');
     assert.ok(deepSql.includes('`nested.field`'), 'Column expression should use original name');
+  });
+
+  it('counts distinct ELEMENTS (uniqArray) for nested string array sub-columns', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'tags.name', type: 'Array(String)' }],
+      initialProfileRow: { row_count: 10, tags__max_length: 5 },
+      deepProfileResult: {
+        tags_name__value_rows: 8,
+        tags_name__distinct_count: 3,
+      },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const deepSql = driver.calls.find(
+      (s) => s.includes('tags_name__distinct_count')
+    );
+    assert.ok(deepSql, 'Expected deep profiling query for tags.name');
+    assert.ok(
+      deepSql.includes("uniqArray(arrayFilter(x -> x IS NOT NULL AND x != '', `tags.name`)) as tags_name__distinct_count"),
+      `Expected uniqArray(arrayFilter(NULL+empty filter)) for string arrays. Got SQL: ${deepSql}`
+    );
+    assert.ok(
+      !/uniq\(arrayFilter[^)]*`tags.name`/.test(deepSql),
+      'Should NOT use plain uniq() — counts distinct arrays, not elements'
+    );
+  });
+
+  it('counts distinct non-null ELEMENTS and emits min/max for nested numeric array sub-columns', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'scores.value', type: 'Array(Float64)' }],
+      initialProfileRow: { row_count: 10, scores__max_length: 5 },
+      deepProfileResult: {
+        scores_value__value_rows: 9,
+        scores_value__distinct_count: 7,
+        scores_value__min_value: 0,
+        scores_value__max_value: 100,
+      },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const deepSql = driver.calls.find(
+      (s) => s.includes('scores_value__distinct_count')
+    );
+    assert.ok(deepSql, 'Expected deep profiling query for scores.value');
+    assert.ok(
+      deepSql.includes('uniqArray(arrayFilter(x -> x IS NOT NULL, `scores.value`)) as scores_value__distinct_count'),
+      `Expected uniqArray(arrayFilter(IS NOT NULL)) for numeric arrays. Got: ${deepSql}`
+    );
+    assert.ok(
+      deepSql.includes('minArray(`scores.value`) as scores_value__min_value'),
+      'Expected minArray(...) for numeric arrays'
+    );
+    assert.ok(
+      deepSql.includes('maxArray(`scores.value`) as scores_value__max_value'),
+      'Expected maxArray(...) for numeric arrays'
+    );
+  });
+
+  it('counts value_rows by NON-NULL elements for boolean array sub-columns (parallel-length nested fix)', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'flags.active', type: 'Array(Nullable(Bool))' }],
+      initialProfileRow: { row_count: 100, flags__max_length: 1 },
+      deepProfileResult: {
+        flags_active__value_rows: 0,
+        flags_active__distinct_count: 0,
+      },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const deepSql = driver.calls.find(
+      (s) => s.includes('flags_active__value_rows')
+    );
+    assert.ok(deepSql, 'Expected deep profiling query for flags.active');
+    assert.ok(
+      deepSql.includes('countIf(length(arrayFilter(x -> x IS NOT NULL, `flags.active`)) > 0) as flags_active__value_rows'),
+      `value_rows must filter non-null elements (so all-NULL nested fields don't read as populated). Got: ${deepSql}`
+    );
+    assert.ok(
+      !/length\(`flags.active`\) > 0\) as flags_active__value_rows/.test(deepSql),
+      'Should NOT use raw length(col) — that just measures parallel-array length, not signal'
+    );
+  });
+
+  it('numeric array value_rows excludes all-zero rows (so all-zero nested numerics get hasValues=false)', async () => {
+    const driver = createMockDriver({
+      describeRows: [{ name: 'amounts.fee', type: 'Array(Float64)' }],
+      initialProfileRow: { row_count: 100, amounts__max_length: 1 },
+      deepProfileResult: { amounts_fee__value_rows: 0 },
+    });
+
+    await profileTable(driver, 'db', 'tbl');
+
+    const deepSql = driver.calls.find(
+      (s) => s.includes('amounts_fee__value_rows')
+    );
+    assert.ok(deepSql);
+    assert.ok(
+      deepSql.includes('countIf(length(arrayFilter(x -> x IS NOT NULL AND x != 0, `amounts.fee`)) > 0) as amounts_fee__value_rows'),
+      `numeric array value_rows must require at least one non-null non-zero element. Got: ${deepSql}`
+    );
   });
 });
