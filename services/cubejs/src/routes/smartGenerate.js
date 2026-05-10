@@ -884,6 +884,29 @@ export default async (req, res, cubejs) => {
       cubejs.compilerCache.purgeStale();
     }
 
+    // Pre-warm the compiler cache for the new version. The editor's first
+    // action after a save is to refetch metaConfig — without warm-up that
+    // refetch hits a cold compile (often 15-30s on real schemas) and the
+    // user sees a "save timed out" toast even though the save succeeded.
+    //
+    // Fire-and-forget: we don't await it. If it errors out we log and move
+    // on; the next user-facing fetch will trigger compile as a fallback.
+    if (result?.id) {
+      const warmContext = { ...securityContext };
+      const warmRequestId = `prewarm-${result.id}`;
+      Promise.resolve()
+        .then(async () => {
+          const apiGateway = cubejs.apiGateway?.();
+          if (!apiGateway) return;
+          const ctx = await apiGateway.contextByReq(req, warmContext, warmRequestId);
+          const compilerApi = await apiGateway.getCompilerApi(ctx);
+          await compilerApi.metaConfig(ctx, { requestId: warmRequestId });
+        })
+        .catch((err) => {
+          console.warn(`[smartGenerate] cache pre-warm failed (non-fatal): ${err?.message || err}`);
+        });
+    }
+
     const { summary } = cubeResult;
     const payload = {
       code: 'ok',
