@@ -39,6 +39,11 @@ actions:
       kind: ""
       handler: '{{ACTIONS_URL}}/rpc/fetch_meta'
       forward_client_headers: true
+      # Cube.js compile of a fresh branch can take 25-30s on schemas with many
+      # cubes. The default 30s webhook timeout was racing the compile and
+      # surfacing as "save timeout" in the UI (the editor re-fetches meta
+      # immediately after saving, hitting a cold cache). 120s gives headroom.
+      timeout: 120
     permissions:
       - role: user
   - name: fetch_tables
