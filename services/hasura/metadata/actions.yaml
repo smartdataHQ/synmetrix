@@ -1,9 +1,21 @@
 actions:
+  # Convention: every action sets an explicit `timeout`. Without one Hasura
+  # defaults to 30s, which is too short for compile/profile paths and too
+  # generous for trivial mutations. Bands:
+  #   10s   — local-only sync mutations that should never block on I/O
+  #   30s   — DB-bound mutations / lookups against well-warmed tables
+  #   60s   — read paths that may touch ClickHouse system tables or
+  #           generate SQL across the whole cube graph
+  #   120s  — Cube.js compile-bound queries (cold cache hits 14-30s p99)
+  #   180s  — first-time table introspection / multi-step gen flows
+  #   300s  — long-running profiling, LLM-driven generation, big query
+  #           runs against analytical stores
   - name: check_connection
     definition:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/check_connection'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: create_events
@@ -19,12 +31,14 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/create_team'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: export_data_models
     definition:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/export_data_models'
+      timeout: 60
     permissions:
       - role: user
   - name: fetch_dataset
@@ -32,6 +46,7 @@ actions:
       kind: ""
       handler: '{{ACTIONS_URL}}/rpc/fetch_dataset'
       forward_client_headers: true
+      timeout: 60
     permissions:
       - role: user
   - name: fetch_meta
@@ -39,6 +54,9 @@ actions:
       kind: ""
       handler: '{{ACTIONS_URL}}/rpc/fetch_meta'
       forward_client_headers: true
+      # Cube.js compile of a cold schema can run 14-30s; default 30s was
+      # racing the compile and surfacing as "save timeout" in the editor.
+      timeout: 120
     permissions:
       - role: user
   - name: fetch_tables
@@ -62,6 +80,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/gen_sql'
       forward_client_headers: true
+      timeout: 60
     permissions:
       - role: user
   - name: invite_team_member
@@ -69,6 +88,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/invite_team_member'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: pre_aggregation_preview
@@ -76,12 +96,14 @@ actions:
       kind: ""
       handler: '{{ACTIONS_URL}}/rpc/pre_aggregation_preview'
       forward_client_headers: true
+      timeout: 60
     permissions:
       - role: user
   - name: pre_aggregations
     definition:
       kind: ""
       handler: '{{ACTIONS_URL}}/rpc/pre_aggregations'
+      timeout: 60
     permissions:
       - role: user
   - name: run_query
@@ -89,6 +111,10 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/run_query'
       forward_client_headers: true
+      # User queries against analytical stores can be slow on cold caches
+      # / large scans. 300s matches the longest-running Cube.js queries
+      # we've observed; queries beyond that should time out anyway.
+      timeout: 300
     permissions:
       - role: user
   - name: profile_table
@@ -96,7 +122,10 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/profileTable'
       forward_client_headers: true
-      timeout: 180
+      # Profiling does multiple ClickHouse passes (DESCRIBE, distinct counts,
+      # LC probes, map key enumeration, nested-array stats). On large tables
+      # the LC probe alone can take a couple of minutes.
+      timeout: 300
     permissions:
       - role: user
   - name: smart_gen_dataschemas
@@ -120,6 +149,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/listAllTeams'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: manage_query_rewrite_rule
@@ -127,6 +157,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/manageQueryRewriteRule'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: update_member_properties
@@ -134,6 +165,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/updateMemberProperties'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: update_team_properties
@@ -141,6 +173,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/updateTeamProperties'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
   - name: copy_datasource
@@ -148,6 +181,9 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/copyDatasource'
       forward_client_headers: true
+      # Copy fans out to fetch + recreate datasource configs and may
+      # backfill schemas; budget enough headroom for the slowest path.
+      timeout: 60
     permissions:
       - role: user
   - name: provision_default_datasources
@@ -163,6 +199,7 @@ actions:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/send_test_alert'
       forward_client_headers: true
+      timeout: 30
     permissions:
       - role: user
 custom_types:
