@@ -163,6 +163,11 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
       signal = timeoutSignal(180 * 1000);
     }
 
+    // per-team reconcile worker: 120s budget (probe-dominated, 013)
+    if (route === "/internal/reconcile-team") {
+      signal = timeoutSignal(120 * 1000);
+    }
+
     if (method === "get") {
       res = await fetch(url, {
         headers: reqHeaders,
@@ -305,6 +310,13 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
     smartGenerate: (params) => {
       return fetchCubeJS({
         route: "/smart-generate",
+        method: "post",
+        params,
+      });
+    },
+    reconcileTeam: (params) => {
+      return fetchCubeJS({
+        route: "/internal/reconcile-team",
         method: "post",
         params,
       });

@@ -3,6 +3,7 @@ import { createTeamMember, OWNER_ROLE } from "./inviteTeamMember.js";
 import apiError from "../utils/apiError.js";
 import { fetchGraphQL } from "../utils/graphql.js";
 import { provisionDefaultDatasources } from "../utils/provisionDefaultDatasources.js";
+import { fireTeamReconcileHook } from "../utils/defaultModels/shared.js";
 
 const createTeamMutation = `
   mutation ($user_id: uuid, $name: String) {
@@ -60,6 +61,10 @@ export default async (session, input) => {
     await fetchGraphQL(updateAssetsMutation, { teamId, userId });
 
     await provisionDefaultDatasources({ teamId, userId });
+
+    // fire-and-forget: default-models onboarding reconcile (FR-002, SC-001);
+    // failure is recovered by the scheduled backfill
+    fireTeamReconcileHook(teamId);
 
     return newTeam;
   } catch (err) {

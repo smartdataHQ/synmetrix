@@ -116,9 +116,19 @@ Docker Compose files per environment: `docker-compose.dev.yml`, `docker-compose.
   - `deleteDataschema.js` (DELETE /api/v1/dataschema/:id, US3)
   - `metaSingleCube.js` (GET /api/v1/meta/cube/:cubeName, US4)
   - `versionDiff.js` + `versionRollback.js` (POST /api/v1/version/{diff,rollback}, US5)
+- `services/cubejs/src/routes/reconcileTeam.js` — POST /api/v1/internal/reconcile-team: per-team default-models worker (013 — probe→generate→merge→validate→publish, system-user only)
+- `services/cubejs/src/utils/queryPreprocessor.js` — pre-gateway middleware for default-model queries (013 FR-015; mounted before `cubejs.initApp`)
+- `services/cubejs/src/utils/defaultModelRules.js` — fixed R1/R2/R3 rule set (canonical translation + scope injection + dynamic map-key slot rewrite, 013 FR-016 / 014 FR-001)
+- `services/cubejs/src/utils/defaultModelMeta.js` — datasource-first, tenancy-cross-checked derived-model member-map + slot registry resolution (013/014)
+- `services/cubejs/src/routes/dynamicMeta.js` — POST /api/v1/meta/dynamic: filter-scoped map/JSON property discovery, cube-meta-shaped, TTL-cached (014 FR-005)
+- `services/cubejs/src/utils/dynamicPropertyProbe.js` — map/JSON probe SQL builders + member shaping + probe cache (014)
+- `services/cubejs/src/utils/smart-generation/templateMerger.js` — template-provenance three-class merge (013 FR-011/FR-012)
+- `services/actions/src/rpc/{reconcileDefaultModels,reconcileTeamDefaultModels,getDefaultModelsReport}.js` — default-models orchestrator/single-team/report RPCs (013; cron-secret or portal-admin gated)
+- `services/actions/src/utils/defaultModels/` — config, cohorts, drift, runReporter, shared helpers (013)
+- `services/hasura/migrations/1783381844000_create_reconciliation_runs/` — reconciliation_runs table (013; admin-only, no `user`-role permissions)
 - `services/hasura/metadata/actions.yaml` — GraphQL action definitions (maps to Actions RPC)
 - `services/hasura/metadata/tables.yaml` — Table definitions, relationships, and permissions
-- `services/hasura/metadata/cron_triggers.yaml` — Cron triggers (now includes `audit_logs_retention_90d`)
+- `services/hasura/metadata/cron_triggers.yaml` — Cron triggers (now includes `audit_logs_retention_90d` and `reconcile_default_models` — */15, cron-secret header)
 - `services/hasura/migrations/` — 97+ SQL migration directories
 - `scripts/lint-error-codes.mjs` — Fails CI when FR-017 error-code enum drifts across contracts
 - `tests/workflows/model-management/` — StepCI workflows + SC-003 fixtures for all six endpoints
@@ -292,6 +302,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL via Hasura (versions, dataschemas), ClickHouse (profiling target — read-only) (010-dynamic-models-ii)
 - JavaScript (ES modules), Node.js 22.x (already current in cubejs service after 003-update-deps) + `@cubejs-backend/schema-compiler` ^1.6.19 (existing; `prepareCompiler` powers validation), `@cubejs-backend/server-core` ^1.6.19 (existing; exposes `cubejs.compilerCache` LRU-cache), `@cubejs-backend/api-gateway` ^1.6.19 (existing; `getCompilerApi` + `filterVisibleItemsInMeta`), `jose` (existing; FraiOS/WorkOS JWT verification), Express 4.x (existing router). No new dependencies. (011-model-mgmt-api)
 - PostgreSQL via Hasura (existing `dataschemas`, `versions`, `branches` tables — one new Hasura delete-permission migration on `dataschemas`). In-memory LRU compiler cache inside the cubejs process (existing). No new tables. (011-model-mgmt-api)
+- JavaScript (ES modules), Node.js 22.x (CubeJS service), Node.js 18+ (Actions service) + Cube.js v1.6.x (`@cubejs-backend/server-core`, `schema-compiler`, `api-gateway` — all existing), Express 4.18.2 (existing), `yaml` ^2.3.4 (existing), Hasura v2 (existing). **No new npm dependencies.** (013-mature-default-models)
+- PostgreSQL via Hasura — existing `datasources`, `branches`, `versions`, `dataschemas`, `teams.settings`, `query_rewrite_rules`; ONE new table `reconciliation_runs` + one new `team.settings` key. ClickHouse: probe target, read-only. (013-mature-default-models)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

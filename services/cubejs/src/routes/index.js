@@ -42,6 +42,8 @@ import testConnection from "./testConnection.js";
 import deleteDataschema from "./deleteDataschema.js";
 import metaSingleCube from "./metaSingleCube.js";
 import refreshCompiler from "./refreshCompiler.js";
+import reconcileTeam from "./reconcileTeam.js";
+import dynamicMeta from "./dynamicMeta.js";
 import validate from "./validate.js";
 import validateInBranch from "./validateInBranch.js";
 import versionDiff from "./versionDiff.js";
@@ -299,6 +301,18 @@ export default ({ basePath, cubejs }) => {
   // Model Management API: compiler-cache refresh (US2). Owner/admin only.
   router.post(`${basePath}/v1/internal/refresh-compiler`, async (req, res) =>
     refreshCompiler(req, res, cubejs)
+  );
+
+  // Default Models (013): per-team reconcile worker. System-user only.
+  router.post(`${basePath}/v1/internal/reconcile-team`, async (req, res) =>
+    reconcileTeam(req, res, cubejs)
+  );
+
+  // Dynamic Map/JSON access (014): filter-scoped property discovery.
+  router.post(
+    `${basePath}/v1/meta/dynamic`,
+    checkAuthMiddleware,
+    async (req, res) => dynamicMeta(req, res, cubejs)
   );
 
   // Model Management API: delete a single dataschema (US3). Owner/admin only.

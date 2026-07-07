@@ -78,8 +78,9 @@ function formatField(field) {
     ...field.meta,
   };
 
-  // AI-generated fields keep their own metadata — don't stamp auto_generated
-  if (!meta.ai_generated) {
+  // AI-generated and template-owned fields keep their own provenance —
+  // don't stamp auto_generated (from_template is a distinct class, 013)
+  if (!meta.ai_generated && !meta.from_template) {
     meta.auto_generated = true;
   }
 

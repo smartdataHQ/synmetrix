@@ -11,6 +11,7 @@ import { logging } from "./src/utils/logging.js";
 import { checkAuth } from "./src/utils/checkAuth.js";
 import checkSqlAuth from "./src/utils/checkSqlAuth.js";
 import driverFactory from "./src/utils/driverFactory.js";
+import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts from "./src/utils/scheduledRefreshContexts.js";
@@ -96,6 +97,14 @@ const file = fs.readFileSync("./src/swagger.yaml", "utf8");
 const swaggerDocument = YAML.parse(file);
 
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+// Default-models query pre-processor (013, FR-015): MUST run before all
+// gateway processing — including Joi normalizeQuery — which is why it is
+// mounted ahead of cubejs.initApp. Fails open to gateway auth on any error.
+app.use(
+  ["/api/v1/load", "/api/v1/dry-run", "/api/v1/sql"],
+  createQueryPreprocessor()
+);
 
 app.use(routes({ basePath, cubejs }));
 

@@ -1504,6 +1504,231 @@ export function buildCubes(profiledTable, options = {}) {
   };
 }
 
+// -- Template mode (013 default models) -------------------------------------
+
+/**
+ * Probe fields safe for derived default models (013): FILTER_PARAMS lookup
+ * dimensions and jinja-templated SQL require runtime features the per-team
+ * validation gate (standalone prepareCompiler) cannot compile — and default
+ * models must stay plainly queryable for every team. Such fields are simply
+ * not carried into derived models.
+ */
+export const isTemplateSafeProbeField = (field) => {
+  const sql = String(field?.sql || '');
+  return !sql.includes('FILTER_PARAMS') && !sql.includes('{%');
+};
+
+/**
+ * Cube's YAML compiler expression-evaluates `{...}` in EVERY string scalar of
+ * the document — descriptions, meta values, even sampled data values the
+ * profiler embeds (lc_values, unique_keys). Those strings are prose/data, not
+ * expressions, and in the wild they contain literal braces (column comments
+ * documenting `{FILTER_PARAMS...}`, stored LLM chat text, ...). Deep-walk the
+ * assembled cube and replace braces with parentheses in every string EXCEPT
+ * `sql` values, which legitimately use `{CUBE}` references — so derived
+ * models always compile.
+ */
+export const sanitizeCubeProse = (node, key = null) => {
+  if (typeof node === 'string') {
+    if (key === 'sql' || !/[{}]/.test(node)) return node;
+    return node.replace(/\{/g, '(').replace(/\}/g, ')');
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => sanitizeCubeProse(item, key));
+  }
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      out[k] = sanitizeCubeProse(v, k);
+    }
+    return out;
+  }
+  return node;
+};
+
+/**
+ * Build one derived-model cube from a global template plus a team's profile.
+ *
+ * Template-owned fields are stamped `meta.from_template: true` (a provenance
+ * class distinct from `auto_generated` — the template merger converges these
+ * on every reconciliation). Probe-derived fields come from the ordinary
+ * buildCubes() output and keep `meta.auto_generated`. Cube-level provenance
+ * (`default_model`, `template`, `template_checksum`) drives reconciliation
+ * matching, collision detection and the query pre-processor.
+ *
+ * Skeleton mode (empty/missing profile): template structure only — still
+ * provenance-stamped and partition-scoped, so the model stays valid and
+ * queryable for data-less teams (spec US1 #4).
+ *
+ * @param {object} templateCube - Parsed template cube definition
+ * @param {object|null} profiledTable - profileTable() output for the team's
+ *   partition slice, or null when probing was impossible
+ * @param {object} options - { partition, internalTables, templateName,
+ *   templateChecksum }
+ * @returns {{ cube: object, skeleton: boolean }}
+ */
+export function buildCubesFromTemplate(templateCube, profiledTable, options = {}) {
+  const {
+    partition = null,
+    internalTables = [],
+    templateName,
+    templateChecksum = null,
+  } = options;
+
+  const stampTemplateField = (field) => {
+    const meta = { ...(field.meta || {}) };
+    // template-owned supersedes any stray generation marker
+    delete meta.auto_generated;
+    meta.from_template = true;
+    return { ...field, meta };
+  };
+
+  const templateDims = (templateCube.dimensions || []).map(stampTemplateField);
+  const templateMeasures = (templateCube.measures || []).map(stampTemplateField);
+  const templateSegments = (templateCube.segments || []).map(stampTemplateField);
+
+  const skeleton = !profiledTable || (profiledTable.row_count || 0) === 0;
+
+  // Derive schema/table from the template's source for partition scoping
+  const qualifiedTable = templateCube.sql_table || null;
+  let schema = null;
+  let table = null;
+  if (qualifiedTable) {
+    const parts = qualifiedTable.split('.');
+    table = parts.pop();
+    schema = parts.join('.') || null;
+  }
+  const isInternal = table ? internalTables.includes(table) : false;
+
+  let source;
+  if (qualifiedTable) {
+    source = buildCubeSource(schema, table, partition, isInternal, [], []);
+  } else if (templateCube.sql) {
+    // custom-SQL template: wrap so the scope literal still applies
+    source = partition
+      ? { sql: `SELECT * FROM (${templateCube.sql}) WHERE partition = '${partition}'` }
+      : { sql: templateCube.sql };
+  } else {
+    source = {};
+  }
+
+  const templateFieldNames = new Set(
+    [...templateDims, ...templateMeasures, ...templateSegments].map((f) => f.name)
+  );
+
+  let dimensions = [...templateDims];
+  let measures = [...templateMeasures];
+
+  // field_policy: explicit (014 FR-008/FR-010) — the template's declared
+  // registry IS the member set: the probe only PRUNES registry members whose
+  // key/path is absent from the team's data, and adds NOTHING. Skeletons keep
+  // the full registry (013 skeleton semantics); unknown presence (column or
+  // paths not probed) keeps the member — pruning requires positive evidence
+  // of absence.
+  if (templateCube.meta?.field_policy === 'explicit') {
+    const presentMapKeys = new Map(); // column -> Set(observed keys)
+    if (!skeleton && profiledTable?.columns) {
+      for (const [columnName, details] of profiledTable.columns) {
+        const keys = details?.profile?.uniqueKeys;
+        if (Array.isArray(keys) && keys.length > 0) {
+          presentMapKeys.set(columnName, new Set(keys));
+        }
+      }
+    }
+    const presentJsonPaths =
+      !skeleton && profiledTable?.jsonPaths instanceof Set
+        ? profiledTable.jsonPaths
+        : null;
+
+    const keepRegistryMember = (field) => {
+      const registryKey = field?.meta?.registry_key;
+      if (registryKey) {
+        if (skeleton) return true;
+        const dot = registryKey.indexOf('.');
+        const column = registryKey.slice(0, dot);
+        const key = registryKey.slice(dot + 1);
+        const observed = presentMapKeys.get(column);
+        return observed ? observed.has(key) : true;
+      }
+      const registryPath = field?.meta?.registry_path;
+      if (registryPath) {
+        if (skeleton || !presentJsonPaths) return true;
+        const match = /^[A-Za-z_][A-Za-z0-9_]*\.(.+?)\s*(?:\(|$)/.exec(registryPath);
+        const path = match ? match[1].trim() : registryPath;
+        return presentJsonPaths.has(path);
+      }
+      return true; // non-registry template members (slots, partition, count…)
+    };
+
+    const cube = sanitizeCubeProse({
+      name: templateCube.name,
+      ...(templateCube.title ? { title: templateCube.title } : {}),
+      ...(templateCube.description
+        ? { description: templateCube.description }
+        : {}),
+      ...source,
+      meta: {
+        ...(templateCube.meta || {}),
+        default_model: true,
+        template: templateName,
+        template_checksum: templateChecksum,
+      },
+      dimensions: templateDims.filter(keepRegistryMember),
+      measures: templateMeasures.filter(keepRegistryMember),
+      ...(templateSegments.length > 0
+        ? { segments: templateSegments.filter(keepRegistryMember) }
+        : {}),
+    });
+
+    return { cube, skeleton };
+  }
+
+  if (!skeleton) {
+    const { cubes: probeCubes } = buildCubes(profiledTable, {
+      partition,
+      internalTables,
+      cubeName: templateCube.name,
+    });
+    const probeCube = probeCubes[0];
+    if (probeCube) {
+      // probe source already carries the baked partition scoping
+      if (probeCube.sql || probeCube.sql_table) {
+        source = probeCube.sql
+          ? { sql: probeCube.sql }
+          : { sql_table: probeCube.sql_table };
+      }
+      dimensions = dimensions.concat(
+        (probeCube.dimensions || []).filter(
+          (f) => !templateFieldNames.has(f.name) && isTemplateSafeProbeField(f)
+        )
+      );
+      measures = measures.concat(
+        (probeCube.measures || []).filter(
+          (f) => !templateFieldNames.has(f.name) && isTemplateSafeProbeField(f)
+        )
+      );
+    }
+  }
+
+  const cube = sanitizeCubeProse({
+    name: templateCube.name,
+    ...(templateCube.title ? { title: templateCube.title } : {}),
+    ...(templateCube.description ? { description: templateCube.description } : {}),
+    ...source,
+    meta: {
+      ...(templateCube.meta || {}),
+      default_model: true,
+      template: templateName,
+      template_checksum: templateChecksum,
+    },
+    dimensions,
+    measures,
+    ...(templateSegments.length > 0 ? { segments: templateSegments } : {}),
+  });
+
+  return { cube, skeleton };
+}
+
 // -- AI metric merging ------------------------------------------------------
 
 /** Default model identifier used for AI metric attribution. */

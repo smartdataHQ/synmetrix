@@ -1,0 +1,767 @@
+version: "1.1"
+name: Dynamic Map/JSON access — slots, rewrite, discovery (014)
+# US1: Cube.<map>.<key> rewritten onto declared parameter slots pre-validation.
+# Assertions use /dry-run normalizedQueries (deterministic without data);
+# real-value verification happens in the T120 walkthrough against a data-bearing
+# partition. Extended by T114 (discovery) and T117 (explicit templates).
+env:
+  templateTeamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+  templateBranchId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+tests:
+  dynamic_key_slots:
+    steps:
+      - name: seed_system_user
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!) {
+                insert_users_one(
+                  object: { id: $id, display_name: "Synmetrix System" }
+                  on_conflict: { constraint: users_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_team
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $userId: uuid!) {
+                insert_teams_one(
+                  object: { id: $id, name: "StepCI Template Owners", user_id: $userId }
+                  on_conflict: { constraint: teams_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.templateTeamId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_datasource
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $teamId: uuid!, $userId: uuid!) {
+                insert_datasources_one(
+                  object: {
+                    id: $id
+                    team_id: $teamId
+                    user_id: $userId
+                    name: "Global Templates"
+                    db_type: "CLICKHOUSE"
+                    db_params: { host: "100.87.250.36", port: "8123", user: "admin", database: "cst", ssl: false }
+                  }
+                  on_conflict: { constraint: datasources_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              teamId: ${{env.templateTeamId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_branch
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $datasourceId: uuid!, $userId: uuid!) {
+                insert_branches_one(
+                  object: { id: $id, datasource_id: $datasourceId, user_id: $userId, name: "main", status: active }
+                  on_conflict: { constraint: branches_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.templateBranchId}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: publish_slot_template
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!, $datasourceId: uuid!, $code: String!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-dynamic-v1"
+                  dataschemas: { data: [{
+                    name: "semantic_events.yml"
+                    code: $code
+                    user_id: $userId
+                    datasource_id: $datasourceId
+                  }] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{env.templateBranchId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              code: |
+                cubes:
+                  - name: SemanticEvents
+                    sql_table: cst.semantic_events
+                    meta:
+                      default_model: true
+                      template: semantic_events
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                      - name: dim_key_a
+                        sql: "{FILTER_PARAMS.SemanticEvents.dim_key_a.filter(lambda v: v)}"
+                        type: string
+                        public: false
+                        meta:
+                          from_template: true
+                          param_slot: {map: dimensions, role: key, slot: a}
+                      - name: dim_value_a
+                        sql: "{CUBE}.dimensions[{FILTER_PARAMS.SemanticEvents.dim_key_a.filter(lambda v: v)}]"
+                        type: string
+                        meta:
+                          from_template: true
+                          param_slot: {map: dimensions, role: value, slot: a}
+                      - name: dim_key_b
+                        sql: "{FILTER_PARAMS.SemanticEvents.dim_key_b.filter(lambda v: v)}"
+                        type: string
+                        public: false
+                        meta:
+                          from_template: true
+                          param_slot: {map: dimensions, role: key, slot: b}
+                      - name: dim_value_b
+                        sql: "{CUBE}.dimensions[{FILTER_PARAMS.SemanticEvents.dim_key_b.filter(lambda v: v)}]"
+                        type: string
+                        meta:
+                          from_template: true
+                          param_slot: {map: dimensions, role: value, slot: b}
+                      - name: metric_key_a
+                        sql: "{FILTER_PARAMS.SemanticEvents.metric_key_a.filter(lambda v: v)}"
+                        type: string
+                        public: false
+                        meta:
+                          from_template: true
+                          param_slot: {map: metrics, role: key, slot: a}
+                    measures:
+                      - name: count
+                        type: count
+                        meta:
+                          from_template: true
+                      - name: metric_sum_a
+                        sql: "CAST({CUBE}.metrics[{FILTER_PARAMS.SemanticEvents.metric_key_a.filter(lambda v: v)}] AS Float64)"
+                        type: sum
+                        meta:
+                          from_template: true
+                          param_slot: {map: metrics, role: value, slot: a, agg: sum}
+          check:
+            status: 200
+
+      - name: register_owner
+        http:
+          url: ${{env.HASURA_PLUS_ENDPOINT}}/auth/register
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            email: dm-dyn-${{env.RUN_SEED}}@example.com
+            password: StepCI-dm-1234
+            cookie: false
+          captures:
+            accessToken:
+              jsonpath: $.jwt_token
+          check:
+            status: 200
+
+      - name: whoami
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          graphql:
+            query: |
+              query { users { id } }
+          captures:
+            userId:
+              jsonpath: $.data.users[0].id
+          check:
+            status: 200
+
+      - name: create_team
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation { create_team(name: "dm-dyn-team-${{env.RUN_SEED}}") { id } }
+          captures:
+            teamId:
+              jsonpath: $.data.create_team.id
+          check:
+            status: 200
+
+      - name: set_team_partition
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($teamId: uuid!) {
+                update_teams_by_pk(
+                  pk_columns: { id: $teamId }
+                  _append: { settings: { partition: "stepci.dyn-${{env.RUN_SEED}}" } }
+                ) { id }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+          check:
+            status: 200
+
+      - name: reconcile_team
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamId}}
+              trigger: manual
+          check:
+            status: 200
+            jsonpath:
+              $.outcomes[0].template:
+                - eq: semantic_events
+
+      - name: resolve_target_datasource
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($teamId: uuid!, $name: String!) {
+                datasources(where: { team_id: { _eq: $teamId }, name: { _eq: $name } }, limit: 1) { id }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+              name: ${{env.DEFAULT_MODELS_TARGET_DATASOURCE_NAME}}
+          captures:
+            targetDatasourceId:
+              jsonpath: $.data.datasources[0].id
+          check:
+            status: 200
+
+      # --- single dynamic key: rewritten to slot a + key filter (FR-001/FR-004)
+      - name: dynamic_key_rewrite
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/dry-run
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            query:
+              measures: ["SemanticEvents.count"]
+              dimensions: ["SemanticEvents.dimensions.outcome"]
+          check:
+            status: 200
+            jsonpath:
+              $.normalizedQueries[0].dimensions[0]:
+                - eq: SemanticEvents.dim_value_a
+              $.normalizedQueries[0].filters[0].member:
+                - eq: SemanticEvents.dim_key_a
+              $.normalizedQueries[0].filters[0].values[0]:
+                - eq: outcome
+
+      # --- two keys, independent slots (SC-004; sorted: outcome→a, urgency→b)
+      - name: two_keys_independent_slots
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/dry-run
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            query:
+              measures: ["SemanticEvents.metrics.duration"]
+              dimensions:
+                - "SemanticEvents.dimensions.urgency"
+                - "SemanticEvents.dimensions.outcome"
+          check:
+            status: 200
+            jsonpath:
+              $.normalizedQueries[0].dimensions[0]:
+                - eq: SemanticEvents.dim_value_b
+              $.normalizedQueries[0].dimensions[1]:
+                - eq: SemanticEvents.dim_value_a
+              $.normalizedQueries[0].measures[0]:
+                - eq: SemanticEvents.metric_sum_a
+
+      # --- executable end-to-end (empty partition ⇒ empty rows, but 200)
+      - name: dynamic_key_load_executes
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/load
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            query:
+              measures: ["SemanticEvents.count"]
+              dimensions: ["SemanticEvents.dimensions.outcome"]
+          check:
+            status: 200
+
+      # --- slot exhaustion: 3 keys, 2 slots (FR-003)
+      - name: slots_exhausted
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/dry-run
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            query:
+              dimensions:
+                - "SemanticEvents.dimensions.outcome"
+                - "SemanticEvents.dimensions.urgency"
+                - "SemanticEvents.dimensions.channel"
+          check:
+            status: 400
+            jsonpath:
+              $.code:
+                - eq: DYNAMIC_KEY_SLOTS_EXHAUSTED
+              $.map:
+                - eq: dimensions
+              $.slots:
+                - eq: 2
+
+      # =================================================================
+      # US2 — dynamic property discovery (T114)
+      # =================================================================
+
+      # fresh empty team: discovery answers with an EMPTY directory, not an error
+      - name: discovery_empty_team
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/meta/dynamic
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            cube: SemanticEvents
+          check:
+            status: 200
+            jsonpath:
+              $.freshness.ttlMs:
+                - isNumber: true
+              $.freshness.cached:
+                - eq: false
+              $.totalRows:
+                - eq: 0
+
+      # --- team B on a DATA-BEARING partition (elko.is): real directory
+      - name: register_owner_b
+        http:
+          url: ${{env.HASURA_PLUS_ENDPOINT}}/auth/register
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            email: dm-dyn-b-${{env.RUN_SEED}}@example.com
+            password: StepCI-dm-1234
+            cookie: false
+          captures:
+            tokenB:
+              jsonpath: $.jwt_token
+          check:
+            status: 200
+
+      - name: whoami_b
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.tokenB}}
+          graphql:
+            query: |
+              query { users { id } }
+          captures:
+            userB:
+              jsonpath: $.data.users[0].id
+          check:
+            status: 200
+
+      - name: create_team_b
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.tokenB}}
+            x-hasura-user-id: ${{captures.userB}}
+          graphql:
+            query: |
+              mutation { create_team(name: "dm-dyn-team-b-${{env.RUN_SEED}}") { id } }
+          captures:
+            teamB:
+              jsonpath: $.data.create_team.id
+          check:
+            status: 200
+
+      - name: set_team_b_partition_elko
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($teamId: uuid!) {
+                update_teams_by_pk(
+                  pk_columns: { id: $teamId }
+                  _append: { settings: { partition: "elko.is" } }
+                ) { id }
+              }
+            variables:
+              teamId: ${{captures.teamB}}
+          check:
+            status: 200
+
+      - name: reconcile_team_b
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamB}}
+              trigger: manual
+          check:
+            status: 200
+
+      - name: resolve_target_b
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($teamId: uuid!, $name: String!) {
+                datasources(where: { team_id: { _eq: $teamId }, name: { _eq: $name } }, limit: 1) { id }
+              }
+            variables:
+              teamId: ${{captures.teamB}}
+              name: ${{env.DEFAULT_MODELS_TARGET_DATASOURCE_NAME}}
+          captures:
+            targetB:
+              jsonpath: $.data.datasources[0].id
+          check:
+            status: 200
+
+      # event-filtered discovery lists that event's real keys, member-shaped
+      - name: discovery_event_scoped
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/meta/dynamic
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.tokenB}}
+            x-hasura-datasource-id: ${{captures.targetB}}
+          json:
+            cube: SemanticEvents
+            filters:
+              - member: SemanticEvents.event
+                operator: equals
+                values: ["Support Conversation Ended"]
+          captures:
+            firstDynDim:
+              jsonpath: $.dynamicMembers.dimensions[0].name
+          check:
+            status: 200
+            jsonpath:
+              $.dynamicMembers.dimensions[0].memberKind:
+                - eq: dimension
+              $.dynamicMembers.dimensions[0].query.sql:
+                - isString: true
+              $.dynamicMembers.dimensions[0].stats.occurrences:
+                - isNumber: true
+
+      # repeat within TTL → served from cache
+      - name: discovery_cached
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/meta/dynamic
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.tokenB}}
+            x-hasura-datasource-id: ${{captures.targetB}}
+          json:
+            cube: SemanticEvents
+            filters:
+              - member: SemanticEvents.event
+                operator: equals
+                values: ["Support Conversation Ended"]
+          check:
+            status: 200
+            jsonpath:
+              $.freshness.cached:
+                - eq: true
+              $.dynamicMembers.dimensions[0].name:
+                - eq: ${{captures.firstDynDim}}
+
+      # tenancy (SC-006): team A (empty partition) still sees ZERO of team B's keys
+      - name: discovery_tenant_isolated
+        http:
+          url: ${{env.CUBEJS_URL}}/api/v1/meta/dynamic
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-datasource-id: ${{captures.targetDatasourceId}}
+          json:
+            cube: SemanticEvents
+            filters:
+              - member: SemanticEvents.event
+                operator: equals
+                values: ["Support Conversation Ended"]
+          check:
+            status: 200
+            jsonpath:
+              $.totalRows:
+                - eq: 0
+
+      # =================================================================
+      # US3/US4 — event-scoped explicit template with editorial registry (T117)
+      # =================================================================
+
+      - name: publish_explicit_template_set
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!, $datasourceId: uuid!, $base: String!, $scoped: String!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-dynamic-v2-explicit-${{env.RUN_SEED}}"
+                  dataschemas: { data: [
+                    { name: "semantic_events.yml", code: $base, user_id: $userId, datasource_id: $datasourceId },
+                    { name: "support_conversations.yml", code: $scoped, user_id: $userId, datasource_id: $datasourceId }
+                  ] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{env.templateBranchId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              base: |
+                cubes:
+                  - name: SemanticEvents
+                    sql_table: cst.semantic_events
+                    meta:
+                      default_model: true
+                      template: semantic_events
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                    measures:
+                      - name: count
+                        type: count
+                        meta:
+                          from_template: true
+              scoped: |
+                cubes:
+                  - name: SupportConversations
+                    sql: SELECT * FROM cst.semantic_events WHERE event = 'Support Conversation Ended'
+                    meta:
+                      default_model: true
+                      template: support_conversations
+                      field_policy: explicit
+                      event_scope: Support Conversation Ended
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                      - name: outcome
+                        sql: "{CUBE}.dimensions['outcome']"
+                        type: string
+                        meta:
+                          from_template: true
+                          registry_key: dimensions.outcome
+                      - name: urgency
+                        sql: "{CUBE}.dimensions['urgency']"
+                        type: string
+                        meta:
+                          from_template: true
+                          registry_key: dimensions.urgency
+                      - name: store_format
+                        sql: "{CUBE}.dimensions['store_format']"
+                        type: string
+                        meta:
+                          from_template: true
+                          registry_key: dimensions.store_format
+                      - name: help_topic
+                        sql: toString({CUBE}.properties.user_needed_help_with)
+                        type: string
+                        meta:
+                          from_template: true
+                          registry_path: properties.user_needed_help_with (string)
+                      - name: ghost_topic
+                        sql: toString({CUBE}.properties.never_seen_path)
+                        type: string
+                        meta:
+                          from_template: true
+                          registry_path: properties.never_seen_path (string)
+                    measures:
+                      - name: conversations
+                        type: count
+                        meta:
+                          from_template: true
+          check:
+            status: 200
+
+      - name: reconcile_team_b_explicit
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamB}}
+              trigger: manual
+          check:
+            status: 200
+
+      # registry ∩ data: outcome/urgency/help_topic present in elko.is under the
+      # event; store_format and never_seen_path are NOT → pruned
+      - name: explicit_cube_keeps_present_registry_members
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($teamId: uuid!) {
+                kept: dataschemas_aggregate(where: {
+                  name: { _eq: "support_conversations.yml" }
+                  datasource: { team_id: { _eq: $teamId } }
+                  code: { _like: "%name: outcome%" }
+                }) { aggregate { count } }
+                kept_json: dataschemas_aggregate(where: {
+                  name: { _eq: "support_conversations.yml" }
+                  datasource: { team_id: { _eq: $teamId } }
+                  code: { _like: "%help_topic%" }
+                }) { aggregate { count } }
+              }
+            variables:
+              teamId: ${{captures.teamB}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.kept.aggregate.count:
+                - gt: 0
+              $.data.kept_json.aggregate.count:
+                - gt: 0
+
+      - name: explicit_cube_prunes_absent_registry_members
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($teamId: uuid!) {
+                latest: branches(where: { datasource: { team_id: { _eq: $teamId }, name: { _eq: "dev-clickhouse" } } }) {
+                  versions(limit: 1, order_by: { created_at: desc }) {
+                    pruned_key: dataschemas_aggregate(where: {
+                      name: { _eq: "support_conversations.yml" }
+                      code: { _like: "%store_format%" }
+                    }) { aggregate { count } }
+                    pruned_path: dataschemas_aggregate(where: {
+                      name: { _eq: "support_conversations.yml" }
+                      code: { _like: "%never_seen_path%" }
+                    }) { aggregate { count } }
+                  }
+                }
+              }
+            variables:
+              teamId: ${{captures.teamB}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.latest[0].versions[0].pruned_key.aggregate.count:
+                - eq: 0
+              $.data.latest[0].versions[0].pruned_path.aggregate.count:
+                - eq: 0

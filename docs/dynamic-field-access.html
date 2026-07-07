@@ -1,0 +1,863 @@
+<title>Dynamic Field Access — Query Guide</title>
+<style>
+  :root {
+    --ground:#F5F7F9; --surface:#FFFFFF; --surface-2:#EEF2F6;
+    --ink:#16202C; --ink-2:#3E4A59; --muted:#6C7787;
+    --border:#E3E8EE; --border-strong:#D2DAE3;
+    --accent:#0B8A97; --accent-2:#076570; --accent-soft:#E2F1F2;
+    --good:#2C8A57; --good-bg:#E7F3EC; --good-bd:#BFE0CC;
+    --danger:#BC4F3A; --danger-bg:#FBEBE6; --danger-bd:#EFC9BE;
+    --chip:#EEF2F6;
+    --console:#0B1017; --console-2:#0F1720; --console-bd:rgba(255,255,255,.08);
+    --code-fg:#C6D0DC; --code-punct:#63728A;
+    --t-str:#8FCBA1; --t-key:#4FD0DA; --t-num:#E3AB74; --t-kw:#C7A0E8; --t-comment:#5C6A80;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+    --maxprose: 70ch;
+    --radius:10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#0E131A; --surface:#151C25; --surface-2:#1A222D;
+      --ink:#E6EBF1; --ink-2:#B0BAC8; --muted:#7E8B9C;
+      --border:#222C38; --border-strong:#2C3745;
+      --accent:#38C0CC; --accent-2:#63D3DC; --accent-soft:#122630;
+      --good:#4FB884; --good-bg:#122619; --good-bd:#1F4230;
+      --danger:#E38068; --danger-bg:#271410; --danger-bd:#442018;
+      --chip:#1A222D;
+    }
+  }
+  :root[data-theme="light"] {
+    --ground:#F5F7F9; --surface:#FFFFFF; --surface-2:#EEF2F6;
+    --ink:#16202C; --ink-2:#3E4A59; --muted:#6C7787;
+    --border:#E3E8EE; --border-strong:#D2DAE3;
+    --accent:#0B8A97; --accent-2:#076570; --accent-soft:#E2F1F2;
+    --good:#2C8A57; --good-bg:#E7F3EC; --good-bd:#BFE0CC;
+    --danger:#BC4F3A; --danger-bg:#FBEBE6; --danger-bd:#EFC9BE;
+    --chip:#EEF2F6;
+  }
+  :root[data-theme="dark"] {
+    --ground:#0E131A; --surface:#151C25; --surface-2:#1A222D;
+    --ink:#E6EBF1; --ink-2:#B0BAC8; --muted:#7E8B9C;
+    --border:#222C38; --border-strong:#2C3745;
+    --accent:#38C0CC; --accent-2:#63D3DC; --accent-soft:#122630;
+    --good:#4FB884; --good-bg:#122619; --good-bd:#1F4230;
+    --danger:#E38068; --danger-bg:#271410; --danger-bd:#442018;
+    --chip:#1A222D;
+  }
+
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce){ html { scroll-behavior:auto; } }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--font-sans); font-size:16px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  a { color:var(--accent-2); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  ::selection { background:var(--accent-soft); color:var(--ink); }
+
+  .layout { display:grid; grid-template-columns:250px minmax(0,1fr); gap:0;
+    max-width:1200px; margin:0 auto; }
+
+  /* ---- sidebar ---- */
+  .side { position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    padding:28px 20px 40px; border-right:1px solid var(--border); }
+  .brand { display:flex; align-items:baseline; gap:8px; margin-bottom:2px; }
+  .brand .mark { font-family:var(--font-mono); font-weight:700; font-size:.82rem;
+    letter-spacing:.06em; color:var(--accent-2); }
+  .brand .ver { font-family:var(--font-mono); font-size:.68rem; color:var(--muted); }
+  .side h1 { font-size:1.02rem; line-height:1.25; margin:.4rem 0 1.4rem; font-weight:650;
+    letter-spacing:-.01em; }
+  .toc { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px; }
+  .toc a { display:flex; gap:10px; align-items:baseline; padding:6px 10px; border-radius:7px;
+    color:var(--ink-2); font-size:.9rem; line-height:1.3; }
+  .toc a .n { font-family:var(--font-mono); font-size:.72rem; color:var(--muted);
+    min-width:1.2em; }
+  .toc a:hover { background:var(--surface-2); text-decoration:none; color:var(--ink); }
+  .toc a.active { background:var(--accent-soft); color:var(--accent-2); font-weight:600; }
+  .toc a.active .n { color:var(--accent-2); }
+  .side .foot { margin-top:22px; padding-top:16px; border-top:1px solid var(--border);
+    font-size:.76rem; color:var(--muted); line-height:1.5; }
+
+  /* ---- main ---- */
+  main { padding:0 clamp(20px,4vw,56px) 120px; min-width:0; }
+  .prose { max-width:var(--maxprose); }
+  section { padding-top:56px; scroll-margin-top:24px; }
+  h2 { font-size:clamp(1.4rem,2.6vw,1.85rem); letter-spacing:-.02em; line-height:1.15;
+    margin:0 0 .2rem; text-wrap:balance; font-weight:660; }
+  h3 { font-size:1.08rem; margin:2rem 0 .5rem; letter-spacing:-.01em; font-weight:640; }
+  .eyebrow { font-family:var(--font-mono); font-size:.72rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent-2); margin:0 0 .5rem; font-weight:600; }
+  p { margin:.7rem 0; color:var(--ink-2); max-width:var(--maxprose); }
+  strong { color:var(--ink); font-weight:640; }
+  code { font-family:var(--font-mono); font-size:.86em; background:var(--surface-2);
+    border:1px solid var(--border); padding:.08em .38em; border-radius:5px;
+    color:var(--ink); white-space:nowrap; }
+  .prose code { color:var(--accent-2); }
+
+  /* ---- hero ---- */
+  .hero { padding:64px 0 8px; border-bottom:1px solid var(--border); }
+  .hero .eyebrow { font-size:.75rem; }
+  .hero h2 { font-size:clamp(2rem,4.4vw,3.1rem); letter-spacing:-.03em; margin-bottom:.35rem; }
+  .hero .lede { font-size:1.12rem; color:var(--ink-2); max-width:60ch; margin-top:.4rem; }
+  .rewrite { margin:34px 0 8px; display:grid; grid-template-columns:1fr auto 1fr; gap:0;
+    align-items:stretch; border:1px solid var(--console-bd); border-radius:var(--radius);
+    overflow:hidden; background:var(--console); }
+  .rewrite .cell { padding:20px 22px; min-width:0; }
+  .rewrite .cell.arrow { display:flex; align-items:center; justify-content:center;
+    padding:0 6px; background:var(--console-2); border-left:1px solid var(--console-bd);
+    border-right:1px solid var(--console-bd); }
+  .rewrite .arrow svg { width:22px; height:22px; color:var(--accent-2); }
+  .rewrite .lbl { font-family:var(--font-mono); font-size:.68rem; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--code-punct); margin-bottom:12px; display:block; }
+  .rewrite pre { margin:0; font-family:var(--font-mono); font-size:.9rem; line-height:1.7;
+    color:var(--code-fg); white-space:pre-wrap; word-break:break-word; }
+  .rw-cube{color:var(--code-fg);} .rw-map{color:var(--t-key);} .rw-key{color:var(--t-str);}
+  .rw-mem{color:var(--t-key);} .rw-fil{color:var(--code-punct);} .rw-val{color:var(--t-str);}
+  .rw-scope{color:var(--t-num);}
+  @media (max-width:680px){ .rewrite{ grid-template-columns:1fr; }
+    .rewrite .cell.arrow{ border:0; border-top:1px solid var(--console-bd);
+      border-bottom:1px solid var(--console-bd); padding:8px; }
+    .rewrite .arrow svg{ transform:rotate(90deg); } }
+
+  /* ---- example card ---- */
+  .card { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);
+    margin:18px 0; overflow:hidden; }
+  .card > .head { display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+    padding:14px 18px; border-bottom:1px solid var(--border); }
+  .card > .head .ttl { font-weight:620; font-size:.98rem; letter-spacing:-.01em; }
+  .card .io { display:grid; grid-template-columns:1fr 1fr; }
+  @media (max-width:820px){ .card .io{ grid-template-columns:1fr; } }
+  .io .pane { min-width:0; }
+  .io .pane + .pane { border-left:1px solid var(--console-bd); }
+  @media (max-width:820px){ .io .pane + .pane{ border-left:0; border-top:1px solid var(--console-bd); } }
+
+  /* ---- console code block ---- */
+  .console { background:var(--console); position:relative; }
+  .console .bar { display:flex; align-items:center; justify-content:space-between;
+    padding:9px 14px; border-bottom:1px solid var(--console-bd); }
+  .console .bar .tag { font-family:var(--font-mono); font-size:.68rem; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--code-punct); display:flex; align-items:center; gap:8px; }
+  .console .bar .tag .verb { color:var(--accent-2); font-weight:600; }
+  .copy { font-family:var(--font-mono); font-size:.68rem; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--code-punct); background:transparent;
+    border:1px solid var(--console-bd); border-radius:6px; padding:3px 9px; cursor:pointer;
+    transition:color .15s, border-color .15s; }
+  .copy:hover { color:var(--accent-2); border-color:var(--accent-2); }
+  .copy:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+  .console pre { margin:0; padding:16px 16px 18px; overflow-x:auto; }
+  .console code { font-family:var(--font-mono); font-size:.845rem; line-height:1.6;
+    background:none; border:0; padding:0; color:var(--code-fg); white-space:pre;
+    font-variant-numeric:tabular-nums; }
+  .console pre::-webkit-scrollbar{ height:9px; }
+  .console pre::-webkit-scrollbar-thumb{ background:#2A3543; border-radius:6px; }
+  .t-key{color:var(--t-key);} .t-str{color:var(--t-str);} .t-num{color:var(--t-num);}
+  .t-kw{color:var(--t-kw);} .t-comment{color:var(--t-comment); font-style:italic;}
+  .t-punct{color:var(--code-punct);}
+
+  /* standalone code (not in io grid) */
+  .block { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden;
+    margin:16px 0; }
+  .block .console { border:0; }
+
+  /* ---- chips & callouts ---- */
+  .chip { font-family:var(--font-mono); font-size:.68rem; letter-spacing:.04em;
+    padding:3px 9px; border-radius:100px; display:inline-flex; align-items:center; gap:6px;
+    white-space:nowrap; }
+  .chip.verified { background:var(--good-bg); color:var(--good); border:1px solid var(--good-bd); }
+  .chip.verified .dot{ width:6px; height:6px; border-radius:50%; background:var(--good); }
+  .chip.rows { background:var(--chip); color:var(--muted); border:1px solid var(--border); }
+  .chip.err { background:var(--danger-bg); color:var(--danger); border:1px solid var(--danger-bd); }
+
+  .note { display:flex; gap:12px; padding:13px 16px; border-radius:9px; margin:14px 0;
+    font-size:.92rem; line-height:1.55; }
+  .note .ic { flex:0 0 auto; margin-top:1px; }
+  .note.info { background:var(--accent-soft); color:var(--ink); border:1px solid transparent; }
+  .note.info .ic{ color:var(--accent-2); }
+  .note.warn { background:var(--danger-bg); color:var(--ink); border:1px solid var(--danger-bd); }
+  .note.warn .ic{ color:var(--danger); }
+  .note p{ margin:0; color:inherit; max-width:none; }
+  .note strong{ color:inherit; }
+
+  /* ---- tables ---- */
+  .tablewrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius);
+    margin:16px 0; }
+  table { border-collapse:collapse; width:100%; font-size:.9rem; }
+  th,td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--border);
+    vertical-align:top; }
+  thead th { font-family:var(--font-mono); font-size:.7rem; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--muted); font-weight:600; background:var(--surface-2); }
+  tbody tr:last-child td{ border-bottom:0; }
+  td code{ white-space:nowrap; }
+  td .k { font-family:var(--font-mono); color:var(--accent-2); font-size:.86em; }
+
+  .lede-row{ display:flex; flex-wrap:wrap; gap:8px; margin:.9rem 0 .2rem; }
+
+  hr.soft{ border:0; border-top:1px solid var(--border); margin:0; }
+
+  /* ---- responsive sidebar ---- */
+  @media (max-width:900px){
+    .layout{ grid-template-columns:1fr; }
+    .side{ position:static; height:auto; border-right:0; border-bottom:1px solid var(--border);
+      padding:20px; }
+    .toc{ flex-direction:row; flex-wrap:wrap; }
+    .toc a{ padding:5px 9px; }
+    .side .foot{ display:none; }
+  }
+  .footnote{ margin-top:64px; padding-top:22px; border-top:1px solid var(--border);
+    font-size:.82rem; color:var(--muted); max-width:var(--maxprose); }
+  .footnote code{ font-size:.8em; }
+</style>
+
+<div class="layout">
+  <aside class="side">
+    <div class="brand"><span class="mark">SYNMETRIX</span><span class="ver">/ semantic layer</span></div>
+    <h1>Dynamic Field Access</h1>
+    <nav>
+      <ul class="toc" id="toc">
+        <li><a href="#overview"><span class="n">00</span> The idea</a></li>
+        <li><a href="#discover"><span class="n">01</span> Discover properties</a></li>
+        <li><a href="#dimension"><span class="n">02</span> Query a map key</a></li>
+        <li><a href="#combine"><span class="n">03</span> Combine two keys</a></li>
+        <li><a href="#metric"><span class="n">04</span> Aggregate a metric</a></li>
+        <li><a href="#curated"><span class="n">05</span> Curated event models</a></li>
+        <li><a href="#limits"><span class="n">06</span> Slot limits</a></li>
+        <li><a href="#security"><span class="n">07</span> How scoping stays safe</a></li>
+        <li><a href="#json"><span class="n">08</span> JSON &amp; the SQL API</a></li>
+        <li><a href="#reference"><span class="n">09</span> Reference</a></li>
+      </ul>
+    </nav>
+    <div class="foot">
+      Every request &amp; response on this page was executed against the live dev
+      stack on <code>2026-07-07</code>. Counts are a snapshot of the
+      <code>somi.is</code> partition (13.9&nbsp;M rows).
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero prose">
+      <p class="eyebrow">Query Guide</p>
+      <h2>Reach any map or JSON key — without growing the model.</h2>
+      <p class="lede">
+        Behavioral events store open-ended attributes in ClickHouse maps and JSON.
+        You query any key by name; the platform rewrites the reference onto a small,
+        declared set of parameter slots <em>before</em> validation. No member is ever
+        created implicitly.
+      </p>
+
+      <div class="rewrite" aria-label="How a dynamic reference is rewritten">
+        <div class="cell">
+          <span class="lbl">You write</span>
+<pre><span class="rw-cube">SemanticEvents</span>.<span class="rw-map">dimensions</span>.<span class="rw-key">store_format</span></pre>
+        </div>
+        <div class="cell arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+        </div>
+        <div class="cell">
+          <span class="lbl">What runs (pre-validation)</span>
+<pre>member  <span class="rw-mem">SemanticEvents.dim_value_a</span>
+filter  <span class="rw-fil">dim_key_a</span> = <span class="rw-val">"store_format"</span>
+scope   <span class="rw-scope">partition</span> = <span class="rw-val">"somi.is"</span></pre>
+        </div>
+      </div>
+    </header>
+
+    <!-- 00 -->
+    <section id="overview" class="prose">
+      <p class="eyebrow">00 · The idea</p>
+      <h2>Explicit by design</h2>
+      <p>
+        A single event type touches only a handful of keys, but across every event the
+        union is huge and varies row by row. Materializing every observed key would make
+        one unusable mega-model. So the model stays deliberate, and only the <em>key</em> is
+        dynamic at query time. Two mechanisms cover everything:
+      </p>
+      <p>
+        <strong>Parameter slots</strong> — a fixed, declared pair of members per map
+        (<code>dim_key_a</code> selects the key, <code>dim_value_a</code> fetches its value).
+        You reference <code>Cube.dimensions.anything</code>; the pre-processor maps it onto a
+        free slot and injects the key filter.
+      </p>
+      <p>
+        <strong>Discovery</strong> — an endpoint that probes your team's data under a filter
+        and returns the keys that actually exist right now, shaped like model metadata, so a
+        dashboard or query composer can build queries programmatically.
+      </p>
+      <div class="note info">
+        <span class="ic" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+        </span>
+        <p>Everything below is scoped to your team's partition automatically. You never pass a
+        partition — the platform injects it, twice over (see <a href="#security">§07</a>).</p>
+      </div>
+    </section>
+
+    <!-- 01 discover -->
+    <section id="discover" class="prose">
+      <p class="eyebrow">01 · Discover properties</p>
+      <h2>What keys exist right now?</h2>
+      <p>
+        Call <code>POST /api/v1/meta/dynamic</code> with a cube and an optional filter — usually
+        one event type. You get back a directory of available map keys and JSON paths, each with
+        occurrence stats, sample values, and a ready-to-paste query form. Results are cached for
+        two minutes (<code>DYNAMIC_META_TTL_MS</code>).
+      </p>
+      <div class="lede-row">
+        <span class="chip verified"><span class="dot"></span>Verified</span>
+        <span class="chip rows">somi.is · 158,604 rows under this event</span>
+      </div>
+      <div class="card">
+        <div class="head"><span class="ttl">Discover dimensions &amp; metrics for one event</span></div>
+        <div class="io">
+          <div class="pane">
+            <div class="console">
+              <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/meta/dynamic</span>
+                <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "cube": "SemanticEvents",
+  "targets": ["dimensions", "metrics"],
+  "filters": [
+    {
+      "member": "SemanticEvents.event",
+      "operator": "equals",
+      "values": ["Sales Report Submitted"]
+    }
+  ]
+}</code></pre>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="console">
+              <div class="bar"><span class="tag">200 · response</span>
+                <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "cube": "SemanticEvents",
+  "totalRows": 158604,
+  "freshness": {
+    "generatedAt": "2026-07-07T13:26:38Z",
+    "ttlMs": 120000, "cached": false
+  },
+  "dynamicMembers": {
+    "dimensions": [
+      {
+        "name": "SemanticEvents.dimensions.season",
+        "type": "string", "memberKind": "dimension",
+        "source": {
+          "column": "dimensions", "kind": "map",
+          "key": "season", "valueType": "String"
+        },
+        "stats": {
+          "occurrences": 158604, "coverage": 1,
+          "cardinality": 4,
+          "sampleValues": ["winter","spring","fall","summer"]
+        },
+        "query": {
+          "rest": { "dimension": "SemanticEvents.dimensions.season" },
+          "sql": "dimensions['season']"
+        }
+      }
+    ],
+    "measures": [
+      {
+        "name": "SemanticEvents.metrics.total_units_delivered",
+        "type": "number", "memberKind": "measure",
+        "aggregations": ["sum", "avg"],
+        "source": {
+          "column": "metrics", "kind": "map",
+          "key": "total_units_delivered", "valueType": "Float32"
+        },
+        "stats": { "occurrences": 158604, "cardinality": 975 },
+        "query": {
+          "rest": { "measure": "SemanticEvents.metrics.total_units_delivered" },
+          "sql": "metrics['total_units_delivered']"
+        }
+      }
+    ]
+  }
+}</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p>
+        The full response for this event listed nine dimension keys —
+        <code>season</code>, <code>chain</code>, <code>day_name</code>, <code>density_tier</code>,
+        <code>store_format</code>, <code>archetype_day</code>, <code>store_brand</code>,
+        <code>weather</code>, <code>holiday_name</code> — each with its own <code>query.rest</code>
+        block. A composer renders that array straight into a property picker.
+      </p>
+    </section>
+
+    <!-- 02 dimension -->
+    <section id="dimension" class="prose">
+      <p class="eyebrow">02 · Query a map key</p>
+      <h2>Group by any dimension key</h2>
+      <p>
+        Reference the key with dotted syntax — <code>SemanticEvents.dimensions.store_format</code> —
+        in an ordinary <code>/api/v1/load</code> query. The response column carries the slot name
+        (<code>dim_value_a</code>); your composer maps it back to the requested key.
+      </p>
+      <div class="lede-row"><span class="chip verified"><span class="dot"></span>Verified</span>
+        <span class="chip rows">real counts, somi.is</span></div>
+      <div class="card">
+        <div class="head"><span class="ttl">Report count by store format</span></div>
+        <div class="io">
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/load</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "query": {
+    "measures": ["SemanticEvents.count"],
+    "dimensions": ["SemanticEvents.dimensions.store_format"],
+    "filters": [
+      {
+        "member": "SemanticEvents.event",
+        "operator": "equals",
+        "values": ["Sales Report Submitted"]
+      }
+    ],
+    "order": { "SemanticEvents.count": "desc" }
+  }
+}</code></pre>
+          </div></div>
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag">200 · data</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">[
+  { "SemanticEvents.dim_value_a": "Discount Supermarket", "SemanticEvents.count": "82180" },
+  { "SemanticEvents.dim_value_a": "Fuel Station",         "SemanticEvents.count": "39202" },
+  { "SemanticEvents.dim_value_a": "Local Grocery",        "SemanticEvents.count": "20471" },
+  { "SemanticEvents.dim_value_a": "Hypermarket",          "SemanticEvents.count": "7567"  },
+  { "SemanticEvents.dim_value_a": "Service Station",      "SemanticEvents.count": "4241"  }
+]</code></pre>
+          </div></div>
+        </div>
+      </div>
+      <div class="note info">
+        <span class="ic" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+        </span>
+        <p>A key that isn't in your data returns zero groups — that's SQL-natural, not an error.
+        Discovery (<a href="#discover">§01</a>) is how you avoid composing a blind query.</p>
+      </div>
+    </section>
+
+    <!-- 03 combine -->
+    <section id="combine" class="prose">
+      <p class="eyebrow">03 · Combine two keys</p>
+      <h2>Two keys, two slots — resolved independently</h2>
+      <p>
+        Ask for two keys of the same map and each claims its own slot
+        (<code>dim_value_a</code>, <code>dim_value_b</code>). Keys are assigned alphabetically,
+        so the mapping is deterministic and reproducible.
+      </p>
+      <div class="lede-row"><span class="chip verified"><span class="dot"></span>Verified</span></div>
+      <div class="card">
+        <div class="head"><span class="ttl">Store format × season</span></div>
+        <div class="io">
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/load</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "query": {
+    "measures": ["SemanticEvents.count"],
+    "dimensions": [
+      "SemanticEvents.dimensions.store_format",
+      "SemanticEvents.dimensions.season"
+    ],
+    "filters": [
+      { "member": "SemanticEvents.event",
+        "operator": "equals",
+        "values": ["Sales Report Submitted"] }
+    ],
+    "order": { "SemanticEvents.count": "desc" }
+  }
+}</code></pre>
+          </div></div>
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag">200 · data</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">[
+  { "SemanticEvents.dim_value_b": "Discount Supermarket",
+    "SemanticEvents.dim_value_a": "summer", "SemanticEvents.count": "21341" },
+  { "SemanticEvents.dim_value_b": "Discount Supermarket",
+    "SemanticEvents.dim_value_a": "spring", "SemanticEvents.count": "20650" },
+  { "SemanticEvents.dim_value_b": "Discount Supermarket",
+    "SemanticEvents.dim_value_a": "fall",   "SemanticEvents.count": "20518" },
+  { "SemanticEvents.dim_value_b": "Discount Supermarket",
+    "SemanticEvents.dim_value_a": "winter", "SemanticEvents.count": "19671" }
+]</code></pre>
+          </div></div>
+        </div>
+      </div>
+      <p>
+        <code>store_format</code> sorts after <code>season</code>, so it took slot&nbsp;<code>b</code>
+        and <code>season</code> took slot&nbsp;<code>a</code> — visible in the column names above.
+      </p>
+    </section>
+
+    <!-- 04 metric -->
+    <section id="metric" class="prose">
+      <p class="eyebrow">04 · Aggregate a metric</p>
+      <h2>Sum and average a metric key</h2>
+      <p>
+        Metric maps become measures. Reference <code>SemanticEvents.metrics.&lt;key&gt;</code> for the
+        sum, and append <code>.avg</code> for the average — both share one slot's key filter.
+      </p>
+      <div class="lede-row"><span class="chip verified"><span class="dot"></span>Verified</span>
+        <span class="chip rows">sum matches ClickHouse exactly</span></div>
+      <div class="card">
+        <div class="head"><span class="ttl">Units delivered by season — sum &amp; average</span></div>
+        <div class="io">
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/load</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "query": {
+    "measures": [
+      "SemanticEvents.metrics.total_units_delivered",
+      "SemanticEvents.metrics.total_units_delivered.avg"
+    ],
+    "dimensions": ["SemanticEvents.dimensions.season"],
+    "filters": [
+      { "member": "SemanticEvents.event",
+        "operator": "equals",
+        "values": ["Sales Report Submitted"] }
+    ],
+    "order": { "SemanticEvents.metrics.total_units_delivered": "desc" }
+  }
+}</code></pre>
+          </div></div>
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag">200 · data</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">[
+  { "SemanticEvents.dim_value_a": "summer",
+    "SemanticEvents.metric_sum_a": "5696790",
+    "SemanticEvents.metric_avg_a": "137.89" },
+  { "SemanticEvents.dim_value_a": "spring",
+    "SemanticEvents.metric_sum_a": "4987138",
+    "SemanticEvents.metric_avg_a": "125.04" },
+  { "SemanticEvents.dim_value_a": "fall",
+    "SemanticEvents.metric_sum_a": "4815831",
+    "SemanticEvents.metric_avg_a": "121.31" },
+  { "SemanticEvents.dim_value_a": "winter",
+    "SemanticEvents.metric_sum_a": "4011478",
+    "SemanticEvents.metric_avg_a": "106.39" }
+]</code></pre>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 curated -->
+    <section id="curated" class="prose">
+      <p class="eyebrow">05 · Curated event models</p>
+      <h2>When you want named, governed fields</h2>
+      <p>
+        Slots are for open-ended exploration. For the fields that matter to a specific event,
+        a platform admin publishes an <strong>event-scoped model</strong> with an explicit
+        registry — real named members with descriptions and access control. Reconciliation keeps
+        only the registry members that occur in <em>your</em> data and prunes the rest. Nothing is
+        ever added implicitly.
+      </p>
+      <div class="lede-row"><span class="chip verified"><span class="dot"></span>Verified</span>
+        <span class="chip rows">SalesReports · scoped to “Sales Report Submitted”</span></div>
+      <div class="card">
+        <div class="head"><span class="ttl">Declared members on a curated cube</span></div>
+        <div class="io">
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/load</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "query": {
+    "measures": [
+      "SalesReports.reports",
+      "SalesReports.units_delivered"
+    ],
+    "dimensions": ["SalesReports.store_format"],
+    "order": { "SalesReports.reports": "desc" }
+  }
+}</code></pre>
+          </div></div>
+          <div class="pane"><div class="console">
+            <div class="bar"><span class="tag">200 · data</span>
+              <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">[
+  { "SalesReports.store_format": "Discount Supermarket",
+    "SalesReports.reports": "82180",
+    "SalesReports.units_delivered": "14762154" },
+  { "SalesReports.store_format": "Fuel Station",
+    "SalesReports.reports": "39202",
+    "SalesReports.units_delivered": "1737490" },
+  { "SalesReports.store_format": "Local Grocery",
+    "SalesReports.reports": "20471",
+    "SalesReports.units_delivered": "635790" },
+  { "SalesReports.store_format": "Hypermarket",
+    "SalesReports.reports": "7567",
+    "SalesReports.units_delivered": "1389621" }
+]</code></pre>
+          </div></div>
+        </div>
+      </div>
+      <p>
+        This cube's template declared five members. The team's data lacked
+        <code>does_not_exist_here</code>, so that member was pruned during reconciliation —
+        <code>store_format</code>, <code>season</code>, <code>weather</code> and
+        <code>units_delivered</code> remained. Clean, named, and no clutter.
+      </p>
+    </section>
+
+    <!-- 06 limits -->
+    <section id="limits" class="prose">
+      <p class="eyebrow">06 · Slot limits</p>
+      <h2>When a query asks for too many keys</h2>
+      <p>
+        Each map exposes a fixed number of slots (two, by default, for dimensions). Ask for more
+        distinct keys of one map in a single query and you get a specific, actionable error
+        <em>before</em> the query reaches validation — never a generic “unknown member”.
+      </p>
+      <div class="lede-row"><span class="chip err">HTTP 400 · DYNAMIC_KEY_SLOTS_EXHAUSTED</span></div>
+      <div class="block"><div class="console">
+        <div class="bar"><span class="tag">3 dimension keys · 2 slots</span>
+          <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "error": "Dynamic key slots exhausted",
+  "code": "DYNAMIC_KEY_SLOTS_EXHAUSTED",
+  "map": "dimensions",
+  "slots": 2,
+  "requested": ["season", "store_format", "weather"]
+}</code></pre>
+      </div></div>
+      <p>
+        To go wider: split into multiple queries, use a curated model
+        (<a href="#curated">§05</a>) where those keys are named members, raise the slot count in
+        the template, or drop to the SQL API (<a href="#json">§08</a>).
+      </p>
+    </section>
+
+    <!-- 07 security -->
+    <section id="security" class="prose">
+      <p class="eyebrow">07 · How scoping stays safe</p>
+      <h2>The rewrite never weakens tenant isolation</h2>
+      <p>
+        The dynamic rewrite runs first, then the existing scoping rules run on the rewritten
+        query — unchanged. Inspect any dynamic query with <code>/api/v1/dry-run</code> and you
+        see the partition filter injected right alongside the key filter:
+      </p>
+      <div class="block"><div class="console">
+        <div class="bar"><span class="tag"><span class="verb">POST</span> /api/v1/dry-run · normalizedQuery</span>
+          <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="json">{
+  "dimensions": ["SemanticEvents.dim_value_a"],
+  "filters": [
+    { "member": "SemanticEvents.dim_key_a", "operator": "equals", "values": ["store_format"] },
+    { "member": "SemanticEvents.partition", "operator": "equals", "values": ["somi.is"] },
+    { "member": "SemanticEvents.partition", "operator": "equals", "values": ["somi.is"] }
+  ]
+}</code></pre>
+      </div></div>
+      <p>
+        The partition predicate appears <strong>twice</strong> on purpose — two independent layers
+        enforce it: the query pre-processor injects it, and the datasource's
+        <code>query_rewrite_rules</code> backstop injects it again on the SQL path the middleware
+        can't see. On top of that, every slot member carries the partition literal baked into its
+        generated SQL. Three layers, defense in depth.
+      </p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Layer</th><th>Where</th><th>Covers</th></tr></thead>
+          <tbody>
+            <tr><td>Baked scope literal</td><td>Generated member SQL</td><td>Every query, always</td></tr>
+            <tr><td>Pre-processor injection</td><td>Before validation (REST)</td><td>REST <code>/load</code>, <code>/sql</code>, <code>/dry-run</code></td></tr>
+            <tr><td>Rewrite-rules backstop</td><td>Gateway <code>queryRewrite</code></td><td>REST <em>and</em> SQL API</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note info">
+        <span class="ic" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V7z"/></svg>
+        </span>
+        <p>Team identity comes from the caller's own JWT, cross-checked against the requested
+        datasource. A caller can never receive another partition's member map — even if two teams
+        share a partition value. Any resolution failure passes the request straight to the
+        gateway's own auth, unchanged.</p>
+      </div>
+    </section>
+
+    <!-- 08 json + sql api -->
+    <section id="json" class="prose">
+      <p class="eyebrow">08 · JSON &amp; the SQL API</p>
+      <h2>JSON paths and fully-dynamic SQL</h2>
+      <p>
+        ClickHouse <code>JSON</code> columns are discoverable too — discovery lists each path with
+        its dominant type and a typed access form. Because JSON explodes far wider than maps, JSON
+        members are <strong>registry-only</strong>: a template declares the hot paths with an
+        explicit cast, and everything else stays reachable through the SQL API.
+      </p>
+      <h3>Registry member (typed cast)</h3>
+      <div class="block"><div class="console">
+        <div class="bar"><span class="tag">template · yaml</span>
+          <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="yaml">- name: help_topic
+  sql: "toString({CUBE}.properties.user_needed_help_with)"
+  type: string
+  meta:
+    from_template: true
+    registry_path: "properties.user_needed_help_with (string)"</code></pre>
+      </div></div>
+      <h3>SQL API — arbitrary keys, no slots</h3>
+      <p>
+        The SQL API applies the same tenant scoping via <code>query_rewrite_rules</code> and lets
+        you write map and JSON access directly — the right tool for BI clients and open-ended
+        exploration.
+      </p>
+      <div class="block"><div class="console">
+        <div class="bar"><span class="tag">sql api · postgres wire</span>
+          <button class="copy" type="button">Copy</button></div>
+<pre><code data-lang="sql">SELECT dimensions['store_format'] AS format, measure(count)
+FROM   semantic_events
+WHERE  event = 'Sales Report Submitted'
+GROUP  BY 1
+ORDER  BY 2 DESC;
+
+-- JSON path with an explicit cast
+SELECT toString(properties.user_needed_help_with) AS topic, measure(count)
+FROM   semantic_events
+GROUP  BY 1;</code></pre>
+      </div></div>
+      <div class="note warn">
+        <span class="ic" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0z"/></svg>
+        </span>
+        <p>Always access map and JSON values by element with an explicit type — never select a
+        whole map column. The driver serializes whole-map values incorrectly; element access with
+        a scalar result is always safe (and is exactly what the slots generate).</p>
+      </div>
+    </section>
+
+    <!-- 09 reference -->
+    <section id="reference" class="prose">
+      <p class="eyebrow">09 · Reference</p>
+      <h2>Quick reference</h2>
+
+      <h3>Dynamic syntax</h3>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Reference</th><th>Resolves to</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><span class="k">Cube.dimensions.KEY</span></td><td>string dimension</td><td>slot value member + key filter</td></tr>
+          <tr><td><span class="k">Cube.flags.KEY</span></td><td>boolean dimension</td><td>boolean map slot</td></tr>
+          <tr><td><span class="k">Cube.metrics.KEY</span></td><td>measure (sum)</td><td>numeric map slot</td></tr>
+          <tr><td><span class="k">Cube.metrics.KEY.avg</span></td><td>measure (avg)</td><td>same slot, avg variant</td></tr>
+          <tr><td><span class="k">Cube.properties.PATH</span></td><td>typed dimension</td><td>registry-declared JSON path</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Default slot layout</h3>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Map</th><th>Slots</th><th>Kind</th><th>Aggregations</th></tr></thead>
+        <tbody>
+          <tr><td><code>dimensions</code></td><td>2</td><td>dimension</td><td>—</td></tr>
+          <tr><td><code>metrics</code></td><td>2</td><td>measure</td><td>sum, avg</td></tr>
+          <tr><td><code>flags</code></td><td>1</td><td>boolean dimension</td><td>—</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Endpoints &amp; errors</h3>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><span class="k">POST /api/v1/meta/dynamic</span></td><td>Discover available map keys &amp; JSON paths</td></tr>
+          <tr><td><span class="k">POST /api/v1/load</span></td><td>Run a query (dynamic refs rewritten pre-validation)</td></tr>
+          <tr><td><span class="k">POST /api/v1/dry-run</span></td><td>Inspect the rewritten, scoped query</td></tr>
+        </tbody>
+      </table></div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Error code</th><th>Meaning</th><th>Fix</th></tr></thead>
+        <tbody>
+          <tr><td><span class="k">DYNAMIC_KEY_SLOTS_EXHAUSTED</span></td><td>More distinct keys of one map than slots</td><td>Split query, use curated model, or SQL API</td></tr>
+          <tr><td><span class="k">DEFAULT_MODEL_MEMBER_UNAVAILABLE</span></td><td>Referenced a member the team's variant lacks</td><td>Discover valid keys first (§01)</td></tr>
+        </tbody>
+      </table></div>
+
+      <p class="footnote">
+        All requests and responses above were executed against the running dev stack against
+        ClickHouse&nbsp;26.6 on 2026-07-07; response bodies are copied verbatim (numbers rounded
+        for display where noted). Counts reflect a live snapshot of the <code>somi.is</code>
+        partition and will drift as data lands — the query shapes, rewrite behavior, and error
+        codes are stable.
+      </p>
+    </section>
+  </main>
+</div>
+
+<script>
+  // --- JSON syntax highlighter (escape first, then tokenize) ---
+  function hlJSON(src){
+    const esc = src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return esc.replace(
+      /("(?:[^"\\]|\\.)*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (m, str, colon, kw, num) => {
+        if (str !== undefined){
+          return colon ? '<span class="t-key">'+str+'</span>'+colon
+                       : '<span class="t-str">'+str+'</span>';
+        }
+        if (kw  !== undefined) return '<span class="t-kw">'+kw+'</span>';
+        if (num !== undefined) return '<span class="t-num">'+num+'</span>';
+        return m;
+      });
+  }
+  function hlSQL(src){
+    const esc = src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return esc
+      .replace(/(--[^\n]*)/g,'<span class="t-comment">$1</span>')
+      .replace(/('(?:[^'\\]|\\.)*')/g,'<span class="t-str">$1</span>')
+      .replace(/\b(SELECT|FROM|WHERE|GROUP|BY|ORDER|DESC|ASC|AS|measure)\b/g,'<span class="t-key">$1</span>');
+  }
+  function hlYAML(src){
+    const esc = src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return esc
+      .replace(/("(?:[^"\\]|\\.)*")/g,'<span class="t-str">$1</span>')
+      .replace(/^(\s*-?\s*)([A-Za-z0-9_]+)(:)/gm,'$1<span class="t-key">$2</span><span class="t-punct">$3</span>');
+  }
+  document.querySelectorAll('code[data-lang]').forEach(el => {
+    const lang = el.getAttribute('data-lang');
+    const raw = el.textContent;
+    if (lang === 'json') el.innerHTML = hlJSON(raw);
+    else if (lang === 'sql') el.innerHTML = hlSQL(raw);
+    else if (lang === 'yaml') el.innerHTML = hlYAML(raw);
+  });
+
+  // --- copy buttons ---
+  document.querySelectorAll('.copy').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const code = btn.closest('.console').querySelector('code');
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        const t = btn.textContent; btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = t; }, 1400);
+      }).catch(() => { btn.textContent = 'Cmd+C'; });
+    });
+  });
+
+  // --- TOC scroll-spy ---
+  const links = new Map();
+  document.querySelectorAll('#toc a').forEach(a =>
+    links.set(a.getAttribute('href').slice(1), a));
+  const spy = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting){
+        links.forEach(l => l.classList.remove('active'));
+        const a = links.get(e.target.id);
+        if (a) a.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-10% 0px -80% 0px', threshold: 0 });
+  document.querySelectorAll('main section[id]').forEach(s => spy.observe(s));
+</script>
