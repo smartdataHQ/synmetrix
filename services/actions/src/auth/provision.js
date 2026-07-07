@@ -1,6 +1,7 @@
 import { fetchGraphQL } from "../utils/graphql.js";
 import logger from "../utils/logger.js";
 import { provisionDefaultDatasources } from "../utils/provisionDefaultDatasources.js";
+import { fireTeamReconcileHook } from "../utils/defaultModels/shared.js";
 
 const CONSUMER_DOMAINS = [
   "gmail.com",
@@ -244,6 +245,9 @@ async function ensureOrgTeam(userId, email, workosUser, partition, orgId) {
     isTeamCreator = true;
     logger.log(`[Provision] Created new team "${teamName}" (${teamId}) with partition=${partition || "none"}`);
     await provisionDefaultDatasources({ teamId, userId });
+    // fire-and-forget: default-models onboarding reconcile (FR-002, SC-001);
+    // failure is recovered by the scheduled backfill
+    fireTeamReconcileHook(teamId);
   }
 
   // Ensure user is a member of this team (on_conflict handles duplicate)
@@ -283,6 +287,8 @@ async function assignTeamToUser(userId, email, workosUser, partition, orgId) {
     team = { id: teamId };
     isTeamCreator = true;
     await provisionDefaultDatasources({ teamId, userId });
+    // fire-and-forget: default-models onboarding reconcile (FR-002, SC-001)
+    fireTeamReconcileHook(teamId);
   }
 
   const memberId = await createMember(userId, team.id);

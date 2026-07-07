@@ -10,3 +10,13 @@
   include_in_metadata: true
   payload: {}
   comment: "Delete audit_logs rows older than 90 days (FR-016 retention)."
+- name: reconcile_default_models
+  webhook: '{{ACTIONS_URL}}/rpc/reconcileDefaultModels'
+  schedule: '*/15 * * * *'
+  include_in_metadata: true
+  payload:
+    trigger: schedule
+  headers:
+    - name: x-actions-cron-secret
+      value_from_env: ACTIONS_CRON_SECRET
+  comment: "Default-models reconciliation orchestrator (013, FR-007a): template-publish detection + data-drift refresh."

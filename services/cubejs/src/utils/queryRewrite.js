@@ -16,8 +16,10 @@ let rulesCacheTime = 0;
 const RULES_CACHE_TTL = 60_000;
 
 // --- Cube-to-table mapping cache, keyed by schemaVersion ---
+// Sized for fleet-wide default models (013 D15): every team gets its own
+// schemaVersion, so 50 would thrash once the scoping rule is active fleet-wide.
 const cubeTableMapCache = new Map();
-const CUBE_TABLE_MAP_MAX_SIZE = 50;
+const CUBE_TABLE_MAP_MAX_SIZE = 1000;
 
 const rulesQuery = `
   query {

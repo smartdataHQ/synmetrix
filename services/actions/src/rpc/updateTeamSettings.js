@@ -114,12 +114,14 @@ export default async (session, input, headers) => {
       }
     }
 
-    // Update team settings
-    const res = await fetchGraphQL(
-      updateTeamSettingsMutation,
-      { team_id: teamId, settings: merged },
-      headers?.authorization
-    );
+    // Update team settings via the admin path: authorization (owner or
+    // portal admin) and protected-key stripping happened above — the `user`
+    // Hasura role deliberately has no update permission on the settings
+    // column, so forwarding the caller's token can never succeed.
+    const res = await fetchGraphQL(updateTeamSettingsMutation, {
+      team_id: teamId,
+      settings: merged,
+    });
 
     if (res?.data?.update_teams_by_pk) {
       invalidateAllUserCaches();

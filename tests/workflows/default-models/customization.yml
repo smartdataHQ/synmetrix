@@ -1,0 +1,575 @@
+version: "1.1"
+name: Default Models — customizations survive, opt-out honored (US4)
+# Customization survives reconcile (FR-011), system attribution visible in
+# version history (FR-014), opt-out via the EXISTING update_team_settings
+# action as team owner (FR-013's write path — protected keys stay stripped),
+# deletion sticks under opt-out, removal of opt-out recreates.
+env:
+  templateTeamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+  templateBranchId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+tests:
+  customization_and_opt_out:
+    steps:
+      - name: seed_system_user
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!) {
+                insert_users_one(
+                  object: { id: $id, display_name: "Synmetrix System" }
+                  on_conflict: { constraint: users_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_team
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $userId: uuid!) {
+                insert_teams_one(
+                  object: { id: $id, name: "StepCI Template Owners", user_id: $userId }
+                  on_conflict: { constraint: teams_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.templateTeamId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_datasource
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $teamId: uuid!, $userId: uuid!) {
+                insert_datasources_one(
+                  object: {
+                    id: $id
+                    team_id: $teamId
+                    user_id: $userId
+                    name: "Global Templates"
+                    db_type: "CLICKHOUSE"
+                    db_params: { host: "100.87.250.36", port: "8123", user: "admin", database: "cst", ssl: false }
+                  }
+                  on_conflict: { constraint: datasources_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              teamId: ${{env.templateTeamId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: seed_template_branch
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($id: uuid!, $datasourceId: uuid!, $userId: uuid!) {
+                insert_branches_one(
+                  object: { id: $id, datasource_id: $datasourceId, user_id: $userId, name: "main", status: active }
+                  on_conflict: { constraint: branches_pkey, update_columns: [] }
+                ) { id }
+              }
+            variables:
+              id: ${{env.templateBranchId}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+          check:
+            status: 200
+
+      - name: publish_template
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!, $datasourceId: uuid!, $code: String!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-custom-v1"
+                  dataschemas: { data: [{
+                    name: "semantic_events.yml"
+                    code: $code
+                    user_id: $userId
+                    datasource_id: $datasourceId
+                  }] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{env.templateBranchId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              code: |
+                cubes:
+                  - name: SemanticEvents
+                    sql_table: cst.semantic_events
+                    meta:
+                      default_model: true
+                      template: semantic_events
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                    measures:
+                      - name: count
+                        type: count
+                        meta:
+                          from_template: true
+          check:
+            status: 200
+
+      # --- owner + team
+      - name: register_owner
+        http:
+          url: ${{env.HASURA_PLUS_ENDPOINT}}/auth/register
+          method: POST
+          headers:
+            Content-Type: application/json
+          json:
+            email: dm-custom-${{env.RUN_SEED}}@example.com
+            password: StepCI-dm-1234
+            cookie: false
+          captures:
+            accessToken:
+              jsonpath: $.jwt_token
+          check:
+            status: 200
+
+      - name: whoami
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+          graphql:
+            query: |
+              query { users { id } }
+          captures:
+            userId:
+              jsonpath: $.data.users[0].id
+          check:
+            status: 200
+
+      - name: create_team
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation { create_team(name: "dm-custom-team-${{env.RUN_SEED}}") { id } }
+          captures:
+            teamId:
+              jsonpath: $.data.create_team.id
+          check:
+            status: 200
+
+      - name: set_team_partition
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($teamId: uuid!) {
+                update_teams_by_pk(
+                  pk_columns: { id: $teamId }
+                  _append: { settings: { partition: "stepci.custom" } }
+                ) { id }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+          check:
+            status: 200
+
+      - name: baseline_reconcile
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamId}}
+              trigger: manual
+          check:
+            status: 200
+
+      - name: resolve_target_datasource
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($teamId: uuid!, $name: String!) {
+                datasources(where: { team_id: { _eq: $teamId }, name: { _eq: $name } }, limit: 1) {
+                  id
+                  branches(where: { status: { _eq: active } }, limit: 1) { id }
+                }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+              name: ${{env.DEFAULT_MODELS_TARGET_DATASOURCE_NAME}}
+          captures:
+            targetDatasourceId:
+              jsonpath: $.data.datasources[0].id
+            targetBranchId:
+              jsonpath: $.data.datasources[0].branches[0].id
+          check:
+            status: 200
+
+      # --- team adds a custom dimension (a team-authored version)
+      - name: team_adds_custom_field
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!, $datasourceId: uuid!, $code: String!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-team-edit-1"
+                  dataschemas: { data: [{
+                    name: "semantic_events.yml"
+                    code: $code
+                    user_id: $userId
+                    datasource_id: $datasourceId
+                  }] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{captures.targetBranchId}}
+              userId: ${{captures.userId}}
+              datasourceId: ${{captures.targetDatasourceId}}
+              code: |
+                cubes:
+                  - name: SemanticEvents
+                    sql: SELECT * FROM cst.semantic_events WHERE partition = 'stepci.custom'
+                    meta:
+                      default_model: true
+                      template: semantic_events
+                      template_checksum: stepci-custom-v1
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                      - name: my_custom_field
+                        sql: upper(type)
+                        type: string
+                    measures:
+                      - name: count
+                        sql: '*'
+                        type: count
+                        meta:
+                          from_template: true
+          check:
+            status: 200
+
+      # publish a template EDIT so the next reconcile writes a merged version
+      - name: publish_template_edit
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!, $datasourceId: uuid!, $code: String!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-custom-v2"
+                  dataschemas: { data: [{
+                    name: "semantic_events.yml"
+                    code: $code
+                    user_id: $userId
+                    datasource_id: $datasourceId
+                  }] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{env.templateBranchId}}
+              userId: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+              datasourceId: ${{env.DEFAULT_MODELS_TEMPLATE_DATASOURCE_ID}}
+              code: |
+                cubes:
+                  - name: SemanticEvents
+                    sql_table: cst.semantic_events
+                    meta:
+                      default_model: true
+                      template: semantic_events
+                    dimensions:
+                      - name: partition
+                        sql: partition
+                        type: string
+                        meta:
+                          from_template: true
+                      - name: event_type
+                        sql: type
+                        type: string
+                        meta:
+                          from_template: true
+                    measures:
+                      - name: count
+                        type: count
+                        meta:
+                          from_template: true
+          check:
+            status: 200
+
+      - name: reconcile_preserves_customization
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamId}}
+              trigger: manual
+          captures:
+            mergedVersionId:
+              jsonpath: $.outcomes[0].versionId
+          check:
+            status: 200
+
+      - name: verify_custom_field_survived_and_system_attribution
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($versionId: uuid!) {
+                versions_by_pk(id: $versionId) {
+                  id
+                  user_id
+                  dataschemas(where: { name: { _eq: "semantic_events.yml" } }) {
+                    code
+                  }
+                }
+              }
+            variables:
+              versionId: ${{captures.mergedVersionId}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.versions_by_pk.user_id:
+                - eq: ${{env.DEFAULT_MODELS_SYSTEM_USER_ID}}
+              $.data.versions_by_pk.dataschemas[0].code:
+                - match: my_custom_field
+
+      # --- opt-out via the EXISTING update_team_settings action, as OWNER
+      - name: owner_opts_out
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation ($teamId: uuid!, $settings: jsonb!) {
+                update_team_settings(team_id: $teamId, settings: $settings) {
+                  code
+                  message
+                }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+              settings:
+                default_models:
+                  opt_out: ["semantic_events"]
+          check:
+            status: 200
+            jsonpath:
+              $.data.update_team_settings.code:
+                - eq: ok
+
+      # team deletes the derived model (a version without the file)
+      - name: team_deletes_model
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              mutation ($branchId: uuid!, $userId: uuid!) {
+                insert_versions_one(object: {
+                  branch_id: $branchId
+                  user_id: $userId
+                  checksum: "stepci-team-deleted-1"
+                  dataschemas: { data: [] }
+                }) { id }
+              }
+            variables:
+              branchId: ${{captures.targetBranchId}}
+              userId: ${{captures.userId}}
+          check:
+            status: 200
+
+      - name: reconcile_respects_opt_out
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamId}}
+              trigger: manual
+          check:
+            status: 200
+            jsonpath:
+              $.outcomes[0].result:
+                - eq: skipped_opt_out
+
+      - name: verify_deletion_stuck
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($branchId: uuid!) {
+                branches_by_pk(id: $branchId) {
+                  versions(limit: 1, order_by: { created_at: desc }) {
+                    dataschemas_aggregate { aggregate { count } }
+                  }
+                }
+              }
+            variables:
+              branchId: ${{captures.targetBranchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.branches_by_pk.versions[0].dataschemas_aggregate.aggregate.count:
+                - eq: 0
+
+      # --- remove opt-out → recreated on the next reconcile
+      - name: owner_removes_opt_out
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-user-id: ${{captures.userId}}
+          graphql:
+            query: |
+              mutation ($teamId: uuid!, $settings: jsonb!) {
+                update_team_settings(team_id: $teamId, settings: $settings) {
+                  code
+                }
+              }
+            variables:
+              teamId: ${{captures.teamId}}
+              settings:
+                default_models:
+                  opt_out: []
+          check:
+            status: 200
+            jsonpath:
+              $.data.update_team_settings.code:
+                - eq: ok
+
+      - name: reconcile_recreates_model
+        http:
+          url: ${{env.ACTIONS_URL}}/rpc/reconcileTeamDefaultModels
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-actions-cron-secret: ${{env.ACTIONS_CRON_SECRET}}
+          json:
+            input:
+              teamId: ${{captures.teamId}}
+              trigger: manual
+          check:
+            status: 200
+            jsonpath:
+              $.outcomes[0].template:
+                - eq: semantic_events
+
+      - name: verify_recreated
+        http:
+          url: ${{env.HASURA_ENDPOINT}}
+          method: POST
+          headers:
+            Content-Type: application/json
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
+          graphql:
+            query: |
+              query ($branchId: uuid!) {
+                branches_by_pk(id: $branchId) {
+                  versions(limit: 1, order_by: { created_at: desc }) {
+                    dataschemas(where: { name: { _eq: "semantic_events.yml" } }) {
+                      id
+                    }
+                  }
+                }
+              }
+            variables:
+              branchId: ${{captures.targetBranchId}}
+          check:
+            status: 200
+            jsonpath:
+              $.data.branches_by_pk.versions[0].dataschemas[0].id:
+                - isString: true

@@ -68,7 +68,8 @@ app.post("/rpc/:method", async (req, res) => {
 
   if (data) {
     if (data.error) {
-      return res.status(400).json(data);
+      // handlers may set an explicit numeric status (e.g. 403); default 400
+      return res.status(data.status || 400).json(data);
     }
 
     return res.json(data);

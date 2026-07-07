@@ -29,3 +29,17 @@ export const ErrorCodeSet = Object.freeze(new Set(Object.values(ErrorCode)));
 export function isKnownErrorCode(code) {
   return ErrorCodeSet.has(code);
 }
+
+/**
+ * Default-models query pre-processor codes (013, FR-016/SC-005).
+ *
+ * Deliberately NOT part of the Model-Management `ErrorCode` enum above: the
+ * 011 OpenAPI contracts must not receive these values (lint-error-codes.mjs
+ * only harvests the lowercase enum). Value casing follows
+ * specs/013-mature-default-models/contracts/query-preprocessor.md.
+ */
+export const DefaultModelErrorCode = Object.freeze({
+  MEMBER_UNAVAILABLE: "DEFAULT_MODEL_MEMBER_UNAVAILABLE",
+  // 014: query uses more distinct dynamic keys of one map than declared slots
+  SLOTS_EXHAUSTED: "DYNAMIC_KEY_SLOTS_EXHAUSTED",
+});

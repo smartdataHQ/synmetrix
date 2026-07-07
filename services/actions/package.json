@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "start.dev": "nodemon --exitcrash -L --es-module-specifier-resolution=node --inspect=0.0.0.0"
+    "start.dev": "nodemon --exitcrash -L --es-module-specifier-resolution=node --inspect=0.0.0.0",
+    "test": "node --test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.262.0",

@@ -1746,3 +1746,9 @@
     - name: branch
       using:
         foreign_key_constraint_on: branch_id
+# Default-models reconciliation runs (013): tracked with NO permissions for role
+# `user` (deny-by-default) — reads go through the admin-gated getDefaultModelsReport
+# RPC; writes use the Actions orchestrator's admin-secret path only.
+- table:
+    name: reconciliation_runs
+    schema: public
