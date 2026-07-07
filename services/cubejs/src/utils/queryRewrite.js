@@ -179,6 +179,27 @@ const queryRewrite = async (query, { securityContext }) => {
   const { userScope } = securityContext;
   const { dataSourceAccessList, hasAccessList, role, teamProperties, memberProperties } = userScope;
 
+  // --- Step 0: Strip unresolvable "no order" placeholders ---
+  // The client query builder emits `emptyCube.emptyKey` as a sentinel for
+  // "no order selected". The legacy planner silently ignored the unresolvable
+  // member; the Tesseract planner rejects it ("Cannot resolve: emptyCube") and
+  // 500s the query. Removing it is safe — it just means "no explicit order".
+  if (query && query.order) {
+    const isPlaceholder = (m) =>
+      typeof m === "string" && m.startsWith("emptyCube.");
+    if (Array.isArray(query.order)) {
+      query.order = query.order.filter((o) =>
+        Array.isArray(o)
+          ? !isPlaceholder(o[0])
+          : !isPlaceholder(o && (o.id || o.member))
+      );
+    } else if (typeof query.order === "object") {
+      for (const key of Object.keys(query.order)) {
+        if (isPlaceholder(key)) delete query.order[key];
+      }
+    }
+  }
+
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
   const rules = await loadRules();
 
