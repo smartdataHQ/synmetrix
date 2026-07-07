@@ -1,4 +1,6 @@
-import cubejsClientCore from "@cubejs-client/core";
+// NOTE: the client class was renamed CubejsApi → CubeApi in the 1.x client
+// (@cubejs-client/core). Import it under the original local name.
+import { CubeApi as CubejsApiClient } from "@cubejs-client/core";
 import fetch from "node-fetch";
 import timeoutSignal from "timeout-signal";
 
@@ -23,7 +25,6 @@ const accessListQuery = `
   }
 `;
 
-const { CubejsApi: CubejsApiClient } = cubejsClientCore;
 const CUBEJS_URL = process.env.CUBEJS_URL || "http://cubejs:4000";
 
 const queryBaseMembers = [
