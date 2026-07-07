@@ -16,7 +16,7 @@ services:
       POSTGRES_DB: synmetrix_stack
 
   cubestore:
-    image: cubejs/cubestore:${CUBESTORE_VERSION:-v0.35.33}
+    image: cubejs/cubestore:${CUBESTORE_VERSION:-v1.6.68}
     environment:
       - CUBESTORE_REMOTE_DIR=/cube/data
     volumes:
