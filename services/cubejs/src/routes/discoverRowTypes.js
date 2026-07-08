@@ -35,6 +35,13 @@ const TABLES = {
     // tense and can never collide with the prefix).
     discriminator: "if(empty(event), concat('type:', type), event)",
     evidence: 'type',
+    // cxs2 080 (owner refinement): capture the distinct set of SOURCE labels an
+    // event type is observed from. `source.label` is a scalar Nullable(String)
+    // per row (the dot is a column-name convention, NOT a Nested/Array column),
+    // so one event type spans several sources across rows — grouUniqArray drops
+    // NULLs (system/platform events with no source fall out cleanly). Back-tick
+    // required because of the dot.
+    sourceEvidence: '`source.label`',
     tsExpr: 'toUnixTimestamp64Milli(timestamp)',
     tie: 'event_gid',
     countMode: 'accumulate',
@@ -109,6 +116,9 @@ export default async (req, res, cubejs) => {
       `min(${config.tsExpr}) AS min_ts`,
       `max(${config.tsExpr}) AS max_ts`,
       ...(config.evidence ? [`groupUniqArray(16)(${config.evidence}) AS observed_types`] : []),
+      ...(config.sourceEvidence
+        ? [`groupUniqArray(64)(${config.sourceEvidence}) AS observed_sources`]
+        : []),
       ...(config.countMode === 'snapshot' ? [`${config.snapshotCountExpr} AS snapshot_count`] : []),
     ].join(', ');
     const noveltyRows = await driver.query(
@@ -151,6 +161,9 @@ export default async (req, res, cubejs) => {
         `min(${config.versionExpr || config.tsExpr}) AS min_ts`,
         `max(${config.versionExpr || config.tsExpr}) AS max_ts`,
         ...(config.evidence ? [`groupUniqArray(16)(${config.evidence}) AS observed_types`] : []),
+        ...(config.sourceEvidence
+          ? [`groupUniqArray(64)(${config.sourceEvidence}) AS observed_sources`]
+          : []),
         ...inventorySelects,
       ].join(', ')} FROM ${qualified} WHERE ${statsWhere} GROUP BY key`
     );
@@ -214,11 +227,15 @@ export default async (req, res, cubejs) => {
         inventory.jsonPaths.sort();
       }
       const observedTypes = (stats?.observed_types ?? novelty.observed_types ?? []).map(String);
+      const observedSources = (stats?.observed_sources ?? novelty.observed_sources ?? [])
+        .map((s) => String(s))
+        .filter((s) => s.length > 0);
       const label = labelsByKey.get(key);
       return {
         key,
         ...(label ? { label } : {}),
         ...(config.evidence ? { observedTypes } : {}),
+        ...(config.sourceEvidence ? { observedSources } : {}),
         ...(config.countMode === 'snapshot'
           ? { snapshotCount: Number(novelty.snapshot_count) || 0 }
           : { deltaCount: Number(stats?.delta_count) || 0 }),
