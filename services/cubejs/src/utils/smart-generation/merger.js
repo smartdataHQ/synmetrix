@@ -280,7 +280,11 @@ function mergeCube(existingCube, newCube, keepStale) {
     const existingMeta = { ...existingCube.meta };
     const newMeta = newCube.meta ? { ...newCube.meta } : {};
 
-    // Collect user-added meta keys (anything that isn't a provenance key)
+    // Collect user-added meta keys (anything that isn't a provenance key).
+    // Keys the generator used to write but no longer does ('refresh_cadence',
+    // cube-level 'description' — Cube-native description is authoritative)
+    // are listed as provenance too, so legacy files shed them on merge
+    // instead of carrying them forever as presumed user keys.
     const provenanceKeys = new Set([
       'auto_generated',
       'source_database',
@@ -290,6 +294,8 @@ function mergeCube(existingCube, newCube, keepStale) {
       'generation_filters',
       'ai_enrichment_status',
       'ai_metrics_count',
+      'refresh_cadence',
+      'description',
     ]);
 
     for (const [key, value] of Object.entries(existingMeta)) {
