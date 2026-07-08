@@ -28,6 +28,25 @@ function titleFromName(name) {
 }
 
 /**
+ * Cube.js derives a member/cube title from the name on its own (words split,
+ * each capitalized). An explicit title is only worth baking when our
+ * acronym-aware form differs from that default — everything else is noise.
+ *
+ * @param {string} name
+ * @returns {string|null} Title to bake, or null when Cube's default suffices
+ */
+function titleWhenNotDefault(name) {
+  const title = titleFromName(name);
+  const plain = name
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(' ')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+  return title === plain ? null : title;
+}
+
+/**
  * Sanitize a table name into a valid Cube.js cube identifier.
  *
  * @param {string} name
@@ -296,59 +315,55 @@ function toJsonFieldType(valueType, rawType) {
 }
 
 /**
- * Extract the value type from a Map(...) raw type string.
- * e.g. "Map(LowCardinality(String), Float32)" → "Float32"
- *
- * @param {string} rawType
- * @returns {string|null} The unwrapped value type, or null if not a Map
+ * Baked value lists and cardinality counts are snapshots that rot as data
+ * arrives — the model carries shape + semantics, the data plane answers
+ * value questions (live queries, /meta/dynamic). What little we do bake is
+ * bounded by these helpers so reconciles stay idempotent:
+ * - counts ≤ LC_BAKE_CAP are exact (facet/pie thresholds need them),
+ *   larger counts round to 2 significant figures (consumers only threshold);
+ * - value lists are baked only when COMPLETE (≤ LC_BAKE_CAP distinct) and
+ *   not identifier-shaped (UUIDs/emails/opaque tokens are data, not enums —
+ *   and baking them leaks PII into schema files).
  */
-function extractMapValueType(rawType) {
-  const m = rawType.match(/^Map\s*\((.+)\)\s*$/i);
-  if (!m) return null;
-  // Split on top-level comma (respecting parentheses depth)
-  let depth = 0;
-  let splitIdx = -1;
-  for (let i = 0; i < m[1].length; i++) {
-    if (m[1][i] === '(') depth++;
-    else if (m[1][i] === ')') depth--;
-    else if (m[1][i] === ',' && depth === 0) { splitIdx = i; break; }
-  }
-  if (splitIdx === -1) return null;
-  let valPart = m[1].slice(splitIdx + 1).trim();
-  // Unwrap Nullable / LowCardinality wrappers
-  valPart = valPart.replace(/^(Nullable|LowCardinality)\s*\(\s*/gi, '').replace(/\s*\)\s*$/, '');
-  return valPart || null;
+const LC_BAKE_CAP = 12;
+
+function bucketCardinality(count) {
+  const n = Number(count);
+  if (!Number.isFinite(n) || n < 0) return null;
+  if (n <= LC_BAKE_CAP) return n;
+  const magnitude = 10 ** (Math.floor(Math.log10(n)) - 1);
+  return Math.round(n / magnitude) * magnitude;
+}
+
+const UUID_VALUE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_VALUE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Long unbroken token containing a digit — machine ids, not human enum labels
+const OPAQUE_TOKEN_RE = /^(?=.*\d)[A-Za-z0-9_-]{20,}$/;
+
+function looksLikeIdentifierValues(values) {
+  const sample = (values || []).filter((v) => typeof v === 'string' && v.length > 0);
+  if (sample.length === 0) return false;
+  const hits = sample.filter(
+    (v) => UUID_VALUE_RE.test(v) || EMAIL_VALUE_RE.test(v) || OPAQUE_TOKEN_RE.test(v)
+  ).length;
+  return hits / sample.length >= 0.5;
 }
 
 /**
- * Build a range object from min/max/avg values.
- * For numbers: coerces strings to numbers, includes avg.
- * For timestamps: keeps as strings, min/max only (avg is meaningless).
+ * The list to bake for an enum-ish field, or null when baking would mislead
+ * (incomplete list, identifier-shaped values) — consumers treat a baked list
+ * as the complete value set (facet widgets, agent filter hints).
  *
- * @param {*} min
- * @param {*} max
- * @param {*} avg
- * @returns {{ min: number|string, max: number|string, avg?: number }|null}
+ * @param {*} values - Observed distinct values (profiler, ≤ LC probe limit)
+ * @param {*} uniqueCount - Distinct count when known (defaults to list length)
+ * @returns {Array|null}
  */
-function buildRange(min, max, avg) {
-  const parts = {};
-  // Try numeric first
-  if (min != null) {
-    const n = Number(min);
-    if (!isNaN(n)) parts.min = n;
-    else if (typeof min === 'string' && min.length > 0) parts.min = min; // timestamp
-  }
-  if (max != null) {
-    const n = Number(max);
-    if (!isNaN(n)) parts.max = n;
-    else if (typeof max === 'string' && max.length > 0) parts.max = max; // timestamp
-  }
-  // avg only for numerics
-  if (avg != null) {
-    const n = Number(avg);
-    if (!isNaN(n)) parts.avg = n;
-  }
-  return Object.keys(parts).length > 0 ? parts : null;
+function lcBakeList(values, uniqueCount) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const count = uniqueCount == null ? values.length : Number(uniqueCount);
+  if (count > LC_BAKE_CAP || values.length > LC_BAKE_CAP) return null;
+  if (looksLikeIdentifierValues(values)) return null;
+  return values;
 }
 
 /**
@@ -518,16 +533,15 @@ function processColumns(columns, options) {
             meta: {
               auto_generated: true,
               source_column: columnName,
-              raw_type: details.rawType,
               field_type: 'string',
               nested_lookup_key: true,
-              known_values: lookup.lcValues,
             },
           };
-          if (colDescription) field.meta.description = colDescription;
-          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
-            field.meta.max_array_length = profile.maxArrayLength;
-          }
+          // FILTER_PARAMS lookups are unusable without knowing the valid
+          // values — bake them, but only as a complete, non-identifier set.
+          const knownValues = lcBakeList(lookup.lcValues, lookup.lcValues.length);
+          if (knownValues) field.meta.known_values = knownValues;
+          if (colDescription) field.description = colDescription;
           allFields.push(field);
         } else {
           // Skip nested sub-columns with no non-empty values — but only for
@@ -620,14 +634,10 @@ function processColumns(columns, options) {
             meta: {
               auto_generated: true,
               source_column: columnName,
-              raw_type: details.rawType,
               field_type: jsonFieldType,
             },
           };
-          if (colDescription) field.meta.description = colDescription;
-          if (profile && profile.maxArrayLength != null && profile.maxArrayLength > 0) {
-            field.meta.max_array_length = profile.maxArrayLength;
-          }
+          if (colDescription) field.description = colDescription;
           allFields.push(field);
         }
         continue; // skip normal processing for this column
@@ -672,15 +682,6 @@ function processColumns(columns, options) {
       field.meta = { auto_generated: true };
       field.meta.source_column = columnName;
 
-      // For map-expanded fields, use the map's value type (e.g. "Float32"),
-      // not the full Map(...) container type
-      if (field._mapKey) {
-        const mapValueType = extractMapValueType(details.rawType);
-        if (mapValueType) field.meta.raw_type = mapValueType;
-      } else {
-        field.meta.raw_type = details.rawType;
-      }
-
       // Add JSON-friendly field_type
       const isBoolField = isInt8Boolean(details.rawType, profile);
       if (field._mapKey) {
@@ -690,53 +691,40 @@ function processColumns(columns, options) {
         field.meta.field_type = isBoolField ? 'boolean' : toJsonFieldType(details.valueType, details.rawType);
       }
 
-      // Add column description if available
+      // Column description — Cube-native property, and only on the column's
+      // own field: stamping the parent map's description onto every expanded
+      // key repeats one sentence dozens of times and describes nothing.
       const colDescription = columnDescriptions.get(columnName) || null;
-      if (colDescription) {
-        field.meta.description = colDescription;
+      if (colDescription && !field._mapKey) {
+        field.description = colDescription;
       }
 
-      // Add profile stats when available
-      if (profile) {
-        // For Map-expanded fields, unique_values from the parent is the key count
-        // — not meaningful per-field. Only attach for non-map fields.
-        if (!field._mapKey && profile.uniqueValues > 0) {
-          field.meta.unique_values = profile.uniqueValues;
-        }
-
-        // Numeric range: combine min/max/avg into a single "range" field
-        if (!isBoolField) {
-          const range = buildRange(profile.minValue, profile.maxValue, profile.avgValue);
-          if (range) field.meta.range = range;
-        }
-
-        if (profile.maxArrayLength != null && profile.maxArrayLength > 0) {
-          field.meta.max_array_length = profile.maxArrayLength;
-        }
-      }
-
-      // For Map-expanded fields, add per-key metadata
       if (field._mapKey) {
         field.meta.map_key = field._mapKey;
 
-        // Per-key stats from profiler (numeric: min/max/avg, string: unique_values)
-        if (profile && profile.keyStats && profile.keyStats[field._mapKey]) {
-          const stats = profile.keyStats[field._mapKey];
-          const range = buildRange(stats.min, stats.max, stats.avg);
-          if (range) field.meta.range = range;
-          if (stats.unique_values != null) field.meta.unique_values = stats.unique_values;
+        // Per-key stats from profiler (bounded — see lcBakeList/bucketCardinality)
+        const stats = profile?.keyStats?.[field._mapKey];
+        if (stats && stats.unique_values != null) {
+          const bucketed = bucketCardinality(stats.unique_values);
+          if (bucketed != null) field.meta.unique_values = bucketed;
         }
-
-        // String map keys get LC values
         if (profile && profile.lcValues && typeof profile.lcValues === 'object' && !Array.isArray(profile.lcValues)) {
-          if (profile.lcValues[field._mapKey]) {
-            field.meta.lc_values = profile.lcValues[field._mapKey];
-          }
+          const lcList = lcBakeList(
+            profile.lcValues[field._mapKey],
+            stats?.unique_values ?? undefined
+          );
+          if (lcList) field.meta.lc_values = lcList;
         }
-      } else {
-        // Non-map fields: attach LC values for categorical data
-        if (profile && profile.lcValues != null && Array.isArray(profile.lcValues)) {
-          field.meta.lc_values = profile.lcValues;
+      } else if (profile) {
+        // For Map-expanded fields, unique_values from the parent is the key count
+        // — not meaningful per-field. Only attach for non-map fields.
+        if (profile.uniqueValues > 0) {
+          const bucketed = bucketCardinality(profile.uniqueValues);
+          if (bucketed != null) field.meta.unique_values = bucketed;
+        }
+        if (Array.isArray(profile.lcValues)) {
+          const lcList = lcBakeList(profile.lcValues, profile.uniqueValues);
+          if (lcList) field.meta.lc_values = lcList;
         }
       }
 
@@ -774,13 +762,13 @@ function processColumns(columns, options) {
         meta: {
           auto_generated: true,
           source_column: columnName,
-          raw_type: details.rawType,
           field_type: 'map',
           native_map: true,
-          known_keys: profile.uniqueKeys,
+          // Key inventory intentionally NOT baked — /meta/dynamic answers it
+          // at query time, filter-scoped and freshness-stamped (014).
         },
       };
-      if (colDescription) nativeMapField.meta.description = colDescription;
+      if (colDescription) nativeMapField.description = colDescription;
       allFields.push(nativeMapField);
     }
   }
@@ -854,6 +842,8 @@ function processColumns(columns, options) {
       meta: field.meta,
     };
 
+    if (field.description) output.description = field.description;
+
     if (field.primary_key) {
       output.primary_key = true;
       output.public = true;
@@ -923,9 +913,9 @@ function buildRawCube(profiledTable, options) {
     dimensions.unshift(partitionDim);
   }
 
-  // -- Heuristics: titles on all fields + cube --------------------------------
-  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
-  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
+  // -- Heuristics: titles only where Cube's derived default falls short -------
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleWhenNotDefault(dim.name) ?? undefined; }
+  for (const meas of measures) { if (!meas.title) meas.title = titleWhenNotDefault(meas.name) ?? undefined; }
 
   // -- Heuristics: meta block -------------------------------------------------
   const timeDim = dimensions.find((d) => d.type === 'time' && d.primary_key !== true);
@@ -941,14 +931,8 @@ function buildRawCube(profiledTable, options) {
     grain_description: `Each row represents one ${table} record, keyed by ${grainParts}.`,
     time_dimension: timeDim ? timeDim.name : null,
     time_zone: 'UTC',
-    refresh_cadence: '1 hour',
     generated_at: new Date().toISOString(),
   };
-
-  // Include table description if available
-  if (profiledTable.tableDescription) {
-    meta.description = profiledTable.tableDescription;
-  }
 
   if (isInternal && partition) {
     meta.source_partition = partition;
@@ -990,7 +974,7 @@ function buildRawCube(profiledTable, options) {
 
   const cube = {
     name: cubeName,
-    title: titleFromName(cubeName),
+    title: titleWhenNotDefault(cubeName) ?? undefined,
     description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     ...source,
     meta,
@@ -1309,9 +1293,9 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     existingNames.add(f.name);
   }
 
-  // Titles on all fields
-  for (const dim of dimensions) { if (!dim.title) dim.title = titleFromName(dim.name); }
-  for (const meas of measures) { if (!meas.title) meas.title = titleFromName(meas.name); }
+  // Titles only where Cube's derived default falls short
+  for (const dim of dimensions) { if (!dim.title) dim.title = titleWhenNotDefault(dim.name) ?? undefined; }
+  for (const meas of measures) { if (!meas.title) meas.title = titleWhenNotDefault(meas.name) ?? undefined; }
 
   const meta = {
     auto_generated: true,
@@ -1328,7 +1312,7 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
 
   return {
     name: cubeName,
-    title: titleFromName(cubeName),
+    title: titleWhenNotDefault(cubeName) ?? undefined,
     description: profiledTable.tableDescription || `Analytical model for ${schema}.${table}, auto-generated from table profiling.`,
     sql,
     meta,
@@ -1405,7 +1389,6 @@ export function buildCubes(profiledTable, options = {}) {
     ajCube.meta.grain_description = `Each row represents one ${profiledTable.table} record, keyed by ${grainParts}.`;
     ajCube.meta.time_dimension = timeDim ? timeDim.name : null;
     ajCube.meta.time_zone = 'UTC';
-    ajCube.meta.refresh_cadence = '1 hour';
 
     // - Drill members on count
     const countMeasure = ajCube.measures.find((m) => m.type === 'count');

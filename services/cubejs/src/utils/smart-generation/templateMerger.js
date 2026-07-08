@@ -77,8 +77,15 @@ const mergeCube = (existingCube, candidateCube) => {
     merged.pre_aggregations = existingCube.pre_aggregations;
   }
 
-  // provenance stamps from the candidate win; team-added meta keys survive
-  merged.meta = { ...(existingCube.meta || {}), ...(candidateCube.meta || {}) };
+  // provenance stamps from the candidate win; team-added meta keys survive.
+  // Keys the generator used to write but no longer does are shed from the
+  // existing side, not resurrected through the spread (legacy cleanup —
+  // cube-level description is Cube-native now).
+  const existingMeta = { ...(existingCube.meta || {}) };
+  for (const legacyKey of ['refresh_cadence', 'description']) {
+    if (!(legacyKey in (candidateCube.meta || {}))) delete existingMeta[legacyKey];
+  }
+  merged.meta = { ...existingMeta, ...(candidateCube.meta || {}) };
   // a re-published template resumes management
   if (
     merged.meta.default_model === true &&
