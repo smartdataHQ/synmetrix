@@ -28,7 +28,12 @@ const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const TABLES = {
   semantic_events: {
-    discriminator: 'event',
+    // Row-type identity = the `event` value when present; Segment-style rows
+    // without one (page/screen/identify/log/custom) fall back to their TYPE
+    // CLASS as a synthetic `type:<type>` key (cxs2 080 — owner amendment:
+    // `type` joins the discriminator; real event names are Title-Case past
+    // tense and can never collide with the prefix).
+    discriminator: "if(empty(event), concat('type:', type), event)",
     evidence: 'type',
     tsExpr: 'toUnixTimestamp64Milli(timestamp)',
     tie: 'event_gid',
