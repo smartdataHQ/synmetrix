@@ -5,7 +5,9 @@ import {
 import createMd5Hex from '../utils/md5Hex.js';
 import { profileTable } from '../utils/smart-generation/profiler.js';
 import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
-import { buildCubes, mergeAIMetrics, deriveCubeNameFromFlatFilters } from '../utils/smart-generation/cubeBuilder.js';
+import { buildCubes, buildCubesFromTemplate, mergeAIMetrics, deriveCubeNameFromFlatFilters, filtersToSqlConditions } from '../utils/smart-generation/cubeBuilder.js';
+import { fetchPublishedTemplate } from '../utils/smart-generation/templateResolver.js';
+import { mergeTemplateModel } from '../utils/smart-generation/templateMerger.js';
 import {
   generateJs,
   generateYaml,
@@ -99,7 +101,19 @@ export default async (req, res, cubejs) => {
     ? rawProfileData
     : null;
   const dryRun = rawDryRun === true;
-  const skipLlm = req.body.skip_llm === true;
+  // 080 (research D2): optional template-seeded generation. When present, the
+  // named global template is the seed (buildCubesFromTemplate: seed +
+  // probe-prune against `filters`) and LLM stages are skipped — the scaffold
+  // is deterministic; the modeling agent matures it out of band.
+  const templateName = typeof req.body.template_name === 'string' && req.body.template_name.trim()
+    ? req.body.template_name.trim()
+    : null;
+  // 080: optional cube-level provenance meta stamped by the caller (marker
+  // family #2 — managed_by / row_type / registry_ref).
+  const cubeMeta = (req.body.cube_meta && typeof req.body.cube_meta === 'object' && !Array.isArray(req.body.cube_meta))
+    ? req.body.cube_meta
+    : null;
+  const skipLlm = req.body.skip_llm === true || templateName !== null;
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
   const nestedFilters = Array.isArray(req.body.nestedFilters) ? req.body.nestedFilters : [];
   const fileNameOverride = typeof rawFileName === 'string' && rawFileName.trim() ? rawFileName.trim() : null;
@@ -140,7 +154,15 @@ export default async (req, res, cubejs) => {
   try {
     const { userId } = securityContext;
     const partition = securityContext.userScope?.dataSource?.partition || null;
-    const internalTables = securityContext.userScope?.dataSource?.internalTables || [];
+    let internalTables = securityContext.userScope?.dataSource?.internalTables || [];
+    // 080: template-seeded generation targets the CANONICAL internal tables by
+    // definition — force partition scoping for the target table even when the
+    // team's internalTables setting doesn't enumerate it (tenancy is
+    // non-negotiable for row-type models; profiling AND the cube source WHERE
+    // both ride this list).
+    if (templateName && table && !internalTables.includes(table)) {
+      internalTables = [...internalTables, table];
+    }
 
     const emitter = createProgressEmitter(res, req.headers.accept);
 
@@ -202,6 +224,11 @@ export default async (req, res, cubejs) => {
         filters: [...filters, ...ruleFilters],
         nestedFilters,
         emitter,
+        // 080: template-seeded generation prunes registry members against the
+        // profiled key inventory — sampling would make that pruning flap on
+        // rare keys (owner directive: full-but-filtered profiling of a single
+        // row type). Deep profiling stays exact on this path.
+        ...(templateName ? { sampleThreshold: Number.MAX_SAFE_INTEGER } : {}),
       });
 
       emitter.emit('primary_keys', 'Detecting primary keys...', 0.5);
@@ -240,17 +267,87 @@ export default async (req, res, cubejs) => {
     }
 
     emitter.emit('building', 'Building cube definitions...', 0.6);
-    const cubeResult = buildCubes(profiledTable, {
-      partition,
-      internalTables,
-      arrayJoinColumns,
-      maxMapKeys,
-      primaryKeys,
-      cubeName: cubeNameOverride,
-      filters,
-      nestedFilters,
-      aliasColumnNames,
-    });
+    let cubeResult;
+    let templateSeed = null;
+    if (templateName) {
+      // 080 (research D2): template-seeded path — resolve the published global
+      // template and generate via buildCubesFromTemplate (seed + probe-prune
+      // against `filters`). Everything after (naming, versioning, no-change
+      // guard, validation) is the shared pipeline.
+      templateSeed = await fetchPublishedTemplate(templateName);
+      if (!templateSeed || templateSeed.cubes.length === 0) {
+        return res.status(400).json({
+          code: 'smart_generate_template_not_found',
+          message: `No published global template named '${templateName}' was found.`,
+        });
+      }
+      const primaryTemplateCube = templateSeed.cubes[0];
+
+      // Registry-path pruning needs JSON path presence for the filtered slice
+      // (reconciler parity — 014 FR-010): probe JSONAllPaths per registry
+      // column, scoped by partition + the row-type filters.
+      const registryPathColumns = new Set();
+      for (const list of [primaryTemplateCube.dimensions, primaryTemplateCube.measures, primaryTemplateCube.segments]) {
+        for (const field of list || []) {
+          const raw = field?.meta?.registry_path;
+          if (!raw) continue;
+          const match = /^([A-Za-z_][A-Za-z0-9_]*)\./.exec(raw);
+          if (match) registryPathColumns.add(match[1]);
+        }
+      }
+      if (registryPathColumns.size > 0 && driver && profiledTable && (profiledTable.row_count || 0) > 0) {
+        const where = [];
+        if (partition) where.push(`partition = '${String(partition).replace(/'/g, "''")}'`);
+        if (filters.length > 0) where.push(filtersToSqlConditions(filters));
+        profiledTable.jsonPaths = new Set();
+        for (const column of registryPathColumns) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) continue;
+          try {
+            const rows = await driver.query(
+              `SELECT DISTINCT arrayJoin(JSONAllPaths(${column})) AS p `
+              + `FROM ${schema ? `${schema}.` : ''}${table}`
+              + (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '')
+            );
+            for (const row of rows || []) profiledTable.jsonPaths.add(row.p);
+          } catch (err) {
+            console.warn(`[smartGenerate] JSON path probe failed for ${column} (non-fatal): ${err.message}`);
+          }
+        }
+      }
+
+      const { cube } = buildCubesFromTemplate(primaryTemplateCube, profiledTable, {
+        partition,
+        internalTables,
+        templateName,
+        templateChecksum: templateSeed.checksum,
+        filters,
+        cubeName: cubeNameOverride,
+        cubeMeta,
+      });
+      cubeResult = {
+        cubes: [cube],
+        summary: {
+          cubes_count: 1,
+          dimensions_count: (cube.dimensions || []).length,
+          measures_count: (cube.measures || []).length,
+          columns_profiled: profiledTable?.columns?.size ?? 0,
+          columns_skipped: 0,
+          map_keys_discovered: 0,
+        },
+      };
+    } else {
+      cubeResult = buildCubes(profiledTable, {
+        partition,
+        internalTables,
+        arrayJoinColumns,
+        maxMapKeys,
+        primaryKeys,
+        cubeName: cubeNameOverride,
+        filters,
+        nestedFilters,
+        aliasColumnNames,
+      });
+    }
 
     // Store filters in cube-level meta for provenance tracking
     if (filters.length > 0) {
@@ -711,7 +808,12 @@ export default async (req, res, cubejs) => {
     // existing model that has FILTER_PARAMS on array columns will break.
     // Force replace to start clean.
     const effectiveMergeStrategy = nestedFilters.length > 0 ? 'replace' : mergeStrategy;
-    if (existingCode && effectiveMergeStrategy !== 'replace') {
+    if (templateName) {
+      // 080 (FR-012): template-seeded regenerations merge with provenance
+      // classes — template-owned converges to the template, auto_generated
+      // refreshes from the probe, ai_generated/team-added members SURVIVE.
+      finalYaml = mergeTemplateModel(existingCode, yamlContent);
+    } else if (existingCode && effectiveMergeStrategy !== 'replace') {
       finalYaml = mergeModels(existingCode, yamlContent, effectiveMergeStrategy);
     }
 

@@ -206,7 +206,7 @@ function detectNestedLookupKeys(columns) {
  * @param {Array<{ column: string, operator: string, value: * }>} filters
  * @returns {string} SQL conditions joined by AND (no WHERE keyword)
  */
-function filtersToSqlConditions(filters) {
+export function filtersToSqlConditions(filters) {
   const conditions = [];
   for (const f of filters) {
     const op = String(f.operator).toUpperCase();
@@ -1556,7 +1556,34 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     internalTables = [],
     templateName,
     templateChecksum = null,
+    // 080 (row-type pipeline, additive): scope the cube source to one row
+    // type's slice, override the cube name (e.g. `rt_<slug>`), and stamp
+    // caller-supplied provenance meta (marker family #2) INSTEAD of the 013
+    // default-model trio. All default to the pre-080 behavior.
+    filters = [],
+    cubeName = null,
+    cubeMeta = null,
   } = options;
+
+  const finalCubeName = cubeName || templateCube.name;
+
+  // Family #2 replaces `default_model`/`template_checksum`; the template's own
+  // meta (field_policy, slots, …) still carries through underneath, and
+  // `template` records the seed either way (080 FR-011).
+  const stampCubeMeta = (templateMeta) => {
+    if (!cubeMeta) {
+      return {
+        ...(templateMeta || {}),
+        default_model: true,
+        template: templateName,
+        template_checksum: templateChecksum,
+      };
+    }
+    const base = { ...(templateMeta || {}) };
+    delete base.default_model;
+    delete base.template_checksum;
+    return { ...base, template: templateName, ...cubeMeta };
+  };
 
   const stampTemplateField = (field) => {
     const meta = { ...(field.meta || {}) };
@@ -1585,12 +1612,17 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
 
   let source;
   if (qualifiedTable) {
-    source = buildCubeSource(schema, table, partition, isInternal, [], []);
+    source = buildCubeSource(schema, table, partition, isInternal, filters, []);
   } else if (templateCube.sql) {
-    // custom-SQL template: wrap so the scope literal still applies
-    source = partition
-      ? { sql: `SELECT * FROM (${templateCube.sql}) WHERE partition = '${partition}'` }
-      : { sql: templateCube.sql };
+    // custom-SQL template: wrap so the scope literal (and any row-type
+    // filters) still applies
+    const wrapConditions = [];
+    if (partition) wrapConditions.push(`partition = '${partition}'`);
+    if (filters.length > 0) wrapConditions.push(filtersToSqlConditions(filters));
+    source =
+      wrapConditions.length > 0
+        ? { sql: `SELECT * FROM (${templateCube.sql}) WHERE ${wrapConditions.join(' AND ')}` }
+        : { sql: templateCube.sql };
   } else {
     source = {};
   }
@@ -1644,18 +1676,13 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     };
 
     const cube = sanitizeCubeProse({
-      name: templateCube.name,
+      name: finalCubeName,
       ...(templateCube.title ? { title: templateCube.title } : {}),
       ...(templateCube.description
         ? { description: templateCube.description }
         : {}),
       ...source,
-      meta: {
-        ...(templateCube.meta || {}),
-        default_model: true,
-        template: templateName,
-        template_checksum: templateChecksum,
-      },
+      meta: stampCubeMeta(templateCube.meta),
       dimensions: templateDims.filter(keepRegistryMember),
       measures: templateMeasures.filter(keepRegistryMember),
       ...(templateSegments.length > 0
@@ -1670,7 +1697,8 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     const { cubes: probeCubes } = buildCubes(profiledTable, {
       partition,
       internalTables,
-      cubeName: templateCube.name,
+      cubeName: finalCubeName,
+      filters,
     });
     const probeCube = probeCubes[0];
     if (probeCube) {
@@ -1694,16 +1722,11 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
   }
 
   const cube = sanitizeCubeProse({
-    name: templateCube.name,
+    name: finalCubeName,
     ...(templateCube.title ? { title: templateCube.title } : {}),
     ...(templateCube.description ? { description: templateCube.description } : {}),
     ...source,
-    meta: {
-      ...(templateCube.meta || {}),
-      default_model: true,
-      template: templateName,
-      template_checksum: templateChecksum,
-    },
+    meta: stampCubeMeta(templateCube.meta),
     dimensions,
     measures,
     ...(templateSegments.length > 0 ? { segments: templateSegments } : {}),
