@@ -44,7 +44,13 @@ const TABLES = {
     sourceEvidence: '`source.label`',
     tsExpr: 'toUnixTimestamp64Milli(timestamp)',
     tie: 'event_gid',
-    countMode: 'accumulate',
+    // count() + max(ts) are the PRIMARY active-indicator (owner) — computed in
+    // the FULL novelty pass as a SNAPSHOT, so they are always correct and never
+    // depend on the delta cursor. count()/min()/max() are cheap columnar
+    // aggregates; only the dedup (types/sources/JSON inventory) stays on the
+    // delta for efficiency.
+    totalCountExpr: 'count()',
+    cursorMode: 'tie',
   },
   entities: {
     discriminator: 'type',
@@ -52,14 +58,15 @@ const TABLES = {
     // axis and the change-detection cursor in one.
     tsExpr: '_version',
     versionExpr: '_version',
-    countMode: 'snapshot',
-    snapshotCountExpr: 'uniqExact(gid)',
+    totalCountExpr: 'uniqExact(gid)',
+    cursorMode: 'version',
   },
   data_points: {
     discriminator: 'series_gid',
     tsExpr: 'toUnixTimestamp(timestamp) * 1000',
     tie: 'signature',
-    countMode: 'accumulate',
+    totalCountExpr: 'count()',
+    cursorMode: 'tie',
   },
 };
 
@@ -111,15 +118,15 @@ export default async (req, res, cubejs) => {
       .map((c) => c.name);
 
     // ── Pass 1: novelty snapshot (every run, cursor-independent) ──
+    // The SNAPSHOT of the ACTIVE indicators — total count + first/last seen —
+    // per key over the whole partition. Always correct regardless of the delta
+    // cursor (owner: count + max(ts) decide whether a type is active). These
+    // are cheap columnar aggregates; the expensive dedup is on the delta only.
     const noveltySelect = [
       `${disc} AS key`,
+      `${config.totalCountExpr} AS total_count`,
       `min(${config.tsExpr}) AS min_ts`,
       `max(${config.tsExpr}) AS max_ts`,
-      ...(config.evidence ? [`groupUniqArray(16)(${config.evidence}) AS observed_types`] : []),
-      ...(config.sourceEvidence
-        ? [`groupUniqArray(64)(${config.sourceEvidence}) AS observed_sources`]
-        : []),
-      ...(config.countMode === 'snapshot' ? [`${config.snapshotCountExpr} AS snapshot_count`] : []),
     ].join(', ');
     const noveltyRows = await driver.query(
       `SELECT ${noveltySelect} FROM ${qualified} WHERE ${partitionCond} GROUP BY key`
@@ -154,15 +161,27 @@ export default async (req, res, cubejs) => {
       ),
     ];
     const statsWhere = [partitionCond, ...(deltaCond ? [deltaCond] : [])].join(' AND ');
+    // The delta pass carries ONLY the expensive, union-mergeable evidence
+    // (distinct Segment types, source labels, map keys, JSON paths). Counts and
+    // first/last-seen come from the full novelty pass above. `uniqExact` gives
+    // the TRUE cardinality so cxs2 can flag when the (capped) display array was
+    // truncated instead of silently losing values.
+    const OBSERVED_TYPES_CAP = 100;
+    const OBSERVED_SOURCES_CAP = 256;
     const statsRows = await driver.query(
       `SELECT ${[
         `${disc} AS key`,
-        'count() AS delta_count',
-        `min(${config.versionExpr || config.tsExpr}) AS min_ts`,
-        `max(${config.versionExpr || config.tsExpr}) AS max_ts`,
-        ...(config.evidence ? [`groupUniqArray(16)(${config.evidence}) AS observed_types`] : []),
+        ...(config.evidence
+          ? [
+              `groupUniqArray(${OBSERVED_TYPES_CAP})(${config.evidence}) AS observed_types`,
+              `uniqExact(${config.evidence}) AS observed_types_total`,
+            ]
+          : []),
         ...(config.sourceEvidence
-          ? [`groupUniqArray(64)(${config.sourceEvidence}) AS observed_sources`]
+          ? [
+              `groupUniqArray(${OBSERVED_SOURCES_CAP})(${config.sourceEvidence}) AS observed_sources`,
+              `uniqExact(${config.sourceEvidence}) AS observed_sources_total`,
+            ]
           : []),
         ...inventorySelects,
       ].join(', ')} FROM ${qualified} WHERE ${statsWhere} GROUP BY key`
@@ -189,9 +208,11 @@ export default async (req, res, cubejs) => {
       }
     }
 
-    // Next cursor = scan bound of the whole table slice (not wall clock).
+    // Next cursor = the max (ts, tie) of the DELTA slice (not the whole table).
+    // The delta already contains the newest rows, so its max IS the current
+    // global bound — scoping to the delta avoids a second full-partition scan.
     const boundRows = await driver.query(
-      `SELECT ${cursorBoundSelect} FROM ${qualified} WHERE ${partitionCond}`
+      `SELECT ${cursorBoundSelect} FROM ${qualified} WHERE ${statsWhere}`
     );
     const boundTs = Number(boundRows?.[0]?.bound_ts) || 0;
     let cursor = since ?? null;
@@ -226,19 +247,28 @@ export default async (req, res, cubejs) => {
         }
         inventory.jsonPaths.sort();
       }
-      const observedTypes = (stats?.observed_types ?? novelty.observed_types ?? []).map(String);
-      const observedSources = (stats?.observed_sources ?? novelty.observed_sources ?? [])
+      const observedTypes = (stats?.observed_types ?? []).map(String);
+      const observedSources = (stats?.observed_sources ?? [])
         .map((s) => String(s))
         .filter((s) => s.length > 0);
+      // Truncation flag — the (capped) display array vs the exact cardinality.
+      const observedSourcesTotal = Number(stats?.observed_sources_total) || observedSources.length;
+      const observedTypesTruncated = Number(stats?.observed_types_total) > observedTypes.length;
+      const observedSourcesTruncated = observedSourcesTotal > observedSources.length;
       const label = labelsByKey.get(key);
       return {
         key,
         ...(label ? { label } : {}),
         ...(config.evidence ? { observedTypes } : {}),
-        ...(config.sourceEvidence ? { observedSources } : {}),
-        ...(config.countMode === 'snapshot'
-          ? { snapshotCount: Number(novelty.snapshot_count) || 0 }
-          : { deltaCount: Number(stats?.delta_count) || 0 }),
+        ...(config.sourceEvidence
+          ? { observedSources, observedSourcesTotal }
+          : {}),
+        ...(observedTypesTruncated || observedSourcesTruncated
+          ? { evidenceTruncated: true }
+          : {}),
+        // total_count is the SNAPSHOT over the full partition — always correct
+        // (the active indicator), independent of the delta cursor.
+        snapshotCount: Number(novelty.total_count) || 0,
         minTs: Number(novelty.min_ts) || 0,
         maxTs: Number(novelty.max_ts) || 0,
         inventory: {
