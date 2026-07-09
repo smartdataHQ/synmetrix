@@ -587,7 +587,7 @@ async function findTeamByName(name) {
  * Matches the Actions flow's ensureOrgTeam() in provision.js:230.
  * Handles: existing account with missing membership, or membership with missing role.
  */
-async function ensureTeamMembership(userId, email, partition) {
+async function ensureTeamMembership(userId, email, partition, teamRole = "member") {
   const teamName = deriveTeamName(email, partition);
   let team = await findTeamByName(teamName);
 
@@ -617,7 +617,9 @@ async function ensureTeamMembership(userId, email, partition) {
   let memberId = memberResult.data?.insert_members_one?.id;
 
   // If on_conflict returned null, membership already exists — look it up
-  // and ensure member role exists (fixes partial provisioning retry)
+  // and ensure the required role exists (fixes partial provisioning retry;
+  // also upgrades an already-provisioned identity when a stronger role is
+  // required — cxs2 080: the row-type pipeline needs admin for dataschemas).
   if (!memberId) {
     const existing = await fetchGraphQL(findMemberByUserAndTeamQuery, {
       user_id: userId,
@@ -626,15 +628,17 @@ async function ensureTeamMembership(userId, email, partition) {
     const member = existing.data?.members?.[0];
     if (member) {
       memberId = member.id;
-      // If role already exists, skip
-      if (member.member_roles?.length > 0) return;
+      const roles = (member.member_roles || []).map((r) => r.team_role);
+      // Role already satisfied — nothing to add.
+      if (roles.includes(teamRole) || roles.includes("owner")) return;
+      if (teamRole === "member" && roles.length > 0) return;
     }
   }
 
   if (memberId) {
     await fetchGraphQL(createMemberRoleMutation, {
       member_id: memberId,
-      team_role: "member",
+      team_role: teamRole,
     });
   }
 }
@@ -809,6 +813,11 @@ export async function provisionUserFromFraiOS(fraiosPayload) {
   const externalId = fraiosPayload.userId;
   const email = fraiosPayload.email;
   const partition = fraiosPayload.partition;
+  // cxs2 080 (research D7): the row-type pipeline/agent identities write
+  // dataschemas/versions through the graphql surface — that requires the
+  // admin team role (dataschemas select/update perms are owner/admin-only).
+  const teamRole =
+    fraiosPayload.provider === "row-type-pipeline" ? "admin" : "member";
 
   // Step 1: Check identity cache (reuses workosSubCache)
   const cached = getWorkosSubCacheEntry(externalId);
@@ -818,13 +827,13 @@ export async function provisionUserFromFraiOS(fraiosPayload) {
   let inflight = inflightProvisions.get(externalId);
   if (inflight) return inflight;
 
-  const provision = _provisionUserFromFraiOS(externalId, email, partition);
+  const provision = _provisionUserFromFraiOS(externalId, email, partition, teamRole);
   inflightProvisions.set(externalId, provision);
   provision.finally(() => inflightProvisions.delete(externalId));
   return provision;
 }
 
-async function _provisionUserFromFraiOS(externalId, email, partition) {
+async function _provisionUserFromFraiOS(externalId, email, partition, teamRole = "member") {
   // Re-check cache after acquiring singleflight
   const cached = getWorkosSubCacheEntry(externalId);
   if (cached) return cached.userId;
@@ -832,7 +841,7 @@ async function _provisionUserFromFraiOS(externalId, email, partition) {
   // Step 2: DB lookup by email
   const account = await findAccountByEmail(email);
   if (account) {
-    await ensureTeamMembership(account.user_id, email, partition);
+    await ensureTeamMembership(account.user_id, email, partition, teamRole);
     setWorkosSubCacheEntry(externalId, account.user_id, true);
     return account.user_id;
   }
@@ -907,7 +916,7 @@ async function _provisionUserFromFraiOS(externalId, email, partition) {
     if (memberId) {
       await fetchGraphQL(createMemberRoleMutation, {
         member_id: memberId,
-        team_role: isTeamCreator ? "owner" : "member",
+        team_role: isTeamCreator ? "owner" : teamRole,
       });
     }
 

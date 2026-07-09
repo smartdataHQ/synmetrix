@@ -292,6 +292,7 @@ function mergeCube(existingCube, newCube, keepStale) {
       'source_partition',
       'generated_at',
       'generation_filters',
+      'grain_description',
       'ai_enrichment_status',
       'ai_metrics_count',
       'refresh_cadence',

@@ -81,8 +81,18 @@ const mergeCube = (existingCube, candidateCube) => {
   // Keys the generator used to write but no longer does are shed from the
   // existing side, not resurrected through the spread (legacy cleanup —
   // cube-level description is Cube-native now).
+  // Keys the generator no longer writes (Cube-native description; and the
+  // volatile/redundant cube meta trimmed by spec 080 §4) are shed from the
+  // existing side so legacy bloated files clean up on the next reconcile,
+  // instead of resurrecting through the spread as presumed team keys.
   const existingMeta = { ...(existingCube.meta || {}) };
-  for (const legacyKey of ['refresh_cadence', 'description']) {
+  for (const legacyKey of [
+    'refresh_cadence',
+    'description',
+    'grain_description',
+    'generated_at',
+    'generation_filters',
+  ]) {
     if (!(legacyKey in (candidateCube.meta || {}))) delete existingMeta[legacyKey];
   }
   merged.meta = { ...existingMeta, ...(candidateCube.meta || {}) };

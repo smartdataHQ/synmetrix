@@ -206,7 +206,7 @@ function detectNestedLookupKeys(columns) {
  * @param {Array<{ column: string, operator: string, value: * }>} filters
  * @returns {string} SQL conditions joined by AND (no WHERE keyword)
  */
-function filtersToSqlConditions(filters) {
+export function filtersToSqlConditions(filters) {
   const conditions = [];
   for (const f of filters) {
     const op = String(f.operator).toUpperCase();
@@ -289,99 +289,6 @@ function buildCubeSource(schema, table, partition, isInternal, filters, aliasCol
 }
 
 /**
- * Map a ValueType to a JSON-friendly field type string.
- *
- * @param {string} valueType - ValueType enum value
- * @param {string} rawType - Raw ClickHouse type string
- * @returns {string} JSON-friendly type like "string", "integer", "float", "boolean", "datetime", "uuid"
- */
-function toJsonFieldType(valueType, rawType) {
-  const raw = (rawType || '').toLowerCase();
-  switch (valueType) {
-    case ValueType.STRING:
-      return 'string';
-    case ValueType.NUMBER:
-      if (/^u?int/i.test(raw.replace(/nullable\(|lowcardinality\(/g, ''))) return 'integer';
-      return 'float';
-    case ValueType.DATE:
-      return 'datetime';
-    case ValueType.UUID:
-      return 'uuid';
-    case ValueType.BOOLEAN:
-      return 'boolean';
-    default:
-      return 'string';
-  }
-}
-
-/**
- * Baked value lists and cardinality counts are snapshots that rot as data
- * arrives — the model carries shape + semantics, the data plane answers
- * value questions (live queries, /meta/dynamic). What little we do bake is
- * bounded by these helpers so reconciles stay idempotent:
- * - counts ≤ LC_BAKE_CAP are exact (facet/pie thresholds need them),
- *   larger counts round to 2 significant figures (consumers only threshold);
- * - value lists are baked only when COMPLETE (≤ LC_BAKE_CAP distinct) and
- *   not identifier-shaped (UUIDs/emails/opaque tokens are data, not enums —
- *   and baking them leaks PII into schema files).
- */
-const LC_BAKE_CAP = 12;
-
-function bucketCardinality(count) {
-  const n = Number(count);
-  if (!Number.isFinite(n) || n < 0) return null;
-  if (n <= LC_BAKE_CAP) return n;
-  const magnitude = 10 ** (Math.floor(Math.log10(n)) - 1);
-  return Math.round(n / magnitude) * magnitude;
-}
-
-const UUID_VALUE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EMAIL_VALUE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// Long unbroken token containing a digit — machine ids, not human enum labels
-const OPAQUE_TOKEN_RE = /^(?=.*\d)[A-Za-z0-9_-]{20,}$/;
-
-function looksLikeIdentifierValues(values) {
-  const sample = (values || []).filter((v) => typeof v === 'string' && v.length > 0);
-  if (sample.length === 0) return false;
-  const hits = sample.filter(
-    (v) => UUID_VALUE_RE.test(v) || EMAIL_VALUE_RE.test(v) || OPAQUE_TOKEN_RE.test(v)
-  ).length;
-  return hits / sample.length >= 0.5;
-}
-
-/**
- * The list to bake for an enum-ish field, or null when baking would mislead
- * (incomplete list, identifier-shaped values) — consumers treat a baked list
- * as the complete value set (facet widgets, agent filter hints).
- *
- * @param {*} values - Observed distinct values (profiler, ≤ LC probe limit)
- * @param {*} uniqueCount - Distinct count when known (defaults to list length)
- * @returns {Array|null}
- */
-function lcBakeList(values, uniqueCount) {
-  if (!Array.isArray(values) || values.length === 0) return null;
-  const count = uniqueCount == null ? values.length : Number(uniqueCount);
-  if (count > LC_BAKE_CAP || values.length > LC_BAKE_CAP) return null;
-  if (looksLikeIdentifierValues(values)) return null;
-  return values;
-}
-
-/**
- * Check whether a field represents an Int8 boolean (for meta filtering).
- *
- * @param {string} rawType
- * @param {object|null} profile
- * @returns {boolean}
- */
-function isInt8Boolean(rawType, profile) {
-  if (!(rawType || '').toLowerCase().includes('int8')) return false;
-  if (!profile) return true;
-  if (profile.maxValue != null && profile.maxValue > 1) return false;
-  if (profile.minValue != null && profile.minValue < 0) return false;
-  return true;
-}
-
-/**
  * Process all columns from a profiled table into cube fields.
  *
  * @param {Map} columns - Map of column name -> { details, profile }
@@ -418,17 +325,19 @@ function processColumns(columns, options) {
     const details = columnData; // details fields are on the column data itself
 
     // Skip columns with no values.
-    // Exception: GROUPED columns not in the ARRAY JOIN groups (e.g. location.*)
-    // are never profiled (the profiler skips Array columns), so hasValues stays
-    // false. Let them through — they produce valid dimensions via NestedFieldProcessor.
-    // GROUPED columns IN the ARRAY JOIN groups are handled by buildArrayJoinCube.
+    // Skip any column the profiler evaluated to empty for this slice. The
+    // profiler DOES profile nested/GROUPED sub-columns (min/max/uniq per field),
+    // so `hasValues === false` means "no usable value in the profiled slice" —
+    // for a row-type model that member must NOT appear (only-used-fields; spec
+    // 080). A previous exception force-kept non-AJ GROUPED columns on the
+    // (now stale) assumption the profiler never profiles arrays; it does, and
+    // that leaked dozens of all-empty nested members (commerce.*/screen.*/
+    // traits.*/network.*/…) into slices that never populate them. GROUPED
+    // columns IN an ARRAY JOIN group are re-emitted by buildArrayJoinCube on the
+    // nested-filter path, so dropping the empty carry-over here is safe.
     if (profile && profile.hasValues === false) {
-      const isNonAjGrouped = details.columnType === ColumnType.GROUPED
-        && details.parentName && !arrayJoinGroups.includes(details.parentName);
-      if (!isNonAjGrouped) {
-        columnsSkipped++;
-        continue;
-      }
+      columnsSkipped++;
+      continue;
     }
 
     // Skip string/UUID columns with 0 unique non-empty values
@@ -532,15 +441,12 @@ function processColumns(columns, options) {
             _lookupKeyDim: filterDimName, // marks this as the lookup-key dim
             meta: {
               auto_generated: true,
-              source_column: columnName,
-              field_type: 'string',
               nested_lookup_key: true,
             },
           };
-          // FILTER_PARAMS lookups are unusable without knowing the valid
-          // values — bake them, but only as a complete, non-identifier set.
-          const knownValues = lcBakeList(lookup.lcValues, lookup.lcValues.length);
-          if (knownValues) field.meta.known_values = knownValues;
+          // Lean trim (spec 080 §4): the lookup key's valid values are NOT
+          // baked — /meta/dynamic + live queries answer value questions
+          // freshness-stamped, without rotting or leaking data into the model.
           if (colDescription) field.description = colDescription;
           allFields.push(field);
         } else {
@@ -614,7 +520,6 @@ function processColumns(columns, options) {
             : details.valueType === ValueType.DATE ? 'time'
             : details.valueType === ValueType.BOOLEAN ? 'boolean'
             : 'string';
-          const jsonFieldType = toJsonFieldType(details.valueType, details.rawType);
           // Coordinates are dimensions; other numbers are measures
           const cubeFieldType = (details.valueType === ValueType.NUMBER && !isCoordinate) ? 'measure' : 'dimension';
           const cubeType = cubeFieldType === 'measure' ? 'sum' : fieldType;
@@ -633,8 +538,6 @@ function processColumns(columns, options) {
             _sourceColumn: columnName,
             meta: {
               auto_generated: true,
-              source_column: columnName,
-              field_type: jsonFieldType,
             },
           };
           if (colDescription) field.description = colDescription;
@@ -678,62 +581,41 @@ function processColumns(columns, options) {
         field.public = true;
       }
 
-      // Add auto-generated meta with source info
+      // Lean meta (spec 080 §4): `auto_generated` is the merge key (yamlGenerator
+      // re-stamps it, and the mergers classify auto vs template/AI by it), so it
+      // stays. `source_column`/`field_type` are dropped — the member's own `type`
+      // carries the shape and the merge keys by `name`, not by source column.
       field.meta = { auto_generated: true };
-      field.meta.source_column = columnName;
 
-      // Add JSON-friendly field_type
-      const isBoolField = isInt8Boolean(details.rawType, profile);
-      if (field._mapKey) {
-        // For map-expanded fields, use the map's value data type
-        field.meta.field_type = toJsonFieldType(details.valueDataType || details.valueType, details.rawType);
-      } else {
-        field.meta.field_type = isBoolField ? 'boolean' : toJsonFieldType(details.valueType, details.rawType);
-      }
-
-      // Column description — Cube-native property, and only on the column's
-      // own field: stamping the parent map's description onto every expanded
-      // key repeats one sentence dozens of times and describes nothing.
+      // Column description — Cube-native property, and only on the column's OWN
+      // field (name === column): stamping the parent map's description onto every
+      // expanded key, or onto derived aggregation measures (`timestamp_min`/
+      // `timestamp_max`), repeats one sentence and describes nothing.
       const colDescription = columnDescriptions.get(columnName) || null;
-      if (colDescription && !field._mapKey) {
+      if (colDescription && !field._mapKey && field.name === columnName) {
         field.description = colDescription;
       }
 
+      // Structural map marker stays (one line, tells consumers this is a map
+      // key). Per-key value snapshots (unique_values/lc_values) are NOT baked —
+      // they rot, leak data/PII, and /meta/dynamic answers value questions at
+      // query time, filter-scoped and freshness-stamped (spec 080 §4).
       if (field._mapKey) {
         field.meta.map_key = field._mapKey;
-
-        // Per-key stats from profiler (bounded — see lcBakeList/bucketCardinality)
-        const stats = profile?.keyStats?.[field._mapKey];
-        if (stats && stats.unique_values != null) {
-          const bucketed = bucketCardinality(stats.unique_values);
-          if (bucketed != null) field.meta.unique_values = bucketed;
-        }
-        if (profile && profile.lcValues && typeof profile.lcValues === 'object' && !Array.isArray(profile.lcValues)) {
-          const lcList = lcBakeList(
-            profile.lcValues[field._mapKey],
-            stats?.unique_values ?? undefined
-          );
-          if (lcList) field.meta.lc_values = lcList;
-        }
-      } else if (profile) {
-        // For Map-expanded fields, unique_values from the parent is the key count
-        // — not meaningful per-field. Only attach for non-map fields.
-        if (profile.uniqueValues > 0) {
-          const bucketed = bucketCardinality(profile.uniqueValues);
-          if (bucketed != null) field.meta.unique_values = bucketed;
-        }
-        if (Array.isArray(profile.lcValues)) {
-          const lcList = lcBakeList(profile.lcValues, profile.uniqueValues);
-          if (lcList) field.meta.lc_values = lcList;
-        }
       }
 
       // Skip map-expanded fields with no useful data (only when keyStats was populated by profiler)
       if (field._mapKey && profile?.keyStats) {
         const stats = profile.keyStats[field._mapKey];
         if (stats) {
-          // Numeric keys: skip if min/max/avg are all null (no non-null values)
-          if (field.fieldType === 'measure' && stats.min == null && stats.max == null && stats.avg == null) {
+          // Numeric keys: skip if there is no usable signal — all null (key
+          // never present) OR all-zero (min===max===0, a placeholder that
+          // carries no analytical value, mirroring the basic-column skip).
+          if (
+            field.fieldType === 'measure' &&
+            ((stats.min == null && stats.max == null && stats.avg == null) ||
+              (Number(stats.min) === 0 && Number(stats.max) === 0))
+          ) {
             continue;
           }
           // String keys: skip if 0 unique non-empty values
@@ -761,8 +643,6 @@ function processColumns(columns, options) {
         _sourceColumn: columnName,
         meta: {
           auto_generated: true,
-          source_column: columnName,
-          field_type: 'map',
           native_map: true,
           // Key inventory intentionally NOT baked — /meta/dynamic answers it
           // at query time, filter-scoped and freshness-stamped (014).
@@ -840,6 +720,10 @@ function processColumns(columns, options) {
       sql: field.sql,
       type: field.type,
       meta: field.meta,
+      // Transient: the ARRAY JOIN builder and the smart-generate AJ-SQL pruner
+      // read the source column here now that `meta.source_column` is trimmed.
+      // yamlGenerator whitelists serialized keys, so `_`-props never persist.
+      _sourceColumn: field._sourceColumn,
     };
 
     if (field.description) output.description = field.description;
@@ -903,7 +787,7 @@ function buildRawCube(profiledTable, options) {
     name: 'count',
     sql: '*',
     type: 'count',
-    meta: { auto_generated: true, field_type: 'integer' },
+    meta: { auto_generated: true },
   });
 
   // -- Heuristics: partition-first ordering ----------------------------------
@@ -923,15 +807,17 @@ function buildRawCube(profiledTable, options) {
     ? primaryKeys.map(sanitizeFieldName).join(' + ')
     : 'one row per source record';
 
+  // Lean cube meta (spec 080 §4): `grain` (a short identifier list) stays;
+  // `grain_description` (a sentence duplicating it) and the volatile
+  // `generated_at` are dropped — the latter also breaks byte-identical reruns
+  // (SC-002). `source_database`/`source_table`/`time_dimension`/`time_zone` stay.
   const meta = {
     auto_generated: true,
     source_database: schema,
     source_table: table,
     grain: grainParts,
-    grain_description: `Each row represents one ${table} record, keyed by ${grainParts}.`,
     time_dimension: timeDim ? timeDim.name : null,
     time_zone: 'UTC',
-    generated_at: new Date().toISOString(),
   };
 
   if (isInternal && partition) {
@@ -1217,16 +1103,18 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   };
   const dimensions = rawCube.dimensions
     .filter((d) => {
-      if (d.meta?.source_column && isAjGroupColumn(d.meta.source_column)) return false;
-      if (d.sql && d.sql.includes('FILTER_PARAMS') && isAjGroupColumn(d._sourceColumn)) return false;
+      // AJ-group source columns are re-emitted as flattened members below, so
+      // drop the raw-cube carry-overs. The source column now lives on the
+      // transient `_sourceColumn` (meta.source_column is trimmed — §4); this
+      // also covers the FILTER_PARAMS dims that read the same key.
+      if (isAjGroupColumn(d._sourceColumn)) return false;
       return true;
     })
     .map((d) => ({ ...d }));
   const survivingDimNames = new Set(dimensions.map((d) => d.name));
   const measures = rawCube.measures
     .filter((m) => {
-      if (m.meta?.source_column && isAjGroupColumn(m.meta.source_column)) return false;
-      if (m.sql && m.sql.includes('FILTER_PARAMS') && isAjGroupColumn(m._sourceColumn)) return false;
+      if (isAjGroupColumn(m._sourceColumn)) return false;
       // Paired counts reference a dimension — check it survived
       if (m.meta?.filtered_count_for && !survivingDimNames.has(m.meta.filtered_count_for)) return false;
       // Drill members that reference removed dimensions
@@ -1262,16 +1150,19 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
       else if (col.valueType === ValueType.BOOLEAN) cubeType = 'boolean';
 
       const sql = `{CUBE}.${colAlias}`;
-      const meta = { auto_generated: true, source_column: col.name, source_group: group };
+      // `source_group` is a structural AJ marker (kept); `source_column` is
+      // trimmed from meta (§4) and carried on the transient `_sourceColumn` so
+      // the smart-generate AJ-SQL pruner still knows this member's source col.
+      const meta = { auto_generated: true, source_group: group };
       if (col.valueType === ValueType.NUMBER) {
         newAjFields.push({
           name: candidates[0], _nameCandidates: candidates,
-          sql, type: 'sum', meta, _bucket: 'measure',
+          sql, type: 'sum', meta, _bucket: 'measure', _sourceColumn: col.name,
         });
       } else {
         newAjFields.push({
           name: candidates[0], _nameCandidates: candidates,
-          sql, type: cubeType, meta, _bucket: 'dimension',
+          sql, type: cubeType, meta, _bucket: 'dimension', _sourceColumn: col.name,
         });
       }
     }
@@ -1286,9 +1177,9 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
   resolveNames(resolveSet);
   for (const f of newAjFields) {
     if (f._bucket === 'measure') {
-      measures.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta });
+      measures.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta, _sourceColumn: f._sourceColumn });
     } else {
-      dimensions.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta });
+      dimensions.push({ name: f.name, sql: f.sql, type: f.type, meta: f.meta, _sourceColumn: f._sourceColumn });
     }
     existingNames.add(f.name);
   }
@@ -1303,7 +1194,6 @@ function buildArrayJoinCube(profiledTable, arrayJoinGroups, rawCube, options) {
     source_table: table,
     array_join_groups: arrayJoinGroups,
     nested_filters: nestedFilters.length > 0 ? nestedFilters : undefined,
-    generated_at: new Date().toISOString(),
   };
 
   if (isInternal && partition) {
@@ -1386,7 +1276,7 @@ export function buildCubes(profiledTable, options = {}) {
       ? primaryKeys.map(sanitizeFieldName).join(' + ')
       : 'one row per source record';
     ajCube.meta.grain = grainParts;
-    ajCube.meta.grain_description = `Each row represents one ${profiledTable.table} record, keyed by ${grainParts}.`;
+    // grain_description trimmed (§4) — `grain` already carries the identifier.
     ajCube.meta.time_dimension = timeDim ? timeDim.name : null;
     ajCube.meta.time_zone = 'UTC';
 
@@ -1453,9 +1343,10 @@ export function buildCubes(profiledTable, options = {}) {
           type: 'string',
           meta: {
             auto_generated: true,
-            source_column: ajDef.column,
             array_join_alias: ajDef.alias,
           },
+          // source_column trimmed from meta (§4); kept transiently for the pruner.
+          _sourceColumn: ajDef.column,
         });
       }
 
@@ -1556,7 +1447,34 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     internalTables = [],
     templateName,
     templateChecksum = null,
+    // 080 (row-type pipeline, additive): scope the cube source to one row
+    // type's slice, override the cube name (e.g. `rt_<slug>`), and stamp
+    // caller-supplied provenance meta (marker family #2) INSTEAD of the 013
+    // default-model trio. All default to the pre-080 behavior.
+    filters = [],
+    cubeName = null,
+    cubeMeta = null,
   } = options;
+
+  const finalCubeName = cubeName || templateCube.name;
+
+  // Family #2 replaces `default_model`/`template_checksum`; the template's own
+  // meta (field_policy, slots, …) still carries through underneath, and
+  // `template` records the seed either way (080 FR-011).
+  const stampCubeMeta = (templateMeta) => {
+    if (!cubeMeta) {
+      return {
+        ...(templateMeta || {}),
+        default_model: true,
+        template: templateName,
+        template_checksum: templateChecksum,
+      };
+    }
+    const base = { ...(templateMeta || {}) };
+    delete base.default_model;
+    delete base.template_checksum;
+    return { ...base, template: templateName, ...cubeMeta };
+  };
 
   const stampTemplateField = (field) => {
     const meta = { ...(field.meta || {}) };
@@ -1585,12 +1503,17 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
 
   let source;
   if (qualifiedTable) {
-    source = buildCubeSource(schema, table, partition, isInternal, [], []);
+    source = buildCubeSource(schema, table, partition, isInternal, filters, []);
   } else if (templateCube.sql) {
-    // custom-SQL template: wrap so the scope literal still applies
-    source = partition
-      ? { sql: `SELECT * FROM (${templateCube.sql}) WHERE partition = '${partition}'` }
-      : { sql: templateCube.sql };
+    // custom-SQL template: wrap so the scope literal (and any row-type
+    // filters) still applies
+    const wrapConditions = [];
+    if (partition) wrapConditions.push(`partition = '${partition}'`);
+    if (filters.length > 0) wrapConditions.push(filtersToSqlConditions(filters));
+    source =
+      wrapConditions.length > 0
+        ? { sql: `SELECT * FROM (${templateCube.sql}) WHERE ${wrapConditions.join(' AND ')}` }
+        : { sql: templateCube.sql };
   } else {
     source = {};
   }
@@ -1644,18 +1567,13 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     };
 
     const cube = sanitizeCubeProse({
-      name: templateCube.name,
+      name: finalCubeName,
       ...(templateCube.title ? { title: templateCube.title } : {}),
       ...(templateCube.description
         ? { description: templateCube.description }
         : {}),
       ...source,
-      meta: {
-        ...(templateCube.meta || {}),
-        default_model: true,
-        template: templateName,
-        template_checksum: templateChecksum,
-      },
+      meta: stampCubeMeta(templateCube.meta),
       dimensions: templateDims.filter(keepRegistryMember),
       measures: templateMeasures.filter(keepRegistryMember),
       ...(templateSegments.length > 0
@@ -1670,7 +1588,8 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
     const { cubes: probeCubes } = buildCubes(profiledTable, {
       partition,
       internalTables,
-      cubeName: templateCube.name,
+      cubeName: finalCubeName,
+      filters,
     });
     const probeCube = probeCubes[0];
     if (probeCube) {
@@ -1694,16 +1613,11 @@ export function buildCubesFromTemplate(templateCube, profiledTable, options = {}
   }
 
   const cube = sanitizeCubeProse({
-    name: templateCube.name,
+    name: finalCubeName,
     ...(templateCube.title ? { title: templateCube.title } : {}),
     ...(templateCube.description ? { description: templateCube.description } : {}),
     ...source,
-    meta: {
-      ...(templateCube.meta || {}),
-      default_model: true,
-      template: templateName,
-      template_checksum: templateChecksum,
-    },
+    meta: stampCubeMeta(templateCube.meta),
     dimensions,
     measures,
     ...(templateSegments.length > 0 ? { segments: templateSegments } : {}),
