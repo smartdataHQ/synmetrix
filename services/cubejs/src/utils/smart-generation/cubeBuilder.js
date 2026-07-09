@@ -325,17 +325,19 @@ function processColumns(columns, options) {
     const details = columnData; // details fields are on the column data itself
 
     // Skip columns with no values.
-    // Exception: GROUPED columns not in the ARRAY JOIN groups (e.g. location.*)
-    // are never profiled (the profiler skips Array columns), so hasValues stays
-    // false. Let them through — they produce valid dimensions via NestedFieldProcessor.
-    // GROUPED columns IN the ARRAY JOIN groups are handled by buildArrayJoinCube.
+    // Skip any column the profiler evaluated to empty for this slice. The
+    // profiler DOES profile nested/GROUPED sub-columns (min/max/uniq per field),
+    // so `hasValues === false` means "no usable value in the profiled slice" —
+    // for a row-type model that member must NOT appear (only-used-fields; spec
+    // 080). A previous exception force-kept non-AJ GROUPED columns on the
+    // (now stale) assumption the profiler never profiles arrays; it does, and
+    // that leaked dozens of all-empty nested members (commerce.*/screen.*/
+    // traits.*/network.*/…) into slices that never populate them. GROUPED
+    // columns IN an ARRAY JOIN group are re-emitted by buildArrayJoinCube on the
+    // nested-filter path, so dropping the empty carry-over here is safe.
     if (profile && profile.hasValues === false) {
-      const isNonAjGrouped = details.columnType === ColumnType.GROUPED
-        && details.parentName && !arrayJoinGroups.includes(details.parentName);
-      if (!isNonAjGrouped) {
-        columnsSkipped++;
-        continue;
-      }
+      columnsSkipped++;
+      continue;
     }
 
     // Skip string/UUID columns with 0 unique non-empty values
@@ -606,8 +608,14 @@ function processColumns(columns, options) {
       if (field._mapKey && profile?.keyStats) {
         const stats = profile.keyStats[field._mapKey];
         if (stats) {
-          // Numeric keys: skip if min/max/avg are all null (no non-null values)
-          if (field.fieldType === 'measure' && stats.min == null && stats.max == null && stats.avg == null) {
+          // Numeric keys: skip if there is no usable signal — all null (key
+          // never present) OR all-zero (min===max===0, a placeholder that
+          // carries no analytical value, mirroring the basic-column skip).
+          if (
+            field.fieldType === 'measure' &&
+            ((stats.min == null && stats.max == null && stats.avg == null) ||
+              (Number(stats.min) === 0 && Number(stats.max) === 0))
+          ) {
             continue;
           }
           // String keys: skip if 0 unique non-empty values

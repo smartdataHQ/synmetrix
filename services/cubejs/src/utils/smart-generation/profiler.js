@@ -1134,7 +1134,12 @@ export async function profileTable(driver, schema, table, options = {}) {
           if (candidate.unsafeKeyCardinality) {
             selectParts.push(`uniq(${expr}) as ${keyAlias}__uniq`);
           } else {
-            selectParts.push(`uniqIf(${expr}, ${expr} != '') as ${keyAlias}__uniq`);
+            // Count only MEANINGFUL distinct values — a key whose values are all
+            // empty / whitespace / '0' is an unused placeholder and must not
+            // become a member (spec 080: only-used-fields). Excluding '0' only
+            // zeroes keys that are entirely ''/'0'; a key with '0' plus real
+            // values keeps its real cardinality.
+            selectParts.push(`uniqIf(${expr}, trimBoth(${expr}) != '' AND ${expr} != '0') as ${keyAlias}__uniq`);
           }
         }
 
