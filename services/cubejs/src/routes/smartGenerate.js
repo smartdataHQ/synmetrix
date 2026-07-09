@@ -705,13 +705,16 @@ export default async (req, res, cubejs) => {
       // unnecessary nested columns in the LEFT ARRAY JOIN.
       for (const cube of cubeResult.cubes) {
         if (!cube.sql || !cube.sql.includes('LEFT ARRAY JOIN')) continue;
-        // Collect all source_column values from surviving fields
+        // Collect all source columns from surviving fields. The builder keeps
+        // this on the transient `_sourceColumn` (meta.source_column is trimmed
+        // from the serialized model — spec 080 §4); it is present here because
+        // the AJ-SQL prune runs on the in-memory cubes before generateYaml.
         const usedSourceColumns = new Set();
         for (const d of cube.dimensions || []) {
-          if (d.meta?.source_column) usedSourceColumns.add(d.meta.source_column);
+          if (d._sourceColumn) usedSourceColumns.add(d._sourceColumn);
         }
         for (const m of cube.measures || []) {
-          if (m.meta?.source_column) usedSourceColumns.add(m.meta.source_column);
+          if (m._sourceColumn) usedSourceColumns.add(m._sourceColumn);
         }
         // Also keep filter columns referenced in the WHERE clause
         const nestedFilterMeta = cube.meta?.nested_filters;
