@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 
 import {
   findUser,
+  invalidateUserCache,
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
@@ -78,7 +79,7 @@ const checkAuth = async (req) => {
     throw error;
   }
 
-  const user = await findUser({ userId });
+  let user = await findUser({ userId });
 
   if (!user.dataSources?.length || !user.members?.length) {
     const error = new Error(`404: user "${userId}" not found`);
@@ -86,13 +87,34 @@ const checkAuth = async (req) => {
     throw error;
   }
 
-  const userScope = defineUserScope(
-    user.dataSources,
-    user.members,
-    dataSourceId,
-    branchId,
-    branchVersionId
-  );
+  let userScope;
+  try {
+    userScope = defineUserScope(
+      user.dataSources,
+      user.members,
+      dataSourceId,
+      branchId,
+      branchVersionId
+    );
+  } catch (err) {
+    // Self-heal a stale user cache: a datasource/branch/version created moments
+    // ago (e.g. testing a just-created datasource, or the pre-create transient
+    // test) may not be in the cached scope yet. Invalidate and retry ONCE with
+    // fresh data before surfacing a 404 "not found".
+    if (err.status === 404 && (dataSourceId || branchId || branchVersionId)) {
+      invalidateUserCache(userId);
+      user = await findUser({ userId });
+      userScope = defineUserScope(
+        user.dataSources,
+        user.members,
+        dataSourceId,
+        branchId,
+        branchVersionId
+      );
+    } else {
+      throw err;
+    }
+  }
 
   req.securityContext = {
     authToken,
