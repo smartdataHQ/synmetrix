@@ -70,10 +70,13 @@ export default async (req, res, cubejs) => {
       });
     }
 
+    // Use admin secret (no authToken) for internal Hasura calls — the caller
+    // may be authenticated with an externally-issued JWT (e.g. WorkOS) that
+    // Hasura cannot verify; checkAuth + defineUserScope already authorized the
+    // request. Mirrors the smartGenerate precedent.
     const dataSchemas = await findDataSchemas({
       dataSourceId,
       branchId,
-      authToken,
     });
 
     const existedFiles = dataSchemas.map((row) => ({
@@ -99,7 +102,6 @@ export default async (req, res, cubejs) => {
     }));
 
     const commitObject = {
-      authToken,
       user_id: userId,
       branch_id: branchId,
       checksum: commitChecksum,
