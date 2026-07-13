@@ -26,17 +26,23 @@ const ensureYamlPrimaryKeys = (files, schema) => {
     }
     let changed = false;
     (doc?.cubes || []).forEach((cube) => {
-      if (!cube?.joins?.length) return;
+      // Every scaffolded cube gets a primary key when an id-pattern column
+      // exists — join SOURCES need it to compile, and join TARGETS need it
+      // for aggregate correctness ("primary key for 'X' is required when
+      // join is defined" fires for the referenced cube too).
       const dimensions = cube.dimensions || [];
       if (dimensions.some((d) => d.primary_key || d.primaryKey)) return;
 
       const tableMatch = /from\s+(?:[\w"]+\.)?"?(\w+)"?/i.exec(cube.sql || "");
       const tableName = tableMatch?.[1];
       const columns = (tableName && columnsByTable[tableName]) || [];
+      const joins = cube.joins || [];
       const pkColumn =
         columns.find((c) => c === "id") ||
         columns.find((c) => c === `${tableName}_id`) ||
-        columns.find((c) => /_id$/.test(c) && cube.joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`)));
+        columns.find(
+          (c) => /_id$/.test(c) && joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`))
+        );
       if (!pkColumn) return;
 
       dimensions.unshift({
