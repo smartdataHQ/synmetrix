@@ -1,10 +1,60 @@
 import { ScaffoldingTemplate } from "@cubejs-backend/schema-compiler";
+import yaml from "js-yaml";
 import {
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { NO_SCHEMA_KEY } from "./getSchema.js";
+const camelize = (value) =>
+  value.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+
+const ensureYamlPrimaryKeys = (files, schema) => {
+  const columnsByTable = {};
+  Object.values(schema || {}).forEach((tables) => {
+    Object.entries(tables || {}).forEach(([tableName, columns]) => {
+      columnsByTable[tableName] = (columns || []).map((c) => c.name);
+    });
+  });
+
+  files.forEach((file) => {
+    let doc;
+    try {
+      doc = yaml.load(file.content);
+    } catch {
+      return;
+    }
+    let changed = false;
+    (doc?.cubes || []).forEach((cube) => {
+      if (!cube?.joins?.length) return;
+      const dimensions = cube.dimensions || [];
+      if (dimensions.some((d) => d.primary_key || d.primaryKey)) return;
+
+      const tableMatch = /from\s+(?:[\w"]+\.)?"?(\w+)"?/i.exec(cube.sql || "");
+      const tableName = tableMatch?.[1];
+      const columns = (tableName && columnsByTable[tableName]) || [];
+      const pkColumn =
+        columns.find((c) => c === "id") ||
+        columns.find((c) => c === `${tableName}_id`) ||
+        columns.find((c) => /_id$/.test(c) && cube.joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`)));
+      if (!pkColumn) return;
+
+      dimensions.unshift({
+        name: camelize(pkColumn),
+        sql: pkColumn,
+        type: "number",
+        primary_key: true,
+        public: false,
+      });
+      cube.dimensions = dimensions;
+      changed = true;
+    });
+    if (changed) {
+      file.content = yaml.dump(doc, { lineWidth: 120 });
+    }
+  });
+};
+
 const filterFiles = (mainFiles, addFiles) => {
   const fileNames = mainFiles.map((f) => f.fileName);
   return [
@@ -62,6 +112,17 @@ export default async (req, res, cubejs) => {
 
     const newFiles =
       scaffoldingTemplate.generateFilesByTableNames(normalizedTables);
+
+    // ScaffoldingTemplate emits joins for FK-pattern columns but only marks a
+    // primary key for columns literally named "id" — schemas using
+    // `<table>_id` keys (e.g. Pagila) then scaffold cubes with joins and no
+    // primary_key, and the WHOLE branch fails to compile ("primary key for X
+    // is required when join is defined"). Post-process YAML scaffolds: when a
+    // cube has joins and no primary-key dimension, promote the id-pattern
+    // column to a hidden primary-key dimension.
+    if (format === "yaml") {
+      ensureYamlPrimaryKeys(newFiles, normalizedSchema);
+    }
 
     if (!newFiles.length) {
       return res.status(400).json({
