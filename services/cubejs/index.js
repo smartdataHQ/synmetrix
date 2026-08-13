@@ -11,10 +11,16 @@ import { logging } from "./src/utils/logging.js";
 import { checkAuth } from "./src/utils/checkAuth.js";
 import checkSqlAuth from "./src/utils/checkSqlAuth.js";
 import driverFactory from "./src/utils/driverFactory.js";
+import { installProcessGuards } from "./src/utils/processGuards.js";
 import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts from "./src/utils/scheduledRefreshContexts.js";
+
+// Installed before anything else so failures during startup are covered too.
+// A pre-aggregation whose build query fails rejects past Cube's orchestrator;
+// without this the refresh worker exits and loses every in-flight build.
+installProcessGuards({ logger: logging });
 
 const {
   CUBEJS_SECRET,
