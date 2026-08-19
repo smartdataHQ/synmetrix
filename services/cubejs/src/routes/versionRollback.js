@@ -1,4 +1,5 @@
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import {
   findUser,
   findVersionBranch,
@@ -194,6 +195,23 @@ export default async function versionRollback(req, res, cubejs) {
       "Hasura rejected the rollback"
     );
   }
+
+  // 099 T087 (FR-091): a successful rollback minted a new current version.
+  // Fire-and-forget; never blocks the response (FR-007).
+  emitModelEvent({
+    event: "Model Version Rolled Back",
+    accountId: payload?.accountId ?? null,
+    partition: payload?.partition ?? null,
+    userId,
+    modelId: result.newVersionId,
+    status: "ok",
+    metrics: { record_count: result.clonedDataschemaCount },
+    properties: {
+      branch_id: branchId,
+      to_version_id: toVersionId,
+      cloned_dataschema_count: result.clonedDataschemaCount,
+    },
+  });
 
   return res.json({
     newVersionId: result.newVersionId,

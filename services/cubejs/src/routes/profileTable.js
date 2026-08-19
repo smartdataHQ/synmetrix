@@ -8,6 +8,7 @@ import { serializeProfile } from '../utils/smart-generation/profileSerializer.js
 import { ColumnType } from '../utils/smart-generation/typeParser.js';
 import { parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
 import { loadRules } from '../utils/queryRewrite.js';
+import { emitQueryEvent } from '../utils/eventEmitter.js';
 
 /**
  * Analyze an existing data schema file for user content and reprofile support.
@@ -96,6 +97,19 @@ export default async (req, res, cubejs) => {
   // Normalize filters: default to empty array if missing/invalid
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
   const nestedFilters = Array.isArray(rawNestedFilters) ? rawNestedFilters : [];
+
+  // 099 T089 (FR-091): tenant attribution for `Table Profiled`. NOTE: the
+  // event tenant partition lives on tokenPayload (FraiOS tenant) — NOT the
+  // `dataSource.partition` used below for ClickHouse row-scoping, which is a
+  // different concept. `dbType` rides the datasource_type dimension.
+  const tokenPayload = securityContext?.tokenPayload || {};
+  const tenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId: securityContext?.userId ?? null,
+  };
+  const dbType = securityContext?.userScope?.dataSource?.dbType ?? null;
+  const profileStart = Date.now();
 
   if (!table || !schema) {
     return res.status(400).json({
@@ -231,9 +245,50 @@ export default async (req, res, cubejs) => {
       raw_profile: rawProfile,
     };
 
+    // 099 T089 (FR-091): the table was profiled. Fire-and-forget; never blocks
+    // (FR-007). No ABOUT subject id at profile time (the physical table is not a
+    // model version yet) — the house involves anchor it; schema/table ride
+    // properties, never dimensions (FR-031).
+    emitQueryEvent({
+      event: 'Table Profiled',
+      ...tenant,
+      status: 'ok',
+      dimensions: dbType ? { datasource_type: dbType } : null,
+      metrics: {
+        duration_ms: Date.now() - profileStart,
+        ...(Number.isFinite(Number(profiledTable.row_count))
+          ? { record_count: Number(profiledTable.row_count) }
+          : {}),
+      },
+      properties: {
+        schema,
+        table,
+        sampled: profiledTable.sampled ?? null,
+        sample_size: profiledTable.sample_size ?? null,
+        column_count: columnsOutput.length,
+        ...(branchId ? { branch_id: branchId } : {}),
+        ...(partition ? { datasource_partition: partition } : {}),
+      },
+    });
+
     emitter.complete(payload);
   } catch (err) {
     console.error(err);
+
+    // 099 T089 (FR-091): profiling failed — audit the error outcome.
+    emitQueryEvent({
+      event: 'Table Profiled',
+      ...tenant,
+      status: 'error',
+      dimensions: dbType ? { datasource_type: dbType } : null,
+      metrics: { duration_ms: Date.now() - profileStart },
+      properties: {
+        schema,
+        table,
+        ...(branchId ? { branch_id: branchId } : {}),
+        error_message: err?.message || String(err),
+      },
+    });
 
     if (driver && driver.release) {
       await driver.release();

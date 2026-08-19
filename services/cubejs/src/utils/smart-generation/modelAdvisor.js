@@ -9,6 +9,7 @@
 import fs from 'fs';
 import { validateModelSyntax } from './modelValidator.js';
 import { generateJs } from './yamlGenerator.js';
+import { emitConnectionCalled } from '../eventEmitter.js';
 
 const MODEL = 'gpt-5.4';
 const PASS_TIMEOUT = 45_000; // 45s per micro-prompt (plenty for small output)
@@ -59,7 +60,7 @@ function buildModelContext(generatedCode, profileSummary, cubes) {
 
 // -- Individual passes --------------------------------------------------------
 
-async function runPass(client, zodResponseFormat, z, modelContext, passName, principles, question, schema, timeout) {
+async function runPass(client, zodResponseFormat, z, modelContext, passName, principles, question, schema, timeout, emitCtx) {
   const systemPrompt = [
     'You are a Cube.js data modeling advisor. You review auto-generated models and suggest improvements.',
     'You have deep expertise in Cube.js, ClickHouse, and semantic layer best practices.',
@@ -74,6 +75,24 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
     '- Return ONLY what needs changing. Empty arrays are fine if no changes needed.',
   ].join('\n');
 
+  // 099 T088 (FR-040/FR-091): emit one billable `Connection Called` per OpenAI
+  // call (one per advisory pass). cost=null ⇒ compliant unpriced fallback
+  // (amount 0.0 / USD / pricing unknown). Fire-and-forget + never-throw; the
+  // pass name rides properties so a silently-swallowed pass failure stays
+  // auditable — the record is still emitted with status="error".
+  const emitAdviseCall = (status, startedAt) =>
+    emitConnectionCalled({
+      ...(emitCtx || {}),
+      provider: 'openai',
+      model: MODEL,
+      item: 'smart-generation:advise',
+      durationMs: Date.now() - startedAt,
+      cost: null,
+      status,
+      properties: { pass: passName, attempts: 1 },
+    });
+
+  const startedAt = Date.now();
   try {
     const completion = await client.chat.completions.parse(
       {
@@ -88,8 +107,10 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
       { signal: AbortSignal.timeout(timeout) }
     );
 
+    emitAdviseCall('ok', startedAt);
     return completion.choices[0]?.message?.parsed || null;
   } catch (err) {
+    emitAdviseCall('error', startedAt);
     console.warn('[modelAdvisor] Pass "' + passName + '" failed: ' + err.message);
     return null;
   }
@@ -103,7 +124,10 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
  * @param {string} generatedCode - JS model code
  * @param {object} profileSummary - { table, schema, row_count, columns }
  * @param {object[]} cubes - Parsed cube definitions
- * @param {object} [options]
+ * @param {object} [options] - { timeout, accountId, partition, userId }
+ *   accountId/partition/userId (099 T088) attribute the billable `Connection
+ *   Called` record emitted per advisory pass; absent tenant ⇒ the emit
+ *   self-skips (a credential is never invented).
  * @returns {Promise<{ passes: object[], status: string, error: string|null }>}
  */
 export async function adviseModel(generatedCode, profileSummary, cubes, options = {}) {
@@ -119,6 +143,12 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const modelContext = buildModelContext(generatedCode, profileSummary, cubes);
+  // 099 T088: tenant attribution threaded to each per-pass `Connection Called`.
+  const emitCtx = {
+    accountId: options.accountId ?? null,
+    partition: options.partition ?? null,
+    userId: options.userId ?? null,
+  };
   const passes = [];
 
   // -- Pass 1: Descriptions & Titles --
@@ -134,7 +164,7 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
   const descResult = await runPass(client, zodResponseFormat, z, modelContext,
     'descriptions', PRINCIPLES_DESCRIPTIONS,
     'Review all dimensions and measures. For any with a poor title or missing description, provide corrections. Focus on titles that would confuse a non-technical analyst.',
-    DescSchema, timeout);
+    DescSchema, timeout, emitCtx);
   if (descResult) passes.push({ pass: 'descriptions', result: descResult });
 
   // -- Pass 2: Segments --
@@ -150,7 +180,7 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
   const segResult = await runPass(client, zodResponseFormat, z, modelContext,
     'segments', PRINCIPLES_SEGMENTS,
     'What meaningful analyst-facing segments should this cube have? Consider common filter patterns analysts would reuse. Return 0-5 segments.',
-    SegSchema, timeout);
+    SegSchema, timeout, emitCtx);
   if (segResult) passes.push({ pass: 'segments', result: segResult });
 
   // -- Pass 3: Derived Metrics --
@@ -168,7 +198,7 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
   const metricsResult = await runPass(client, zodResponseFormat, z, modelContext,
     'derived_metrics', PRINCIPLES_METRICS,
     'What calculated metrics (rates, ratios, decomposed averages) would support analysis of this data? Reference existing measures using {measure_name} syntax. Return 0-10 metrics.',
-    MetricsSchema, timeout);
+    MetricsSchema, timeout, emitCtx);
   if (metricsResult) passes.push({ pass: 'derived_metrics', result: metricsResult });
 
   // -- Pass 4: Pre-aggregation Review --
@@ -188,7 +218,7 @@ export async function adviseModel(generatedCode, profileSummary, cubes, options 
   const preAggResult = await runPass(client, zodResponseFormat, z, modelContext,
     'pre_aggregations', PRINCIPLES_PREAGGS,
     'Review the pre-aggregations. Are they appropriate for this data and likely dashboard patterns? Return the complete recommended set (it replaces existing pre-aggs).',
-    PreAggSchema, timeout);
+    PreAggSchema, timeout, emitCtx);
   if (preAggResult) passes.push({ pass: 'pre_aggregations', result: preAggResult });
 
   return {

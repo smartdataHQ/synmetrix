@@ -10,6 +10,7 @@ import buildSecurityContext from "./buildSecurityContext.js";
 import defineUserScope, {
   getDataSourceAccessList,
 } from "./defineUserScope.js";
+import { emitQueryEvent } from "./eventEmitter.js";
 
 const buildSqlSecurityContext = (sqlCredentials) => {
   if (!sqlCredentials) {
@@ -116,6 +117,19 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
         datasourceId
       );
 
+      // 099 T089 (FR-091): a SQL-API session was authenticated. WorkOS tokens
+      // carry a partition (tenant) but no accountId. Fire-and-forget; never
+      // throws / never blocks the login (FR-007). Skips when no tenant.
+      emitQueryEvent({
+        event: "SQL Session Opened",
+        accountId: null,
+        partition: payload?.partition ?? null,
+        userId,
+        status: "ok",
+        dimensions: { surface: "sql-api", credential_source: "workos" },
+        properties: { datasource_id: datasourceId },
+      });
+
       return {
         password,
         securityContext: {
@@ -154,6 +168,19 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
         userData.members,
         datasourceId
       );
+
+      // 099 T089 (FR-091): a SQL-API session was authenticated. FraiOS tokens
+      // carry both accountId and partition. Fire-and-forget; never throws /
+      // never blocks the login (FR-007). Skips when no tenant.
+      emitQueryEvent({
+        event: "SQL Session Opened",
+        accountId: payload?.accountId ?? null,
+        partition: payload?.partition ?? null,
+        userId,
+        status: "ok",
+        dimensions: { surface: "sql-api", credential_source: "fraios" },
+        properties: { datasource_id: datasourceId },
+      });
 
       return {
         password,

@@ -4,6 +4,7 @@ import {
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { NO_SCHEMA_KEY } from "./getSchema.js";
 const camelize = (value) =>
@@ -93,6 +94,14 @@ export default async (req, res, cubejs) => {
   const { userScope, userId, authToken } = securityContext;
   const { dataSourceId } = userScope.dataSource;
 
+  // 099 T087 (FR-091): tenant attribution for the model lifecycle events.
+  const tokenPayload = securityContext.tokenPayload || {};
+  const tenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId,
+  };
+
   let driver;
 
   try {
@@ -175,13 +184,30 @@ export default async (req, res, cubejs) => {
       dataschemas: {
         data: [...preparedSchemas],
       },
+      // Persistence chokepoint emits `Model Saved` for the created version.
+      emit: tenant,
     };
 
-    await createDataSchema(commitObject);
+    const genResult = await createDataSchema(commitObject);
 
     if (cubejs.compilerCache) {
       cubejs.compilerCache.purgeStale();
     }
+
+    // 099 T087 (FR-091): scaffolding persisted a model version.
+    // Fire-and-forget; never blocks the response (FR-007).
+    emitModelEvent({
+      event: "Model Scaffolded",
+      ...tenant,
+      modelId: genResult?.id || null,
+      status: "ok",
+      properties: {
+        branch_id: branchId,
+        format,
+        file_count: files.length,
+        overwrite,
+      },
+    });
 
     res.json({ code: "ok", message: "Generation finished" });
   } catch (err) {

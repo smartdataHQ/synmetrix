@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 
 import { fetchGraphQL } from "./graphql.js";
 import { fetchWorkOSUserProfile } from "./workosAuth.js";
+import { emitModelEvent } from "./eventEmitter.js";
 
 // --- User scope cache: keyed by userId, 30s TTL ---
 const userCache = new Map();
@@ -284,7 +285,10 @@ export const getDataSources = async () => {
 };
 
 export const createDataSchema = async (object) => {
-  const { authToken, ...version } = object;
+  // `emit` (optional) carries tenant attribution for the 099 T087 `Model Saved`
+  // lifecycle event — destructured OUT here alongside `authToken` so it never
+  // reaches the `versions_insert_input` mutation variable (unknown column).
+  const { authToken, emit, ...version } = object;
 
   let res = await fetchGraphQL(
     upsertVersionMutation,
@@ -292,6 +296,24 @@ export const createDataSchema = async (object) => {
     authToken
   );
   res = res?.data?.insert_versions_one;
+
+  // 099 T087 (FR-091): this is THE server-side persistence chokepoint for a
+  // model version. Emit `Model Saved` (persistence fact) when a caller supplied
+  // tenant attribution and a version was actually created. Fire-and-forget;
+  // never throws / never blocks (FR-007). The pure editor save (raw GraphQL
+  // straight to Hasura) does not pass through here — it is covered by a Hasura
+  // event trigger (T087, tables.yaml), a separate mechanism.
+  if (emit && res?.id) {
+    emitModelEvent({
+      event: "Model Saved",
+      accountId: emit.accountId ?? null,
+      partition: emit.partition ?? null,
+      userId: emit.userId ?? null,
+      modelId: res.id,
+      status: "ok",
+      properties: { branch_id: version.branch_id ?? null, origin: version.origin ?? "save" },
+    });
+  }
 
   return res;
 };

@@ -2,6 +2,7 @@ import {
   createDataSchema,
   findDataSchemas,
 } from '../utils/dataSourceHelpers.js';
+import { emitModelEvent } from '../utils/eventEmitter.js';
 import createMd5Hex from '../utils/md5Hex.js';
 import { profileTable } from '../utils/smart-generation/profiler.js';
 import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
@@ -154,6 +155,16 @@ export default async (req, res, cubejs) => {
   try {
     const { userId } = securityContext;
     const partition = securityContext.userScope?.dataSource?.partition || null;
+    // 099 T087/T088 (FR-091): one tenant-attribution source of truth, shared by
+    // the LLM call sites (enrich/advise emit billable `Connection Called`) and
+    // the model lifecycle events (`Model Generated` / `Model Saved`). Hoisted so
+    // both run before and after the version-create chokepoint.
+    const tokenPayload = securityContext.tokenPayload || {};
+    const tenant = {
+      accountId: tokenPayload.accountId ?? null,
+      partition: tokenPayload.partition ?? null,
+      userId,
+    };
     let internalTables = securityContext.userScope?.dataSource?.internalTables || [];
     // 080: template-seeded generation targets the CANONICAL internal tables by
     // definition — force partition scoping for the target table even when the
@@ -441,6 +452,9 @@ export default async (req, res, cubejs) => {
           existingMeasureNames,
           profilerFields: profilerFieldNames,
           profiledTableColumns: tableColumnNames,
+          // 099 T088 (FR-040/FR-091): attribute the billable `Connection Called`
+          // record emitted per OpenAI call to the operating tenant.
+          ...tenant,
         },
       );
 
@@ -574,7 +588,9 @@ export default async (req, res, cubejs) => {
       };
 
       try {
-        advisorResult = await adviseModel(generatedPreAdvise, profileSummaryForAdvisor, cubeResult.cubes);
+        // 099 T088 (FR-040/FR-091): tenant attribution for the per-pass billable
+        // `Connection Called` records emitted inside the advisory passes.
+        advisorResult = await adviseModel(generatedPreAdvise, profileSummaryForAdvisor, cubeResult.cubes, tenant);
 
         if (advisorResult.status === 'success' && advisorResult.passes.length > 0) {
           applyAdvisoryPasses(cubeResult.cubes, advisorResult.passes);
@@ -975,12 +991,37 @@ export default async (req, res, cubejs) => {
       datasource_id: dataSourceId,
     }));
 
+    // 099 T087 (FR-091): `tenant` attribution is hoisted to the top of the
+    // handler (shared with the T088 LLM call sites).
     const result = await createDataSchema({
       user_id: userId,
       branch_id: branchId,
       checksum: commitChecksum,
       dataschemas: {
         data: [...preparedSchemas],
+      },
+      // Persistence chokepoint emits `Model Saved` for the created version.
+      emit: tenant,
+    });
+
+    // 099 T087 (FR-091): smart generation produced + saved a model version.
+    // Fire-and-forget; never blocks the response (FR-007).
+    emitModelEvent({
+      event: 'Model Generated',
+      ...tenant,
+      modelId: result?.id || null,
+      modelLabel: fileName,
+      status: 'ok',
+      properties: {
+        file_name: fileName,
+        branch_id: branchId,
+        cubes_count: cubeResult.summary.cubes_count,
+        dimensions_count: cubeResult.summary.dimensions_count,
+        measures_count: cubeResult.summary.measures_count,
+        template_name: templateName,
+        skip_llm: skipLlm,
+        // 099 T088: the enrichment LLM used (null when skip_llm / no key).
+        llm_model: aiEnrichment.model,
       },
     });
 
