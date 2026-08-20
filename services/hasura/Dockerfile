@@ -21,3 +21,5 @@ COPY ./config.yaml ./config.yaml
 
 # Default command shows help; override with specific migration commands  
 CMD ["hasura-cli", "--help"]
+
+# registry.fraios.dev mirror enabled — rebuild trigger

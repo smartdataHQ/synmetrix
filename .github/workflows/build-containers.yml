@@ -143,11 +143,29 @@ jobs:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_PASS }}
 
+      - name: Log in to registry.fraios.dev
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: registry.fraios.dev
+          username: ${{ secrets.FRAIOS_REGISTRY_USERNAME }}
+          password: ${{ secrets.FRAIOS_REGISTRY_PASSWORD }}
+
+      # Mirror every image we build to registry.fraios.dev (on-prem installs
+      # pull from there; Docker Hub remains for existing deployments).
+      - name: Compute fraios registry image name
+        id: fraios
+        run: |
+          IMAGE="${{ matrix.image }}"
+          echo "image=registry.fraios.dev/fraios/${IMAGE#quicklookup/}" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.image }}
+          images: |
+            ${{ matrix.image }}
+            ${{ steps.fraios.outputs.image }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
