@@ -15,13 +15,16 @@ import { hostname } from "os";
  * (FR-007). Every failure branch drops a single structured stderr line as a
  * last-resort observation and returns `{ ok: false }`.
  *
- * Credential (FR-074 / A4): synmetrix is a background/service caller. If the
- * caller forwards its own token (`emitSemanticEvent(env, { token })`) that is
- * used verbatim as the ingression `writekey`. Otherwise a short-lived
- * FraiOS-shaped service token is minted from the shared `TOKEN_SECRET`
- * (HS256 via `jose`, mirroring `mintHasuraToken.js`) so the record still bills
- * to the operating tenant. A credential is never invented to fill a gap: with
- * no forwarded token and no `TOKEN_SECRET`, the event is skipped + counted.
+ * Credential (D7 / FR-006a): semantic events are the platform owner's internal
+ * telemetry, so emission SENDS with the shared FFT platform write key
+ * (`FFT_INGRESS_WRITE_KEY`, partition `fftech.is`) → the event collects on FFT's
+ * stream. The caller/tenant context is populate-only: it fills the involves
+ * (`OWNED_BY`) and the `tenant_partition` dimension, never the send credential.
+ * Only when the FFT key is unset does emission fall back to the pre-D7 path — a
+ * forwarded token, else a short-lived service token minted from `TOKEN_SECRET`
+ * (HS256 via `jose`, mirroring `mintHasuraToken.js`). A credential is never
+ * invented: with no platform key, no forwarded token and no `TOKEN_SECRET`, the
+ * event is skipped + counted.
  *
  * Endpoint: `{INGRESSION_HOST}/api/s/{envelope.type||'log'}` — `INGRESSION_HOST`
  * defaults to the FraiOS inbox (matches ai-service `config.py`).
@@ -759,17 +762,35 @@ export async function emitSemanticEvent(
       ? envelope.involves.find((i) => i?.role === "OWNED_BY")
       : null;
 
-    let writekey = token;
+    // D7 — the tenant this event concerns (populate identity). The top-level partition is
+    // the FFT collection stream once ingress stamps it, so the customer partition also
+    // rides as the tenant_partition dimension for per-tenant access-granting.
+    const tenantPartition = partition ?? envelope.partition ?? null;
+    if (tenantPartition) {
+      envelope.dimensions = {
+        ...(envelope.dimensions || {}),
+        tenant_partition: envelope.dimensions?.tenant_partition ?? tenantPartition,
+      };
+    }
+
+    // D7 — semantic events are the platform owner's internal telemetry: SEND with the
+    // shared FFT platform write key (partition `fftech.is`), not a per-tenant/service
+    // token. The caller/tenant context is populate-only. Fall back to the legacy
+    // token/service-mint only when the FFT key is unset so nothing breaks before it is
+    // provisioned.
+    let writekey = (process.env.FFT_INGRESS_WRITE_KEY || "").trim() || null;
     if (!writekey) {
-      writekey = await mintServiceToken({
-        accountId: accountId ?? ownerInvolve?.id ?? null,
-        partition: partition ?? envelope.partition ?? null,
-        userId,
-      });
+      writekey =
+        token ||
+        (await mintServiceToken({
+          accountId: accountId ?? ownerInvolve?.id ?? null,
+          partition: tenantPartition,
+          userId,
+        }));
     }
     if (!writekey) {
-      // A4: no forwarded credential and none can be minted — skip + count,
-      // never invent one.
+      // A4: no platform key, no forwarded credential and none can be minted — skip +
+      // count, never invent one.
       logSkip("no_writekey", envelope);
       return { ok: false };
     }
