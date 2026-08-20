@@ -426,6 +426,31 @@
                         _in:
                           - owner
                           - admin
+  # 099 Semantic Events (US7, FR-091, T087): emit Branch Created / Branch Deleted
+  # lifecycle events. Raw-GraphQL branch mutations have no JS chokepoint, so this
+  # event trigger is the emission point. Handler resolves the tenant (partition ==
+  # team.settings.partition) from the branch's datasource → team and posts to the
+  # ingress; emission is fire-and-forget and never fails the mutation (FR-007).
+  event_triggers:
+    - name: emit_branch_lifecycle
+      definition:
+        enable_manual: false
+        insert:
+          columns: '*'
+        delete:
+          columns: '*'
+      retry_conf:
+        interval_sec: 10
+        num_retries: 3
+        timeout_sec: 60
+      webhook: '{{ACTIONS_URL}}/rpc/emit_branch_lifecycle'
+      cleanup_config:
+        batch_size: 10000
+        clean_invocation_logs: false
+        clear_older_than: 168
+        paused: false
+        schedule: 0 0 * * *
+        timeout: 60
 - table:
     name: dashboards
     schema: public
@@ -1377,6 +1402,31 @@
                   members:
                     user_id:
                       _eq: X-Hasura-User-Id
+  # 099 Semantic Events (US7, FR-091, T089): emit SQL Credential Created / Deleted.
+  # Raw-GraphQL credential mutations have no JS chokepoint. Handler resolves the
+  # tenant (partition == team.settings.partition) from the credential's datasource
+  # → team and posts to the ingress; fire-and-forget, never fails the mutation
+  # (FR-007). Only the credential id + username ride the event — never the secret.
+  event_triggers:
+    - name: emit_sql_credential_lifecycle
+      definition:
+        enable_manual: false
+        insert:
+          columns: '*'
+        delete:
+          columns: '*'
+      retry_conf:
+        interval_sec: 10
+        num_retries: 3
+        timeout_sec: 60
+      webhook: '{{ACTIONS_URL}}/rpc/emit_sql_credential_lifecycle'
+      cleanup_config:
+        batch_size: 10000
+        clean_invocation_logs: false
+        clear_older_than: 168
+        paused: false
+        schedule: 0 0 * * *
+        timeout: 60
 - table:
     name: query_rewrite_rules
     schema: public
@@ -1726,6 +1776,29 @@
         num_retries: 3
         timeout_sec: 60
       webhook: '{{ACTIONS_URL}}/rpc/audit_version_rollback'
+      cleanup_config:
+        batch_size: 10000
+        clean_invocation_logs: false
+        clear_older_than: 168
+        paused: false
+        schedule: 0 0 * * *
+        timeout: 60
+    # 099 Semantic Events (US7, FR-091, T087): emit Model Version Created on every
+    # versions INSERT (the editor's pure-save + other raw-GraphQL version creations
+    # have no JS chokepoint). Handler resolves the tenant (partition ==
+    # team.settings.partition) from branch → datasource → team and posts to the
+    # ingress; fire-and-forget, never fails the mutation (FR-007). Distinct from
+    # version_rollback_audit (DB audit) — this emits the semantic lifecycle event.
+    - name: emit_model_version_created
+      definition:
+        enable_manual: false
+        insert:
+          columns: '*'
+      retry_conf:
+        interval_sec: 10
+        num_retries: 3
+        timeout_sec: 60
+      webhook: '{{ACTIONS_URL}}/rpc/emit_model_version_created'
       cleanup_config:
         batch_size: 10000
         clean_invocation_logs: false

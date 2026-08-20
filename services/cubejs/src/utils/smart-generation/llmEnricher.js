@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { validateAIMetrics } from './llmValidator.js';
+import { emitConnectionCalled } from '../eventEmitter.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -265,7 +266,9 @@ function buildCorrectionPrompt(rejected) {
  * @param {object} profiledTable - { table, database, columns (Map), row_count }
  * @param {object[]} existingCubes - Cube definitions from cubeBuilder
  * @param {object[]} existingAIMetrics - Previously generated AI metrics
- * @param {object} [options] - { timeout, existingMeasureNames, profilerFields, profiledTableColumns }
+ * @param {object} [options] - { timeout, existingMeasureNames, profilerFields, profiledTableColumns, accountId, partition, userId }
+ *   accountId/partition/userId (099 T088) attribute the billable `Connection
+ *   Called` record emitted per OpenAI call; absent tenant ⇒ the emit self-skips.
  * @returns {Promise<{ metrics: object[], status: string, model: string, error: string|null, rejected?: Array<{ metric: object, reasons: string[] }> }>}
  */
 export async function enrichWithAIMetrics(
@@ -311,15 +314,42 @@ export async function enrichWithAIMetrics(
     let allValid = [];
     let lastRejected = [];
 
+    // 099 T088 (FR-040/FR-091): emit one billable `Connection Called` per OpenAI
+    // call. cost=null ⇒ compliant unpriced fallback (amount 0.0 / USD / pricing
+    // unknown). Fire-and-forget + never-throw; `attempts` (1-based) rides
+    // properties so the previously-silent LLM path stays auditable — including
+    // on failure, where the record is still emitted with status="error".
+    const emitEnrichCall = (status, startedAt, attempt) =>
+      emitConnectionCalled({
+        partition: options.partition,
+        accountId: options.accountId,
+        userId: options.userId,
+        provider: 'openai',
+        model: MODEL,
+        item: 'smart-generation:enrich',
+        durationMs: Date.now() - startedAt,
+        cost: null,
+        status,
+        properties: { attempts: attempt + 1 },
+      });
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      const completion = await client.chat.completions.parse(
-        {
-          model: MODEL,
-          messages,
-          response_format: zodResponseFormat(ResponseSchema, 'ai_metrics'),
-        },
-        { signal: AbortSignal.timeout(timeout) }
-      );
+      const startedAt = Date.now();
+      let completion;
+      try {
+        completion = await client.chat.completions.parse(
+          {
+            model: MODEL,
+            messages,
+            response_format: zodResponseFormat(ResponseSchema, 'ai_metrics'),
+          },
+          { signal: AbortSignal.timeout(timeout) }
+        );
+      } catch (callErr) {
+        emitEnrichCall('error', startedAt, attempt);
+        throw callErr; // preserve behavior — outer catch records result.error
+      }
+      emitEnrichCall('ok', startedAt, attempt);
 
       const parsed = completion.choices[0].message.parsed;
       const metricsToValidate = parsed.metrics;

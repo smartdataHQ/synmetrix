@@ -48,14 +48,24 @@ const checkAuth = async (req) => {
   let userId;
   const tokenType = detectTokenType(authToken);
 
+  // 099 T086 (FR-091): retain the FraiOS tenant attribution alongside the
+  // resolved userId so downstream semantic-event emitters can attribute events
+  // to the right tenant. Purely ADDITIVE — the auth validation below is
+  // unchanged; accountId/partition populate only on the token paths that carry
+  // them (FraiOS always; WorkOS partition when present), null otherwise.
+  const tokenPayload = { accountId: null, partition: null, tokenType };
+
   if (tokenType === "workos") {
     // WorkOS RS256 path
     const payload = await verifyWorkOSToken(authToken);
     userId = await provisionUserFromWorkOS(payload);
+    tokenPayload.partition = payload?.partition ?? null;
   } else if (tokenType === "fraios") {
     // FraiOS HS256 path
     const payload = await verifyFraiOSToken(authToken);
     userId = await provisionUserFromFraiOS(payload);
+    tokenPayload.accountId = payload?.accountId ?? null;
+    tokenPayload.partition = payload?.partition ?? null;
   } else {
     // Hasura HS256 path (existing)
     let jwtDecoded;
@@ -120,6 +130,7 @@ const checkAuth = async (req) => {
     authToken,
     userId,
     userScope,
+    tokenPayload,
   };
 };
 

@@ -1,6 +1,7 @@
 import YAML from "yaml";
 
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import { findUser } from "../utils/dataSourceHelpers.js";
 import { fetchGraphQL } from "../utils/graphql.js";
 import { mintHasuraToken } from "../utils/mintHasuraToken.js";
@@ -373,5 +374,23 @@ export default async function deleteDataschema(req, res) {
 
   // Success path: the Hasura delete event trigger `delete_dataschema_audit`
   // writes the outcome='success' audit row. Handler does not duplicate.
+
+  // 099 T087 (FR-091): a successful delete is a model lifecycle fact.
+  // Fire-and-forget; never blocks the response (FR-007).
+  emitModelEvent({
+    event: "Model Deleted",
+    accountId: payload?.accountId ?? null,
+    partition: payload?.partition ?? null,
+    userId,
+    modelId: dataschemaId,
+    modelLabel: targetRow.name || null,
+    status: "ok",
+    properties: {
+      datasource_id: datasourceId,
+      branch_id: branchId,
+      version_id: version?.id ?? null,
+    },
+  });
+
   return res.json({ deleted: true, dataschemaId });
 }

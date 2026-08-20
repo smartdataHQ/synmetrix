@@ -1,4 +1,5 @@
 import { devLogger } from "@cubejs-backend/server-core/dist/src/core/logger.js";
+import { emitQueryLog } from "./eventEmitter.js";
 import redisClient from "./redis.js";
 
 /**
@@ -43,9 +44,35 @@ export const logging = async (message, event) => {
   data.timestamp = new Date().toISOString();
 
   if (data?.securityContext) {
-    data.userId = data.securityContext?.userId;
-    data.dataSourceId =
-      data.securityContext?.userScope?.dataSource?.dataSourceId;
+    const sc = data.securityContext;
+    data.userId = sc?.userId;
+    data.dataSourceId = sc?.userScope?.dataSource?.dataSourceId;
+
+    // 099 FR-091: mirror a COMPLETED cube analytical query into a buffered
+    // `type='log'` `Query Executed` semantic event. ENQUEUE-ONLY — never awaited,
+    // never throws — so query performance is untouched; a background flusher does
+    // the ingression POSTs off the query path (see eventEmitter.emitQueryLog).
+    if (message === "Load Request Success") {
+      const ds = sc?.userScope?.dataSource;
+      emitQueryLog({
+        accountId: sc?.accountId ?? null,
+        partition: sc?.partition ?? null,
+        userId: sc?.userId ?? null,
+        status: "ok",
+        dimensions: {
+          surface: "load",
+          ...(ds?.dbType ? { datasource_type: ds.dbType } : {}),
+        },
+        metrics: Number.isFinite(Number(data?.duration))
+          ? { duration_ms: Number(data.duration) }
+          : {},
+        properties: {
+          ...(data.dataSourceId ? { datasource_id: String(data.dataSourceId) } : {}),
+          ...(requestId ? { request_id: String(requestId) } : {}),
+          ...(data.path ? { path: String(data.path) } : {}),
+        },
+      });
+    }
 
     delete data.securityContext;
   }

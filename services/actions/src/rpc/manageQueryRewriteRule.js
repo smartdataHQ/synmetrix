@@ -2,6 +2,25 @@ import apiError from "../utils/apiError.js";
 import { invalidateRulesCache } from "../utils/cubeCache.js";
 import { fetchGraphQL } from "../utils/graphql.js";
 import { isPortalAdmin } from "../utils/portalAdmin.js";
+import { emitLifecycleEvent } from "../utils/semanticEvents.js";
+
+// 099 US7 (FR-091, T089): row-level Access Rules (query_rewrite_rules) are
+// PLATFORM-GLOBAL config edited only by portal admins — there is no per-tenant
+// row. They are attributed to the platform tenant (partition), overridable via
+// PLATFORM_PARTITION; ACTED_BY carries the acting admin. Emission is
+// fire-and-forget and never affects the mutation (FR-007).
+const PLATFORM_PARTITION = process.env.PLATFORM_PARTITION || "fftech.is";
+
+async function emitAccessRule(event, status, ruleId, userId, properties) {
+  await emitLifecycleEvent({
+    event,
+    partition: PLATFORM_PARTITION,
+    userId,
+    about: { entity_type: "Policy", id: ruleId, label: properties?.cube_name ?? null },
+    status,
+    properties,
+  });
+}
 
 const insertRuleMutation = `
   mutation InsertRule($object: query_rewrite_rules_insert_input!) {
@@ -84,7 +103,16 @@ export default async (session, input) => {
       });
 
       const ruleId = res?.data?.insert_query_rewrite_rules_one?.id;
-      if (ruleId) invalidateRulesCache();
+      if (ruleId) {
+        invalidateRulesCache();
+        void emitAccessRule("Access Rule Created", "created", ruleId, userId, {
+          cube_name,
+          dimension,
+          property_source,
+          property_key,
+          operator: op,
+        });
+      }
       return { success: !!ruleId, rule_id: ruleId || null };
     }
 
@@ -119,6 +147,7 @@ export default async (session, input) => {
 
       await fetchGraphQL(updateRuleMutation, { id, set: updates });
       invalidateRulesCache();
+      void emitAccessRule("Access Rule Updated", "updated", id, userId, updates);
       return { success: true, rule_id: id };
     }
 
@@ -133,6 +162,7 @@ export default async (session, input) => {
 
       await fetchGraphQL(deleteRuleMutation, { id });
       invalidateRulesCache();
+      void emitAccessRule("Access Rule Deleted", "deleted", id, userId, null);
       return { success: true, rule_id: id };
     }
 

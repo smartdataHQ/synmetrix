@@ -23,6 +23,7 @@ import {
   writeBinaryChunk,
   writeRowStreamAsArrow,
 } from "../utils/arrowSerializer.js";
+import { emitQueryEvent } from "../utils/eventEmitter.js";
 
 const prepareAnnotation =
   typeof prepareAnnotationModule.prepareAnnotation === "function"
@@ -456,6 +457,37 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
 
   const abortController = createAbortController(res);
 
+  // 099 T089 (FR-091): `Dataset Exported` audit. Tenant rides tokenPayload
+  // (populated by checkAuth, which the gateway checkAuth reuses on /load). Only
+  // the branches that actually stream a dataset flip `exported`; the finally
+  // emits `ok` for those, the catch emits `error`. Fire-and-forget, never
+  // blocks (FR-007), skips when no tenant.
+  const securityContext =
+    req.securityContext || plan.context?.securityContext || {};
+  const tokenPayload = securityContext.tokenPayload || {};
+  const exportTenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId: securityContext.userId ?? null,
+  };
+  const exportDbType = securityContext.userScope?.dataSource?.dbType ?? null;
+  const exportStart = Date.now();
+  let exported = false;
+  let exportPath = null;
+  const emitDatasetExported = (status, extra) =>
+    emitQueryEvent({
+      event: "Dataset Exported",
+      ...exportTenant,
+      status,
+      dimensions: exportDbType ? { datasource_type: exportDbType } : null,
+      metrics: { duration_ms: Date.now() - exportStart },
+      properties: {
+        format,
+        ...(exportPath ? { export_path: exportPath } : {}),
+        ...(extra || {}),
+      },
+    });
+
   try {
     let nativeQuery = null;
 
@@ -488,6 +520,8 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         abortController.signal,
         getAliasNameToMember(plan)
       );
+      exported = true;
+      exportPath = "native-clickhouse";
       res.end();
       return true;
     }
@@ -505,6 +539,8 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         driver,
         abortController.signal
       );
+      exported = true;
+      exportPath = "native-clickhouse";
       res.end();
       return true;
     }
@@ -521,6 +557,8 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         columns: plan.columns,
         signal: abortController.signal,
       });
+      exported = true;
+      exportPath = "semantic-stream";
       res.end();
       return true;
     }
@@ -531,10 +569,21 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       annotation: plan.annotation,
       signal: abortController.signal,
     });
+    exported = true;
+    exportPath = "semantic-stream";
     res.end();
     return true;
   } catch (err) {
     if (abortController.signal.aborted) return true;
+
+    // 099 T089: the export failed before completing — audit the error outcome.
+    // Guard on !exported so a post-stream throw can't double-emit (the finally
+    // already records the ok).
+    if (!exported) {
+      emitDatasetExported("error", {
+        error_message: err?.message || String(err),
+      });
+    }
 
     emitGatewayHandledError(
       plan.apiGateway,
@@ -545,6 +594,9 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       plan.requestStarted
     );
     return true;
+  } finally {
+    // 099 T089: a dataset was streamed to the client — audit the success once.
+    if (exported) emitDatasetExported("ok");
   }
 }
 
