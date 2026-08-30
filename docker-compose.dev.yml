@@ -240,6 +240,7 @@ services:
     ports:
       - 3030:3030
     environment:
+      - CUBESTORE_DATA_DIR=/cube/data
       - CUBESTORE_REMOTE_DIR=/cube/data
     volumes:
       - .cubestore:/cube/data
