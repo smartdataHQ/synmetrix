@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { describe, it } from "node:test";
+import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { escapeCSVField } from "../utils/csvSerializer.js";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../utils/enrichmentEntitlement.js";
 import { deterministicBillingMessageId } from "../utils/enrichmentMetering.js";
 import { validateFormat } from "../utils/formatValidator.js";
+import { patchCompilerSource } from "../../scripts/patchCubeYamlCompiler.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeVersion = require("@cubejs-backend/server-core/package.json").version;
@@ -81,6 +83,55 @@ describe("Cube 1.6.68 to 1.7.30 comparative corpus", () => {
     assert.notEqual(
       deterministicBillingMessageId("logical-1", "ctx:day-archetype"),
       deterministicBillingMessageId("logical-1", "ctx:weather-archetype"),
+    );
+  });
+
+  it("preserves JSON-valued metadata as a literal string", async () => {
+    const value = JSON.stringify({
+      time_zone: "Atlantic/Reykjavik",
+      preferred_source: "sensor",
+      language: "is",
+    });
+    const content = `cubes:
+  - name: support_ticket_analysed
+    sql_table: support_ticket_analysed
+    meta:
+      lc_values:
+        - '${value}'
+    dimensions:
+      - name: id
+        sql: id
+        type: string
+        primary_key: true
+`;
+    const repository = {
+      dataSchemaFiles: async () => [
+        { fileName: "support_ticket_analysed.yml", content },
+      ],
+    };
+    const { compiler, metaTransformer } = prepareCompiler(repository, {});
+
+    await compiler.compile();
+
+    assert.equal(metaTransformer.cubes[0].config.meta.lc_values[0], value);
+  });
+
+  it("guards the compiler patch against upstream source drift", () => {
+    const source = `before
+        else if (typeof obj === 'string') {
+            let code = obj;
+            if (!CubeValidator_1.nonStringFields.has(propertyPath[propertyPath.length - 1])) {
+after`;
+    const first = patchCompilerSource(source);
+    assert.equal(first.changed, true);
+    assert.match(first.source, /propertyPath\.includes\('meta'\)/);
+    assert.deepEqual(patchCompilerSource(first.source), {
+      source: first.source,
+      changed: false,
+    });
+    assert.throws(
+      () => patchCompilerSource("unexpected compiler source"),
+      /expected source anchor was not found exactly once/,
     );
   });
 

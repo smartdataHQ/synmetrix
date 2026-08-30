@@ -27,6 +27,7 @@ ENV PATH=/app/node_modules/.bin:$PATH
 
 COPY yarn.lock /app/yarn.lock
 COPY package.json /app/package.json
+COPY scripts/ /app/scripts/
 
 RUN yarn --frozen-lockfile --network-timeout 100000
 
