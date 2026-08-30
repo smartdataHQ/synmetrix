@@ -113,7 +113,7 @@ services:
       - .test.env
     environment:
       - CUBESTORE_DATA_DIR=/cube/local
-      - CUBESTORE_REMOTE_DIR=/cube/remote
+      - CUBESTORE_REMOTE_DIR=/cube/remote/store
     networks:
       - synmetrix_default
 
