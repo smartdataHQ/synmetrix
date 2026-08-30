@@ -41,6 +41,25 @@ const REQUIRED_CASES = new Set([
   "disconnect",
   "non_entitled",
   "engine_failure",
+  "system_query",
+  "pre_aggregation",
+]);
+const EXACT_CASE_ITEMS = new Map([
+  ["day", ["ctx:day-archetype"]],
+  ["weather", ["ctx:weather-archetype"]],
+  ["both_items", ["ctx:day-archetype", "ctx:weather-archetype"]],
+]);
+const REQUIRED_BILLABLE_CASES = new Set([
+  "cache_hit",
+  "zero_rows",
+  "stable_retry",
+  "disconnect",
+]);
+const REQUIRED_UNBILLED_CASES = new Set([
+  "non_entitled",
+  "engine_failure",
+  "system_query",
+  "pre_aggregation",
 ]);
 const BILLING_KEYS = [
   BILLING_STREAM,
@@ -65,13 +84,18 @@ async function readManifest() {
   assert.ok(Array.isArray(manifest.requests));
   assert.ok(manifest.requests.length > 0);
 
-  const cases = new Set(manifest.requests.flatMap((request) => request.cases || []));
+  const cases = new Set(
+    manifest.requests.flatMap((request) => request.cases || []),
+  );
   const surfaces = new Set(manifest.requests.map((request) => request.surface));
   for (const name of REQUIRED_CASES) {
     assert.ok(cases.has(name), `live manifest is missing case ${name}`);
   }
   for (const surface of REQUIRED_HTTP_SURFACES) {
-    assert.ok(surfaces.has(surface), `live manifest is missing surface ${surface}`);
+    assert.ok(
+      surfaces.has(surface),
+      `live manifest is missing surface ${surface}`,
+    );
   }
   assert.ok(manifest.sql_api?.sql, "live manifest is missing SQL API coverage");
   assert.ok(Array.isArray(manifest.sql_api.expected_items));
@@ -82,8 +106,39 @@ async function readManifest() {
     assert.ok(request.path?.startsWith("/"));
     assert.ok(["GET", "POST"].includes(request.method || "POST"));
     assert.ok(Array.isArray(request.expected_items));
+    assert.equal(
+      new Set(request.expected_items).size,
+      request.expected_items.length,
+      `${request.name} contains duplicate expected items`,
+    );
     if (request.cases?.includes("non_entitled")) {
       assert.equal(request.auth, "non_entitled");
+    }
+    for (const [name, items] of EXACT_CASE_ITEMS) {
+      if (request.cases?.includes(name)) {
+        assert.deepEqual(
+          [...request.expected_items].sort(),
+          [...items].sort(),
+          `${request.name} does not exercise the exact ${name} item set`,
+        );
+      }
+    }
+    for (const name of REQUIRED_BILLABLE_CASES) {
+      if (request.cases?.includes(name)) {
+        assert.ok(
+          request.expected_items.length > 0,
+          `${request.name} cannot prove billable case ${name} without an item`,
+        );
+      }
+    }
+    for (const name of REQUIRED_UNBILLED_CASES) {
+      if (request.cases?.includes(name)) {
+        assert.deepEqual(
+          request.expected_items,
+          [],
+          `${request.name} must not bill case ${name}`,
+        );
+      }
     }
   }
   for (const item of ["ctx:day-archetype", "ctx:weather-archetype"]) {
@@ -143,10 +198,13 @@ async function disconnectRequest(baseUrl, token, scenario, logicalExecutionId) {
       else reject(error);
     });
     request.end(body);
-    setTimeout(() => {
-      request.destroy();
-      resolve();
-    }, Number(scenario.disconnect_after_ms || 25));
+    setTimeout(
+      () => {
+        request.destroy();
+        resolve();
+      },
+      Number(scenario.disconnect_after_ms || 25),
+    );
   });
 }
 
@@ -201,7 +259,9 @@ async function queryLedger({
 }
 
 async function waitForLedger(expectedCount, query) {
-  const timeoutMs = Number(process.env.SPEC102_LIVE_BILLING_TIMEOUT_MS || 300_000);
+  const timeoutMs = Number(
+    process.env.SPEC102_LIVE_BILLING_TIMEOUT_MS || 300_000,
+  );
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const rows = await query();
@@ -211,7 +271,9 @@ async function waitForLedger(expectedCount, query) {
     }
     await sleep(2_000);
   }
-  throw new Error("billing ledger did not reconcile within the configured timeout");
+  throw new Error(
+    "billing ledger did not reconcile within the configured timeout",
+  );
 }
 
 describe(
@@ -224,6 +286,7 @@ describe(
     let token;
     let baseUrl;
     let accountGid;
+    let sqlAccountGid;
 
     before(async () => {
       manifest = await readManifest();
@@ -232,6 +295,12 @@ describe(
       token = requiredEnv("SPEC102_LIVE_BILLING_TOKEN");
       baseUrl = requiredEnv("SPEC102_LIVE_BILLING_BASE_URL");
       accountGid = requiredEnv("SPEC102_LIVE_ACCOUNT_GID");
+      sqlAccountGid = requiredEnv("SPEC102_LIVE_SQL_ACCOUNT_GID");
+      assert.notEqual(
+        sqlAccountGid,
+        accountGid,
+        "SQL API coverage requires a separate isolated test Account",
+      );
     });
 
     it("drives every tenant HTTP surface and reconciles exact historic prices", async () => {
@@ -284,9 +353,17 @@ describe(
       }
 
       const rows = await waitForLedger(expected.size, () =>
-        queryLedger({ fromUtc: startedAt, accountGid, logicalPrefix: runPrefix }),
+        queryLedger({
+          fromUtc: startedAt,
+          accountGid,
+          logicalPrefix: runPrefix,
+        }),
       );
-      assert.equal(rows.length, expected.size, "missing or unexpected billing rows");
+      assert.equal(
+        rows.length,
+        expected.size,
+        "missing or unexpected billing rows",
+      );
       for (const row of rows) {
         const key = `${row.logical_execution_id}\u0000${row.item}`;
         assert.ok(expected.has(key), `unexpected logical charge ${key}`);
@@ -305,7 +382,7 @@ describe(
         () =>
           queryLedger({
             fromUtc: startedAt,
-            accountGid,
+            accountGid: sqlAccountGid,
             surface: "sql-api",
           }),
       );
@@ -381,7 +458,10 @@ describe(
         ">",
       );
       await failedWorker.process(claimed?.[0]?.[1] || []);
-      assert.equal(Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]), 1);
+      assert.equal(
+        Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]),
+        1,
+      );
 
       const replacement = new BillingOutboxWorker(redis, {
         consumer: "spec102-replacement-worker",
@@ -389,7 +469,10 @@ describe(
         send: async () => ({ ok: true }),
       });
       await replacement.reclaim();
-      assert.equal(Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]), 0);
+      assert.equal(
+        Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]),
+        0,
+      );
 
       const poisonId = `spec102-poison-${randomUUID()}`;
       const poisonEnvelope = {
@@ -420,7 +503,13 @@ describe(
       );
       assert.equal(await redis.xlen(BILLING_DLQ_STREAM), 1);
 
-      const [[dlqId]] = await redis.xrange(BILLING_DLQ_STREAM, "-", "+", "COUNT", 1);
+      const [[dlqId]] = await redis.xrange(
+        BILLING_DLQ_STREAM,
+        "-",
+        "+",
+        "COUNT",
+        1,
+      );
       dedupeKeys.push(`synmetrix-billing-dedupe:${poisonId}:replay:${dlqId}`);
       const replay = await loadAndReplayBillingDlqEntry(redis, dlqId);
       assert.equal(replay.enqueued, true);
@@ -439,7 +528,10 @@ describe(
       await processBillingEntry(redis, replayRows?.[0]?.[1]?.[0], {
         send: async () => ({ ok: true }),
       });
-      assert.equal(Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]), 0);
+      assert.equal(
+        Number((await redis.xpending(BILLING_STREAM, BILLING_GROUP))[0]),
+        0,
+      );
     });
   },
 );
