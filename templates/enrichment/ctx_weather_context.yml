@@ -1,18 +1,17 @@
 cubes:
   - name: CtxWeatherContext
-    sql: SELECT * FROM enrich.weather_context_v WHERE country_code = 'IS'
+    sql: SELECT * FROM enrich.weather_context_v
     public: true
     meta:
       default_model: true
       managed_by: ctx-enrichment
       template: ctx_weather_context
       source_table: weather_context_v
-      weather_country: IS
       billing_items:
         - ctx:weather-archetype
     dimensions:
       - name: contextKey
-        sql: concat({CUBE}.request_geohash6, ':IS:', toString({CUBE}.local_date))
+        sql: concat({CUBE}.request_geohash6, ':', {CUBE}.country_code, ':', toString({CUBE}.local_date))
         type: string
         primary_key: true
         public: false
