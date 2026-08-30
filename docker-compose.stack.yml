@@ -18,10 +18,10 @@ services:
   cubestore:
     image: cubejs/cubestore:${CUBESTORE_VERSION:-v1.6.68}
     environment:
-      - CUBESTORE_DATA_DIR=/cube/data
-      - CUBESTORE_REMOTE_DIR=/cube/data
+      - CUBESTORE_DATA_DIR=/cube/local
+      - CUBESTORE_REMOTE_DIR=/cube/remote
     volumes:
-      - cube_store_data:/cube/data
+      - cube_store_data:/cube/remote
 
   stack:
     image: synmetrix/stack:${STACK_VERSION:-latest}
