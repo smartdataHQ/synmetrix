@@ -2,6 +2,8 @@ import fetch from "node-fetch";
 import { SignJWT } from "jose";
 import { v5 as uuidv5 } from "uuid";
 import { hostname } from "os";
+import { resolveCallCost } from "./pricingResolver.js";
+import { resolveSystemLLMBilling } from "./connectionBilling.js";
 
 /**
  * eventEmitter — never-throw, fire-and-forget semantic-event emitter for
@@ -116,7 +118,7 @@ function hashToUuid(input) {
   const hex = Array.from(bytes, toHex).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
     12,
-    16
+    16,
   )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
@@ -220,7 +222,7 @@ export function buildEnvelope({
     partition,
     entity_gid: normalizeEntityGid(entity_gid),
     customer_facing,
-    source,
+    source: { type: "Other", label: source },
     dimensions: dims,
     involves,
     properties: props,
@@ -240,8 +242,8 @@ export function buildEnvelope({
  * Build the compliant `Connection Called` envelope for a single provider call.
  *
  * `amount` + `currency` are ALWAYS present (contract: absence is a violation).
- * A free/priced call ships `amount, pricing: "known"`; an unpriced model ships
- * `amount: 0.0, pricing: "unknown"`.
+ * Pricing follows provider evidence, the cxs2 system-Connection projection,
+ * any labelled legacy runtime rate, then an honest unknown amount.
  *
  * @param {object}  args
  * @param {string}  args.partition     tenant partition (required)
@@ -267,51 +269,150 @@ export function buildConnectionCalled({
   durationMs = null,
   cost = null,
   connectionId = null,
+  billing = null,
+  usage = {},
+  providerBilling = null,
+  legacyRates = [],
+  legacyCurrency = null,
+  legacyRateSource = null,
+  callIdentity = null,
+  providerRequestId = null,
+  billingMode = false,
+  messageId = null,
+  logicalExecutionId = null,
+  surface = null,
+  accountingScope = null,
+  cacheStatus = null,
+  returnedRows = null,
+  recordCount = null,
+  unitAmount = null,
+  pricingCodeVersion = null,
+  pricingResolution = null,
   status = "ok",
   timestamp = null,
 } = {}) {
   const ts = timestamp || new Date().toISOString();
-  const priced = cost != null && Number.isFinite(Number(cost));
-  const amount = priced ? Number(cost) : 0.0; // ALWAYS present
-  const currency = "USD"; // ALWAYS present
-  const pricing = priced ? "known" : "unknown";
+  if (billingMode) {
+    if (!String(accountId || "").trim() || !String(connectionId || "").trim()) {
+      throw new Error(
+        "billing requires real Account and Connection identities",
+      );
+    }
+    const requiredFacts = {
+      messageId,
+      logicalExecutionId,
+      surface,
+      accountingScope,
+      pricingCodeVersion,
+      unitAmount,
+    };
+    if (
+      Object.values(requiredFacts).some((value) => !String(value || "").trim())
+    ) {
+      throw new Error(
+        "billing requires deterministic identity and historic pricing facts",
+      );
+    }
+    if (!Number.isFinite(Number(recordCount)) || Number(recordCount) <= 0) {
+      throw new Error("billing requires a positive record count");
+    }
+    if (!Number.isFinite(Number(returnedRows)) || Number(returnedRows) < 0) {
+      throw new Error("billing requires a non-negative returned row count");
+    }
+  }
 
-  // Owner id for the envelope entity_gid / OWNED_BY — fall back to partition so
-  // a record is never filed under the derived-empty synthetic tenant.
-  const ownerId = String(accountId ?? "") || String(partition ?? "");
+  let resolved =
+    pricingResolution ||
+    resolveCallCost({
+      billing,
+      usage,
+      qualifiers: model ? { model } : {},
+      occurredAt: Date.parse(ts),
+      providerBilling,
+      legacyRates,
+      legacyCurrency,
+      legacyRateSource,
+    });
+  if (
+    resolved.pricing === "unknown" &&
+    cost != null &&
+    Number.isFinite(Number(cost))
+  ) {
+    resolved = {
+      amount: String(Number(cost)),
+      currency: legacyCurrency || "USD",
+      pricing: "estimated",
+      pricingSource: "legacy_runtime_rate",
+      components: [
+        {
+          meter: "legacy_calculated_amount",
+          units: "1",
+          unit_size: "1",
+          rate: String(Number(cost)),
+          subtotal: String(Number(cost)),
+          source: "legacy_runtime_rate",
+        },
+      ],
+      legacyRateSource: legacyRateSource || "synmetrix:caller-cost:legacy",
+    };
+  }
+
+  // Ordinary telemetry retains the historical partition fallback. Strict
+  // billing mode never does: its Account and Connection must be registered
+  // identities supplied by the caller.
+  const ownerId = billingMode
+    ? String(accountId)
+    : String(accountId ?? "") || String(partition ?? "");
 
   // Deterministic-ish id: tenant + event + provider/model/item + status + ts.
   // (Handlers T087–T090 should prefer the provider call id when available.)
-  const message_id = messageIdFor(
-    partition,
-    "Connection Called",
-    provider,
-    model,
-    item,
-    status,
-    ts
-  );
+  const message_id =
+    messageId ||
+    messageIdFor(
+      callIdentity || providerRequestId || partition,
+      "Connection Called",
+      provider,
+      model,
+      item,
+      status,
+      ...(callIdentity || providerRequestId ? [] : [ts]),
+    );
 
   const involves = [involve("OWNED_BY", "Account", ownerId)];
   if (userId) involves.push(involve("REQUESTED_BY", "Person", String(userId)));
   if (connectionId)
-    involves.push(involve("USES_CONNECTION", "Connection", String(connectionId)));
+    involves.push(
+      involve("USES_CONNECTION", "Connection", String(connectionId)),
+    );
+  if (model)
+    involves.push(involve("USES_MODEL", "Model", String(model), model));
 
   const dimensions = { provider, status, item };
   if (model) dimensions.model = model;
+  if (surface) dimensions.surface = surface;
+  if (accountingScope) dimensions.accounting_scope = accountingScope;
 
   const metrics = {};
   if (durationMs != null && Number.isFinite(Number(durationMs))) {
     metrics.duration_ms = Number(durationMs);
+  }
+  if (recordCount != null && Number.isFinite(Number(recordCount))) {
+    metrics.record_count = Number(recordCount);
   }
 
   const analysisEntry = {
     item,
     provider,
     variant: model,
-    amount,
-    currency,
+    amount: Number(resolved.amount),
+    currency: resolved.currency,
   };
+  const tokenCached = Number(usage.cached_input_tokens || 0);
+  const tokenIn = Number(usage.input_tokens || 0) + tokenCached;
+  const tokenOut = Number(usage.output_tokens || 0);
+  if (tokenIn) analysisEntry.token_in = tokenIn;
+  if (tokenCached) analysisEntry.token_cached = tokenCached;
+  if (tokenOut) analysisEntry.token_out = tokenOut;
   if (durationMs != null && Number.isFinite(Number(durationMs))) {
     analysisEntry.processing_time = Number(durationMs) / 1000;
   }
@@ -332,7 +433,33 @@ export function buildConnectionCalled({
     // FR-043 "unknown pricing" marker rides the top-level `properties` JSON
     // column — the analysis[] Nested has fixed subcolumns and the persister
     // drops unknown keys like `extras` (review P1-4).
-    properties: { pricing },
+    properties: {
+      pricing: resolved.pricing,
+      pricing_source: resolved.pricingSource,
+      price_components: resolved.components,
+      pricing_qualifiers: model ? { model } : {},
+      ...(resolved.priceCardId ? { price_card_id: resolved.priceCardId } : {}),
+      ...(resolved.priceEffectiveAt != null
+        ? { price_effective_at: resolved.priceEffectiveAt }
+        : {}),
+      ...(resolved.legacyRateSource
+        ? { legacy_rate_source: resolved.legacyRateSource }
+        : {}),
+      ...(providerRequestId ? { provider_request_id: providerRequestId } : {}),
+      ...(connectionId ? { connection_id: connectionId } : {}),
+      ...(logicalExecutionId
+        ? { logical_execution_id: logicalExecutionId }
+        : {}),
+      ...(cacheStatus ? { cache_status: cacheStatus } : {}),
+      ...(returnedRows != null ? { returned_rows: Number(returnedRows) } : {}),
+      ...(unitAmount != null ? { unit_amount: String(unitAmount) } : {}),
+      ...(pricingCodeVersion
+        ? { pricing_code_version: pricingCodeVersion }
+        : {}),
+      request_count_quality: providerRequestId
+        ? "provider_reported"
+        : "client_observed",
+    },
   });
 }
 
@@ -358,6 +485,9 @@ export function buildConnectionCalled({
  */
 export function emitConnectionCalled(args = {}) {
   try {
+    const system = args.connectionId ? null : resolveSystemLLMBilling();
+    const connectionId = args.connectionId || system?.connectionId || null;
+    if (!connectionId) return;
     const {
       accountId = null,
       partition = null,
@@ -365,7 +495,11 @@ export function emitConnectionCalled(args = {}) {
       properties = null,
     } = args;
     if (!accountId && !partition) return; // no tenant → skip, never invent one
-    const envelope = buildConnectionCalled(args);
+    const envelope = buildConnectionCalled({
+      ...args,
+      connectionId,
+      billing: args.billing || system?.billing || null,
+    });
     if (properties && typeof properties === "object") {
       // Producer proof is IMMUTABLE: re-stamp it AFTER merging caller-supplied
       // properties so a caller can never override it (review P1-6).
@@ -376,7 +510,7 @@ export function emitConnectionCalled(args = {}) {
     // emitSemanticEvent is itself never-throw; the detached .catch is belt-and-
     // braces so an unexpected rejection can never surface as unhandled.
     emitSemanticEvent(envelope, { accountId, partition, userId }).catch(
-      () => {}
+      () => {},
     );
   } catch {
     // absolute never-throw guard (FR-007)
@@ -475,7 +609,7 @@ export function emitModelEvent(args = {}) {
     // emitSemanticEvent is itself never-throw; the detached .catch is belt-and-
     // braces so an unexpected rejection can never surface as unhandled.
     emitSemanticEvent(envelope, { accountId, partition, userId }).catch(
-      () => {}
+      () => {},
     );
   } catch {
     // absolute never-throw guard (FR-007)
@@ -544,13 +678,7 @@ export function buildQueryEvent({
   // entity_gid anchors on the subject when there is one, else on the tenant.
   const entityGid = aboutId || ownerId;
 
-  const message_id = messageIdFor(
-    partition,
-    event,
-    aboutId ?? "",
-    status,
-    ts
-  );
+  const message_id = messageIdFor(partition, event, aboutId ?? "", status, ts);
 
   const involves = [involve("OWNED_BY", "Account", ownerId)];
   if (userId) involves.push(involve("ACTED_BY", "Person", String(userId)));
@@ -595,7 +723,7 @@ export function emitQueryEvent(args = {}) {
     // emitSemanticEvent is itself never-throw; the detached .catch is belt-and-
     // braces so an unexpected rejection can never surface as unhandled.
     emitSemanticEvent(envelope, { accountId, partition, userId }).catch(
-      () => {}
+      () => {},
     );
   } catch {
     // absolute never-throw guard (FR-007)
@@ -718,7 +846,7 @@ function logSkip(reason, envelope, extra = {}) {
         message_id: envelope?.message_id ?? null,
         ...extra,
         ts: new Date().toISOString(),
-      })
+      }),
     );
   } catch {
     // stderr must never itself throw — swallow.
@@ -750,7 +878,7 @@ function logSkip(reason, envelope, extra = {}) {
  */
 export async function emitSemanticEvent(
   envelope,
-  { token = null, accountId = null, partition = null, userId = null } = {}
+  { token = null, accountId = null, partition = null, userId = null } = {},
 ) {
   try {
     if (!envelope || typeof envelope !== "object") {
@@ -769,7 +897,8 @@ export async function emitSemanticEvent(
     if (tenantPartition) {
       envelope.dimensions = {
         ...(envelope.dimensions || {}),
-        tenant_partition: envelope.dimensions?.tenant_partition ?? tenantPartition,
+        tenant_partition:
+          envelope.dimensions?.tenant_partition ?? tenantPartition,
       };
     }
 
@@ -797,7 +926,7 @@ export async function emitSemanticEvent(
 
     const host = (INGRESSION_HOST || DEFAULT_INGRESSION_HOST).replace(
       /\/+$/,
-      ""
+      "",
     );
     const type = envelope.type || "log";
     const url = `${host}/api/s/${encodeURIComponent(type)}`;

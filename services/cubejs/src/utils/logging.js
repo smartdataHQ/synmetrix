@@ -54,9 +54,13 @@ export const logging = async (message, event) => {
     // the ingression POSTs off the query path (see eventEmitter.emitQueryLog).
     if (message === "Load Request Success") {
       const ds = sc?.userScope?.dataSource;
+      const tokenAttribution = sc?.tokenPayload;
       emitQueryLog({
-        accountId: sc?.accountId ?? null,
-        partition: sc?.partition ?? null,
+        // checkAuth stores verified tenant claims under tokenPayload. The
+        // datasource partition is the existing tenant-scoped fallback for
+        // token paths that do not carry a partition; never invent an owner.
+        accountId: tokenAttribution?.accountId ?? null,
+        partition: tokenAttribution?.partition ?? ds?.partition ?? null,
         userId: sc?.userId ?? null,
         status: "ok",
         dimensions: {

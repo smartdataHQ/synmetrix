@@ -3,6 +3,11 @@ import YAML from "yaml";
 import { fetchGraphQL } from "./graphql.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
 import { parseCubesFromJs } from "./smart-generation/diffModels.js";
+import {
+  assertEnrichmentQueryAuthorized,
+  collectResolvedMembers,
+  ENRICHMENT_PRODUCTS,
+} from "./enrichmentEntitlement.js";
 
 const getColumnsArray = (cube) => [
   ...(cube?.dimensions || []),
@@ -83,7 +88,7 @@ function extractTableName(cube) {
   const sql = cube.sql;
   if (typeof sql === "string") {
     const match = sql.match(
-      /\bFROM\s+[`"]?(?:[\w-]+\.)?[`"]?([a-zA-Z_][\w]*)[`"]?/i
+      /\bFROM\s+[`"]?(?:[\w-]+\.)?[`"]?([a-zA-Z_][\w]*)[`"]?/i,
     );
     if (match) return match[1];
   }
@@ -133,13 +138,23 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
         if (!cube.name) continue;
         const sourceTable = extractTableName(cube);
         const dims = new Set(
-          (cube.dimensions || []).map((d) => d.name).filter(Boolean)
+          (cube.dimensions || []).map((d) => d.name).filter(Boolean),
         );
-        mapping.set(cube.name, { sourceTable, dimensions: dims });
+        const billingItems =
+          cube.meta?.managed_by === "ctx-enrichment" &&
+          Array.isArray(cube.meta?.billing_items)
+            ? cube.meta.billing_items.filter((item) =>
+                ENRICHMENT_PRODUCTS.includes(item),
+              )
+            : [];
+        mapping.set(cube.name, { sourceTable, dimensions: dims, billingItems });
       }
     }
   } catch (err) {
-    console.error("[queryRewrite] Failed to build cube-to-table map:", err.message);
+    console.error(
+      "[queryRewrite] Failed to build cube-to-table map:",
+      err.message,
+    );
   }
 
   // Evict oldest entry if cache is full
@@ -150,6 +165,30 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
   cubeTableMapCache.set(schemaVersion, mapping);
 
   return mapping;
+}
+
+/**
+ * Resolve billable products from the immutable metadata on the compiled
+ * managed cubes. Generated SQL is deliberately not inspected: a physical
+ * join can be present for planning reasons without the caller selecting an
+ * enrichment member.
+ */
+export async function resolveEnrichmentBillingItems(query, securityContext) {
+  const dataSource = securityContext?.userScope?.dataSource;
+  if (!dataSource?.schemaVersion || !Array.isArray(dataSource?.files))
+    return [];
+
+  const cubeMap = await buildCubeToTableMap(
+    dataSource.schemaVersion,
+    dataSource.files,
+  );
+  const items = new Set();
+  for (const member of collectResolvedMembers(query)) {
+    const cubeName = member.split(".", 1)[0];
+    for (const item of cubeMap.get(cubeName)?.billingItems || [])
+      items.add(item);
+  }
+  return ENRICHMENT_PRODUCTS.filter((item) => items.has(item));
 }
 
 /**
@@ -176,8 +215,19 @@ function extractCubeNames(query) {
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
 const queryRewrite = async (query, { securityContext }) => {
+  // Premium model authorization is evaluated against every resolved-member
+  // location before any rewrite can remove or replace query fields. This is
+  // the shared compiler boundary for REST and native SQL API sessions.
+  assertEnrichmentQueryAuthorized(query, securityContext);
+
   const { userScope } = securityContext;
-  const { dataSourceAccessList, hasAccessList, role, teamProperties, memberProperties } = userScope;
+  const {
+    dataSourceAccessList,
+    hasAccessList,
+    role,
+    teamProperties,
+    memberProperties,
+  } = userScope;
 
   // --- Step 0: Strip unresolvable "no order" placeholders ---
   // The client query builder emits `emptyCube.emptyKey` as a sentinel for
@@ -191,7 +241,7 @@ const queryRewrite = async (query, { securityContext }) => {
       query.order = query.order.filter((o) =>
         Array.isArray(o)
           ? !isPlaceholder(o[0])
-          : !isPlaceholder(o && (o.id || o.member))
+          : !isPlaceholder(o && (o.id || o.member)),
       );
     } else if (typeof query.order === "object") {
       for (const key of Object.keys(query.order)) {
@@ -252,7 +302,8 @@ const queryRewrite = async (query, { securityContext }) => {
 
         if (appliedFilters.has(filterKey)) continue;
 
-        const source = rule.property_source === "team" ? teamProperties : memberProperties;
+        const source =
+          rule.property_source === "team" ? teamProperties : memberProperties;
         const value = source?.[rule.property_key];
 
         if (value === undefined || value === null) {
@@ -307,7 +358,7 @@ const queryRewrite = async (query, { securityContext }) => {
   const queryNames = getColumnsArray(query);
   const accessNames = Object.values(dataSourceAccessList).reduce(
     (acc, cube) => [...acc, ...getColumnsArray(cube)],
-    []
+    [],
   );
 
   queryNames.forEach((cn) => {

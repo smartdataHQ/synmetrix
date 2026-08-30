@@ -14,6 +14,7 @@ import { buildCubesFromTemplate } from "../utils/smart-generation/cubeBuilder.js
 import { generateYaml } from "../utils/smart-generation/yamlGenerator.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 import { mergeTemplateModel } from "../utils/smart-generation/templateMerger.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 const PROBE_TIMEOUT_MS = 60_000;
 
@@ -56,6 +57,7 @@ export async function reconcileTeamCore(params, deps) {
     systemUserId,
     partition,
     internalTables = [],
+    revokeTemplates = [],
   } = params;
 
   const current = (await deps.loadCurrentSchemas()) || [];
@@ -70,6 +72,62 @@ export async function reconcileTeamCore(params, deps) {
   const pendingUpdated = []; // outcomes that get versionId after publish
   const templateNames = new Set(templates.map((t) => t.name));
   const probeCache = new Map();
+
+  // Premium entitlement revocation is destructive only toward cubes carrying
+  // both the feature's managed_by stamp and an explicitly revoked template
+  // name. Team-authored cubes sharing the same file survive unchanged.
+  const revokeNames = new Set(revokeTemplates);
+  if (revokeNames.size > 0) {
+    for (const file of current) {
+      let doc;
+      try {
+        doc = YAML.parse(file.code);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(doc?.cubes)) continue;
+      const removed = doc.cubes.filter(
+        (cube) =>
+          cube?.meta?.managed_by === "ctx-enrichment" &&
+          revokeNames.has(cube?.meta?.template)
+      );
+      if (removed.length === 0) continue;
+
+      const kept = doc.cubes.filter((cube) => !removed.includes(cube));
+      const trial = new Map(working);
+      if (kept.length === 0) {
+        trial.delete(file.name);
+      } else {
+        trial.set(file.name, {
+          name: file.name,
+          code: YAML.stringify({ ...doc, cubes: kept }, { lineWidth: 0 }),
+        });
+      }
+      const validation = await deps.validate([...trial.values()]);
+      const retiredTemplates = [...new Set(removed.map((cube) => cube.meta.template))];
+      if (!validation.valid) {
+        for (const template of retiredTemplates) {
+          outcomes.push({
+            template,
+            result: "failed",
+            reason: `entitlement revocation failed validation: ${formatErrors(validation.errors)}`,
+          });
+        }
+        continue;
+      }
+      working.clear();
+      for (const [name, value] of trial) working.set(name, value);
+      for (const template of retiredTemplates) {
+        const outcome = {
+          template,
+          result: "removed",
+          reason: "entitlement_revoked",
+        };
+        outcomes.push(outcome);
+        pendingUpdated.push(outcome);
+      }
+    }
+  }
 
   // Lazy baseline compile of the ORIGINAL current set: discriminates
   // "this template broke the branch" (counts toward rollout halt) from
@@ -127,6 +185,7 @@ export async function reconcileTeamCore(params, deps) {
       (c) =>
         c?.meta?.default_model === true &&
         c?.meta?.template &&
+        !revokeNames.has(c.meta.template) &&
         !templateNames.has(c.meta.template) &&
         c?.meta?.default_model_unmanaged !== true
     );
@@ -143,6 +202,7 @@ export async function reconcileTeamCore(params, deps) {
       if (
         cube?.meta?.default_model === true &&
         cube?.meta?.template &&
+        !revokeNames.has(cube.meta.template) &&
         !templateNames.has(cube.meta.template) &&
         cube?.meta?.default_model_unmanaged !== true
       ) {
@@ -497,9 +557,17 @@ export default async function reconcileTeam(req, res, cubejs) {
     templates,
     optOut = [],
     dryRun = false,
+    revokeTemplates = [],
   } = req.body || {};
 
-  if (!teamId || !datasourceId || !branchId || !partition || !Array.isArray(templates)) {
+  if (
+    !teamId ||
+    !datasourceId ||
+    !branchId ||
+    !partition ||
+    !Array.isArray(templates) ||
+    !Array.isArray(revokeTemplates)
+  ) {
     return res.status(400).json({
       code: "invalid_input",
       message:
@@ -605,7 +673,7 @@ export default async function reconcileTeam(req, res, cubejs) {
   const deps = {
     loadCurrentSchemas: async () => previousDataschemas,
     probe: async ({ schema, table, eventScope = null, jsonPaths = null }) => {
-      const driver = await cubejs.options.driverFactory({ securityContext });
+      const driver = await tenantDriverFactory(cubejs)({ securityContext });
       const escape = (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
       const profile = await withTimeout(
         profileTable(driver, schema, table, {
@@ -672,6 +740,7 @@ export default async function reconcileTeam(req, res, cubejs) {
         dryRun,
         systemUserId,
         internalTables,
+        revokeTemplates,
       },
       deps
     );

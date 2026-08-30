@@ -10,6 +10,7 @@
  * @throws {Error} - Throws an error if testing the connection fails.
  */
 import { emitQueryEvent } from "../utils/eventEmitter.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
@@ -42,7 +43,7 @@ export default async (req, res, cubejs) => {
     });
 
   try {
-    const driver = await cubejs.options.driverFactory({ securityContext });
+    const driver = await tenantDriverFactory(cubejs)({ securityContext });
     await driver.testConnection();
 
     // Fire-and-forget; never blocks the response (FR-007).

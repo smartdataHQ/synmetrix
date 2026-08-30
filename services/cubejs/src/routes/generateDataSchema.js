@@ -7,6 +7,8 @@ import {
 import { emitModelEvent } from "../utils/eventEmitter.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { NO_SCHEMA_KEY } from "./getSchema.js";
+import { removeEnrichmentSchema } from "../utils/enrichmentEntitlement.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 const camelize = (value) =>
   value.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
 
@@ -42,7 +44,9 @@ const ensureYamlPrimaryKeys = (files, schema) => {
         columns.find((c) => c === "id") ||
         columns.find((c) => c === `${tableName}_id`) ||
         columns.find(
-          (c) => /_id$/.test(c) && joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`))
+          (c) =>
+            /_id$/.test(c) &&
+            joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`)),
         );
       if (!pkColumn) return;
 
@@ -105,8 +109,8 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    driver = await cubejs.options.driverFactory({ securityContext });
-    let schema = await driver.tablesSchema();
+    driver = await tenantDriverFactory(cubejs)({ securityContext });
+    let schema = removeEnrichmentSchema(await driver.tablesSchema());
     const {
       tables = [],
       overwrite = false,
@@ -122,7 +126,7 @@ export default async (req, res, cubejs) => {
       driver,
       {
         format,
-      }
+      },
     );
 
     const newFiles =

@@ -68,9 +68,8 @@ export function coerceAggNum(v) {
  * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
 export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns) {
-  // Partition clause — apply when partition is set and either:
-  //  (a) internalTables explicitly lists this table, OR
-  //  (b) internalTables is not configured (empty/missing) — all tables are internal
+  // Partition scoping is allowlist-only. Missing/empty/invalid configuration
+  // must never broaden access by treating every table as internal.
   let partitionClause = '';
   if (partition) {
     if (Array.isArray(internalTables) && internalTables.length > 0 && internalTables.includes(table)) {

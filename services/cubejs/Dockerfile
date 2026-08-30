@@ -1,4 +1,4 @@
-FROM node:22.14.0-bullseye
+FROM node:22.14.0-bullseye@sha256:1a956cf7ae435192dcdd18b8aba7349d649f0947795eac8b0b247b7024c60299
 
 ARG DATABRICKS_JDBC_URL=https://databricks-bi-artifacts.s3.us-east-2.amazonaws.com/simbaspark-drivers/jdbc/2.6.32/DatabricksJDBC42-2.6.32.1054.zip
 
@@ -7,8 +7,8 @@ RUN DEBIAN_FRONTEND=noninteractive \
     && apt-get install -y --no-install-recommends rxvt-unicode libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
-ENV TERM rxvt-unicode
-ENV NODE_ENV production
+ENV TERM=rxvt-unicode
+ENV NODE_ENV=production
 
 # Required for node-oracledb to buld on ARM64
 RUN apt-get update \
@@ -23,7 +23,7 @@ RUN apt-get update && \
 RUN apt-get update && apt-get install -y java-1.8.0-amazon-corretto-jdk
 
 WORKDIR /app
-ENV PATH /app/node_modules/.bin:$PATH
+ENV PATH=/app/node_modules/.bin:$PATH
 
 COPY yarn.lock /app/yarn.lock
 COPY package.json /app/package.json

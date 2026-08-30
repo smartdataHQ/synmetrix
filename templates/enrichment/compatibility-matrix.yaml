@@ -1,0 +1,7 @@
+schema_version: 1
+status: gate_1_open
+# No fact is approved yet. The publisher generates no join stubs from an empty
+# matrix; this is deliberate and prevents an unprofiled location/country rule
+# from changing fact grain. Approved entries must satisfy the Spec 102 Gate 1
+# schema and carry a real verification owner.
+entries: []

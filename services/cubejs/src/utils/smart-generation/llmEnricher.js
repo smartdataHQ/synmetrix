@@ -319,7 +319,12 @@ export async function enrichWithAIMetrics(
     // unknown). Fire-and-forget + never-throw; `attempts` (1-based) rides
     // properties so the previously-silent LLM path stays auditable — including
     // on failure, where the record is still emitted with status="error".
-    const emitEnrichCall = (status, startedAt, attempt) =>
+    const emitEnrichCall = (status, startedAt, attempt, completion = null) => {
+      const tokenIn = Number(completion?.usage?.prompt_tokens || 0);
+      const tokenCached = Math.min(
+        tokenIn,
+        Number(completion?.usage?.prompt_tokens_details?.cached_tokens || 0),
+      );
       emitConnectionCalled({
         partition: options.partition,
         accountId: options.accountId,
@@ -329,9 +334,18 @@ export async function enrichWithAIMetrics(
         item: 'smart-generation:enrich',
         durationMs: Date.now() - startedAt,
         cost: null,
+        usage: {
+          input_tokens: tokenIn - tokenCached,
+          cached_input_tokens: tokenCached,
+          output_tokens: Number(completion?.usage?.completion_tokens || 0),
+        },
+        providerBilling: completion?.provider_billing || null,
+        providerRequestId: completion?.id || null,
+        callIdentity: completion?.id || null,
         status,
         properties: { attempts: attempt + 1 },
       });
+    };
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const startedAt = Date.now();
@@ -349,7 +363,7 @@ export async function enrichWithAIMetrics(
         emitEnrichCall('error', startedAt, attempt);
         throw callErr; // preserve behavior — outer catch records result.error
       }
-      emitEnrichCall('ok', startedAt, attempt);
+      emitEnrichCall('ok', startedAt, attempt, completion);
 
       const parsed = completion.choices[0].message.parsed;
       const metricsToValidate = parsed.metrics;

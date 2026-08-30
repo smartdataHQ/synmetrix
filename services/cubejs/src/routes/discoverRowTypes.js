@@ -24,6 +24,8 @@
  * profile-table.
  */
 
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
+
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const TABLES = {
@@ -99,7 +101,7 @@ export default async (req, res, cubejs) => {
       });
     }
 
-    driver = await cubejs.options.driverFactory({ securityContext });
+    driver = await tenantDriverFactory(cubejs)({ securityContext });
     const qualified = `${schema}.${table}`;
     const partitionCond = `partition = '${escapeSql(partition)}'`;
     const disc = config.discriminator;

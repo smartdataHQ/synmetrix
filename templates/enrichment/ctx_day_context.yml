@@ -1,0 +1,104 @@
+cubes:
+  - name: CtxDayContext
+    sql_table: enrich.day_context_v
+    public: true
+    meta:
+      default_model: true
+      managed_by: ctx-enrichment
+      template: ctx_day_context
+      source_table: day_context_v
+      billing_items:
+        - ctx:day-archetype
+    dimensions:
+      - name: contextKey
+        sql: concat({CUBE}.request_geohash6, ':', {CUBE}.country_code, ':', toString({CUBE}.local_date))
+        type: string
+        primary_key: true
+        public: false
+      - name: requestGeohash6
+        sql: request_geohash6
+        type: string
+      - name: countryCode
+        sql: country_code
+        type: string
+      - name: localDate
+        sql: local_date
+        type: time
+      - name: timezone
+        sql: timezone
+        type: string
+      - name: isWorkday
+        sql: is_workday
+        type: boolean
+      - name: isHoliday
+        sql: is_holiday
+        type: boolean
+      - name: isWeekend
+        sql: is_weekend
+        type: boolean
+      - name: isObservance
+        sql: is_observance
+        type: boolean
+      - name: isSeasonal
+        sql: is_seasonal
+        type: boolean
+      - name: isClosed
+        sql: is_closed
+        type: boolean
+      - name: isClockChange
+        sql: is_clock_change
+        type: boolean
+      - name: isVacationSeason
+        sql: is_vacation_season
+        type: boolean
+      - name: fromNoon
+        sql: from_noon
+        type: boolean
+      - name: dayOfWeek
+        sql: day_of_week
+        type: number
+      - name: dayOfMonth
+        sql: day_of_month
+        type: number
+      - name: dayOfYear
+        sql: day_of_year
+        type: number
+      - name: monthOfYear
+        sql: month_of_year
+        type: number
+      - name: monthName
+        sql: month_name
+        type: string
+      - name: weekOfYear
+        sql: week_of_year
+        type: number
+      - name: weekOfMonth
+        sql: week_of_month
+        type: number
+      - name: firstDayOfWeek
+        sql: first_day_of_week
+        type: number
+      - name: dayName
+        sql: day_name
+        type: string
+      - name: holidayTitle
+        sql: holiday_title
+        type: string
+      - name: seasonName
+        sql: season_name
+        type: string
+      - name: hoursOfDaylight
+        sql: hours_of_daylight
+        type: number
+      - name: archetypeMarker
+        sql: archetype_marker
+        type: string
+      - name: wordCloud
+        sql: arrayStringConcat(word_cloud, ', ')
+        type: string
+      - name: snapshotId
+        sql: snapshot_id
+        type: string
+      - name: refreshedAt
+        sql: refreshed_at
+        type: time

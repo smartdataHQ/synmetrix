@@ -80,7 +80,12 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
   // (amount 0.0 / USD / pricing unknown). Fire-and-forget + never-throw; the
   // pass name rides properties so a silently-swallowed pass failure stays
   // auditable — the record is still emitted with status="error".
-  const emitAdviseCall = (status, startedAt) =>
+  const emitAdviseCall = (status, startedAt, completion = null) => {
+    const tokenIn = Number(completion?.usage?.prompt_tokens || 0);
+    const tokenCached = Math.min(
+      tokenIn,
+      Number(completion?.usage?.prompt_tokens_details?.cached_tokens || 0),
+    );
     emitConnectionCalled({
       ...(emitCtx || {}),
       provider: 'openai',
@@ -88,9 +93,18 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
       item: 'smart-generation:advise',
       durationMs: Date.now() - startedAt,
       cost: null,
+      usage: {
+        input_tokens: tokenIn - tokenCached,
+        cached_input_tokens: tokenCached,
+        output_tokens: Number(completion?.usage?.completion_tokens || 0),
+      },
+      providerBilling: completion?.provider_billing || null,
+      providerRequestId: completion?.id || null,
+      callIdentity: completion?.id || null,
       status,
       properties: { pass: passName, attempts: 1 },
     });
+  };
 
   const startedAt = Date.now();
   try {
@@ -107,7 +121,7 @@ async function runPass(client, zodResponseFormat, z, modelContext, passName, pri
       { signal: AbortSignal.timeout(timeout) }
     );
 
-    emitAdviseCall('ok', startedAt);
+    emitAdviseCall('ok', startedAt, completion);
     return completion.choices[0]?.message?.parsed || null;
   } catch (err) {
     emitAdviseCall('error', startedAt);

@@ -4,12 +4,14 @@ import {
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
-import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "./workosAuth.js";
+import {
+  detectTokenType,
+  verifyWorkOSToken,
+  verifyFraiOSToken,
+} from "./workosAuth.js";
 
 import buildSecurityContext from "./buildSecurityContext.js";
-import defineUserScope, {
-  getDataSourceAccessList,
-} from "./defineUserScope.js";
+import defineUserScope, { getDataSourceAccessList } from "./defineUserScope.js";
 import { emitQueryEvent } from "./eventEmitter.js";
 
 const buildSqlSecurityContext = (sqlCredentials) => {
@@ -24,7 +26,7 @@ const buildSqlSecurityContext = (sqlCredentials) => {
   const dataSourceAccessList = getDataSourceAccessList(
     allMembers,
     dataSourceId,
-    teamId
+    teamId,
   );
 
   // Resolve team settings + per-member properties so queryRewrite rules can
@@ -41,7 +43,7 @@ const buildSqlSecurityContext = (sqlCredentials) => {
     sqlCredentials?.datasource,
     undefined,
     undefined,
-    teamSettings
+    teamSettings,
   );
 
   return {
@@ -74,8 +76,7 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
   // Resolve the two shapes Cube has used for this callback:
   //   new: (request, username: string, password: string)
   //   legacy: (_req, { username, password })
-  const username =
-    typeof userArg === "string" ? userArg : userArg?.username;
+  const username = typeof userArg === "string" ? userArg : userArg?.username;
   const password =
     passwordArg ??
     (typeof userArg === "string" ? undefined : userArg?.password);
@@ -100,12 +101,12 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
       // Username is the datasource ID
       const datasourceId = username;
       const dataSource = userData.dataSources.find(
-        (ds) => ds.id === datasourceId
+        (ds) => ds.id === datasourceId,
       );
 
       if (!dataSource) {
         const error = new Error(
-          `403: access denied for datasource "${datasourceId}"`
+          `403: access denied for datasource "${datasourceId}"`,
         );
         error.status = 403;
         throw error;
@@ -114,7 +115,7 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
       const userScope = defineUserScope(
         userData.dataSources,
         userData.members,
-        datasourceId
+        datasourceId,
       );
 
       // 099 T089 (FR-091): a SQL-API session was authenticated. WorkOS tokens
@@ -135,6 +136,11 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
         securityContext: {
           userId,
           userScope,
+          tokenPayload: {
+            accountId: null,
+            partition: payload?.partition ?? null,
+            tokenType: "workos",
+          },
         },
       };
     } else if (tokenType === "fraios") {
@@ -152,12 +158,12 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
 
       const datasourceId = username;
       const dataSource = userData.dataSources.find(
-        (ds) => ds.id === datasourceId
+        (ds) => ds.id === datasourceId,
       );
 
       if (!dataSource) {
         const error = new Error(
-          `403: access denied for datasource "${datasourceId}"`
+          `403: access denied for datasource "${datasourceId}"`,
         );
         error.status = 403;
         throw error;
@@ -166,7 +172,7 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
       const userScope = defineUserScope(
         userData.dataSources,
         userData.members,
-        datasourceId
+        datasourceId,
       );
 
       // 099 T089 (FR-091): a SQL-API session was authenticated. FraiOS tokens
@@ -187,6 +193,11 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
         securityContext: {
           userId,
           userScope,
+          tokenPayload: {
+            accountId: payload?.accountId ?? null,
+            partition: payload?.partition ?? null,
+            tokenType: "fraios",
+          },
         },
       };
     }
@@ -198,12 +209,18 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
     throw new Error("Incorrect user name or password");
   }
   const sqlCredentials = await findSqlCredentials(username);
+  const userScope = buildSqlSecurityContext(sqlCredentials);
 
   return {
     password: sqlCredentials?.password,
     securityContext: {
       userId: sqlCredentials?.user_id,
-      userScope: buildSqlSecurityContext(sqlCredentials),
+      userScope,
+      tokenPayload: {
+        accountId: null,
+        partition: userScope?.teamProperties?.partition ?? null,
+        tokenType: "legacy-sql-credentials",
+      },
     },
   };
 };

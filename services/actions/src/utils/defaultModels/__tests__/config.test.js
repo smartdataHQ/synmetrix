@@ -50,6 +50,10 @@ test("applies defaults for the optional keys", () => {
   assert.deepEqual(config.canaryTeamIds, []);
   // empty drift probes = treat all teams as changed
   assert.deepEqual(config.driftProbes, []);
+  assert.equal(config.enrichmentEntitlementUrl, null);
+  assert.equal(config.enrichmentServiceKey, null);
+  assert.equal(config.enrichmentSigningKey, null);
+  assert.equal(config.enrichmentTimeoutMs, 5000);
 });
 
 test("parses optional keys into typed values", () => {
@@ -60,6 +64,12 @@ test("parses optional keys into typed values", () => {
     DEFAULT_MODELS_COHORTS: "6",
     DEFAULT_MODELS_DRIFT_PROBES:
       '[{"table":"cst.semantic_events","timeColumn":"timestamp"}]',
+    CXS2_ENRICHMENT_ENTITLEMENT_URL:
+      "http://cxs2.cxs2.svc/api/internal/semantic-layer/enrichment-entitlements",
+    INTERNAL_SERVICE_API_KEY: "service-key",
+    ENRICHMENT_ENTITLEMENT_SIGNING_KEY:
+      "test-only-entitlement-key-with-at-least-32-bytes",
+    ENRICHMENT_ENTITLEMENT_TIMEOUT_MS: "1234",
   });
 
   assert.deepEqual(config.canaryTeamIds, [UUID_A, UUID_B]);
@@ -68,6 +78,7 @@ test("parses optional keys into typed values", () => {
   assert.deepEqual(config.driftProbes, [
     { table: "cst.semantic_events", timeColumn: "timestamp" },
   ]);
+  assert.equal(config.enrichmentTimeoutMs, 1234);
 });
 
 test("rejects malformed DEFAULT_MODELS_DRIFT_PROBES", () => {

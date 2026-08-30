@@ -21,6 +21,11 @@ import {
   captureDriftSnapshot,
   diffDriftSnapshots,
 } from "../utils/defaultModels/drift.js";
+import {
+  ENRICHMENT_TEMPLATE_NAMES,
+  reconcileEnrichmentEntitlement,
+  templatesForEntitlement,
+} from "../utils/defaultModels/enrichmentEntitlement.js";
 
 const TEAM_CONCURRENCY = 4;
 
@@ -44,6 +49,7 @@ export default async (session, input, headers, deps = {}) => {
     listTeams = listAllTeams,
     reconcileOneTeam = reconcileOneTeamImpl,
     captureDrift = captureDriftSnapshot,
+    reconcileEntitlement = reconcileEnrichmentEntitlement,
     isAdmin,
   } = deps;
 
@@ -153,11 +159,25 @@ export default async (session, input, headers, deps = {}) => {
         for (;;) {
           const team = queue.shift();
           if (!team) return;
-          // unchanged team on a schedule tick: skip before any per-team probe
-          if (
+          let entitlement;
+          try {
+            entitlement = await reconcileEntitlement(team, config, { dryRun });
+          } catch (err) {
+            await record({
+              team_id: team.id,
+              result: "failed",
+              reason: `enrichment_entitlement: ${err?.message || String(err)}`,
+            });
+            continue;
+          }
+          const effectiveTeam = entitlement.team;
+          const unchanged =
             changedPartitions !== null &&
-            !changedPartitions.has(team.settings?.partition)
-          ) {
+            !changedPartitions.has(effectiveTeam.settings?.partition);
+          // unchanged team on a schedule tick: skip before any per-team probe
+          // unless an entitlement revocation still needs to remove managed
+          // artifacts. A revoke-only pass sends no ordinary templates.
+          if (unchanged && !entitlement.enrichmentRevokeRequired) {
             await record({
               team_id: team.id,
               result: "skipped_no_change",
@@ -166,9 +186,22 @@ export default async (session, input, headers, deps = {}) => {
             continue;
           }
           try {
-            const teamOutcomes = await reconcileOneTeam(team, templates, config, {
-              dryRun,
-            });
+            const teamOutcomes = await reconcileOneTeam(
+              effectiveTeam,
+              unchanged
+                ? []
+                : templatesForEntitlement(
+                    templates,
+                    entitlement.enrichmentEnabled
+                  ),
+              config,
+              {
+                dryRun,
+                revokeTemplates: entitlement.enrichmentRevokeRequired
+                  ? ENRICHMENT_TEMPLATE_NAMES
+                  : [],
+              }
+            );
             for (const outcome of teamOutcomes) {
               const row = { team_id: team.id, ...outcome };
               cohortOutcomes.push(row);
