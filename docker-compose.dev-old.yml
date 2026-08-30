@@ -205,7 +205,7 @@ services:
       - 3030:3030
     environment:
       - CUBESTORE_DATA_DIR=/cube/local
-      - CUBESTORE_REMOTE_DIR=/cube/remote
+      - CUBESTORE_REMOTE_DIR=/cube/remote/store
     volumes:
       - .cubestore:/cube/remote
     networks:

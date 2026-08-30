@@ -189,7 +189,7 @@ services:
         constraints: [node.role == manager]
     environment:
       - CUBESTORE_DATA_DIR=/cube/local
-      - CUBESTORE_REMOTE_DIR=/cube/remote
+      - CUBESTORE_REMOTE_DIR=/cube/remote/store
     volumes:
       - cubestore:/cube/remote
     networks:
