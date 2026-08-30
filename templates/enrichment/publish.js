@@ -53,10 +53,8 @@ export function validateCompatibilityMatrix(matrix) {
 }
 
 const joinSql = (entry, product) => {
-  const country =
-    product === "weather" ? ` AND (${entry.country_source}) = 'IS'` : "";
   const cube = PRODUCT_CUBES[product];
-  return `(${entry.geohash_expr}) = {${cube}}.requestGeohash6 AND (${entry.country_source}) = {${cube}}.countryCode AND toDate(toTimeZone(${entry.event_time_expr}, ${entry.timezone_source})) = {${cube}}.localDate${country}`;
+  return `(${entry.geohash_expr}) = {${cube}}.requestGeohash6 AND (${entry.country_source}) = {${cube}}.countryCode AND toDate(toTimeZone(${entry.event_time_expr}, ${entry.timezone_source})) = {${cube}}.localDate`;
 };
 
 export function generateJoinStubs(matrix) {

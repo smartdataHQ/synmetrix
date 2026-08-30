@@ -37,7 +37,12 @@ describe("Spec 102 enrichment templates", () => {
     }
     assert.equal(day.sql_table, "enrich.day_context_v");
     assert.match(weather.sql, /enrich\.weather_context_v/);
-    assert.match(weather.sql, /country_code = 'IS'/);
+    assert.doesNotMatch(weather.sql, /country_code\s*=\s*'IS'/);
+    assert.equal(weather.meta.weather_country, undefined);
+    assert.match(
+      weather.dimensions.find((d) => d.name === "contextKey").sql,
+      /country_code/,
+    );
   });
 
   it("keeps categorical markers as strings", async () => {
@@ -53,7 +58,7 @@ describe("Spec 102 enrichment templates", () => {
     );
   });
 
-  it("generates only matrix-approved many-to-one joins with an Iceland weather guard", () => {
+  it("generates only matrix-approved, country-correlated many-to-one joins", () => {
     const matrix = validateCompatibilityMatrix({
       schema_version: 1,
       status: "approved",
@@ -77,7 +82,8 @@ describe("Spec 102 enrichment templates", () => {
     assert.equal(stub.joins.length, 2);
     assert.ok(stub.joins.every((join) => join.relationship === "many_to_one"));
     assert.doesNotMatch(stub.joins[0].sql, /= 'IS'/);
-    assert.match(stub.joins[1].sql, /= 'IS'/);
+    assert.doesNotMatch(stub.joins[1].sql, /= 'IS'/);
+    assert.ok(stub.joins.every((join) => join.sql.includes("countryCode")));
   });
 
   it("publishes no join stubs while Gate 1 remains empty and is checksum-idempotent", async () => {
