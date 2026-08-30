@@ -5455,16 +5455,8 @@ extend@^3.0.2:
   resolved "https://registry.npmjs.org/extend/-/extend-3.0.2.tgz"
   integrity sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==
 
-extract-zip@^2.0.1:
-  version "2.0.1"
-  resolved "https://registry.npmjs.org/extract-zip/-/extract-zip-2.0.1.tgz"
-  integrity sha512-GDhU9ntwuKyGXdZBUgTIe+vXnWj0fppUEtMDL0+idd5Sta8TGpHssn/eusA9mrPr9qNDym6SxAYZjNvCn/9RBg==
-  dependencies:
-    debug "^4.1.1"
-    get-stream "^5.1.0"
-    yauzl "^2.10.0"
-  optionalDependencies:
-    "@types/yauzl" "^2.9.1"
+extract-zip@^2.0.1, "extract-zip@file:scripts/extract-zip-disabled":
+  version "0.0.0-disabled"
 
 fast-fifo@^1.2.0, fast-fifo@^1.3.2:
   version "1.3.2"
@@ -8716,25 +8708,17 @@ textextensions@^2.5.0:
   resolved "https://registry.npmjs.org/textextensions/-/textextensions-2.6.0.tgz"
   integrity sha512-49WtAWS+tcsy93dRt6P0P3AMD2m5PvXRhuEA0kaXos5ZLlujtYmpmFsB+QvWUSxE1ZsstmYXfQ7L40+EcQgpAQ==
 
-thrift@^0.20.0:
-  version "0.20.0"
-  resolved "https://registry.npmjs.org/thrift/-/thrift-0.20.0.tgz"
-  integrity sha512-oSmJTaoIAGolpupVHFfsWcmdEKX81fcDI6ty0hhezzdgZvp0XyXgMe9+1YusI8Ahy0HK4n8jlNrkPjOPeHZjdQ==
+thrift@0.23.0, thrift@^0.20.0, thrift@^0.9.3:
+  version "0.23.0"
+  resolved "https://registry.yarnpkg.com/thrift/-/thrift-0.23.0.tgz#de1162a3a2355f983eff73161bae57bca3fa5ccf"
+  integrity sha512-j7F1ls8JogClU88Ta/pwD/OzYuiFeD6Z5GoWw7ip+jcDhcNYFKgfXYEsyLXYpiNfJO94fbLnITGxyfZ19YzA6Q==
   dependencies:
     browser-or-node "^1.2.1"
     isomorphic-ws "^4.0.1"
     node-int64 "^0.4.0"
     q "^1.5.0"
+    uuid "^13.0.0"
     ws "^5.2.3"
-
-thrift@^0.9.3:
-  version "0.9.3"
-  resolved "https://registry.npmjs.org/thrift/-/thrift-0.9.3.tgz"
-  integrity sha512-CLjTMnk31Yhcteeyfhxv1UU8yv0jqlc5kNDGogbpWG2mUU2sJtj33sQzA+qml8Kj2y8WUdVKY7kkZxiczKoATw==
-  dependencies:
-    node-int64 "~0.3.0"
-    q "1.0.x"
-    ws "~0.4.32"
 
 throttle-debounce@^3.0.1:
   version "3.0.1"
