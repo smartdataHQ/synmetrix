@@ -160,7 +160,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=sha,prefix={{branch}}-,format=short
+            type=sha,prefix={{branch}}-,format=short,enable=${{ github.event_name != 'pull_request' }}
             type=sha,format=short,prefix=
             type=raw,value=build-${{ github.sha }}
             type=raw,value=latest,enable={{is_default_branch}}
