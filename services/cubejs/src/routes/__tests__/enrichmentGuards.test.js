@@ -9,6 +9,7 @@ import { authorizeRunSqlQuery } from "../runSql.js";
 const KEY = "test-enrichment-signing-key-at-least-32-bytes";
 const NOW = new Date("2026-08-30T10:00:00.000Z");
 const PRODUCTS = ["ctx:day-archetype", "ctx:weather-archetype"];
+const BILLING_CONNECTION_ID = "11111111-1111-4111-8111-111111111111";
 
 function securityContext() {
   const payload = {
@@ -19,6 +20,7 @@ function securityContext() {
     issued_at: "2026-08-30T09:00:00.000Z",
     valid_until: "2026-08-30T11:00:00.000Z",
     products: PRODUCTS,
+    billing_connection_id: BILLING_CONNECTION_ID,
   };
   const signature = createHmac("sha256", KEY)
     .update(JSON.stringify(payload))
@@ -34,6 +36,7 @@ function securityContext() {
             issued_at: payload.issued_at,
             valid_until: payload.valid_until,
             products: payload.products,
+            billing_connection_id: payload.billing_connection_id,
             signature_version: "hmac-sha256-v1",
             signature,
           },

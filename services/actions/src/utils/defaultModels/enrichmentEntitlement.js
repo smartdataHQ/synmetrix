@@ -21,6 +21,7 @@ const canonicalPayload = (payload) =>
     issued_at: payload?.issued_at,
     valid_until: payload?.valid_until,
     products: payload?.products,
+    billing_connection_id: payload?.billing_connection_id,
   });
 
 const signaturesMatch = (left, right) => {
@@ -64,7 +65,12 @@ export const resolveEnrichmentEntitlement = async (
       typeof payload?.enabled !== "boolean" ||
       typeof payload?.entitlement_revision !== "string" ||
       !Array.isArray(payload?.products) ||
-      payload.products.join(",") !== PRODUCTS.join(",")
+      payload.products.join(",") !== PRODUCTS.join(",") ||
+      (payload.enabled
+        ? !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            payload.billing_connection_id || "",
+          )
+        : payload.billing_connection_id !== null)
     ) {
       return disabled("lease_malformed");
     }
@@ -96,6 +102,7 @@ export const resolveEnrichmentEntitlement = async (
         signature_version: envelope.signature_version,
         signature: envelope.signature,
         products: [...payload.products],
+        billing_connection_id: payload.billing_connection_id,
       },
     };
   } catch {
@@ -115,6 +122,7 @@ export const mergeEnrichmentEntitlement = (settings = {}, resolution) => {
         signature_version: null,
         signature: null,
         products: PRODUCTS,
+        billing_connection_id: null,
         reason: resolution.reason || "invalid_lease",
       };
   return {

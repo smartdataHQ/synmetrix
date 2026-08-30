@@ -16,6 +16,7 @@ import { filterUnentitledEnrichmentSchemas } from "../repositoryFactory.js";
 
 const KEY = "test-enrichment-signing-key-at-least-32-bytes";
 const PRODUCTS = ["ctx:day-archetype", "ctx:weather-archetype"];
+const BILLING_CONNECTION_ID = "11111111-1111-4111-8111-111111111111";
 
 const canonicalPayload = (payload) =>
   JSON.stringify({
@@ -26,6 +27,7 @@ const canonicalPayload = (payload) =>
     issued_at: payload.issued_at,
     valid_until: payload.valid_until,
     products: payload.products,
+    billing_connection_id: payload.billing_connection_id,
   });
 
 function makeSecurityContext(overrides = {}) {
@@ -37,6 +39,7 @@ function makeSecurityContext(overrides = {}) {
     issued_at: "2026-08-30T09:00:00.000Z",
     valid_until: "2026-08-30T11:00:00.000Z",
     products: PRODUCTS,
+    billing_connection_id: BILLING_CONNECTION_ID,
     ...overrides,
   };
   const signature = createHmac("sha256", KEY)
@@ -55,6 +58,7 @@ function makeSecurityContext(overrides = {}) {
             signature_version: "hmac-sha256-v1",
             signature,
             products: payload.products,
+            billing_connection_id: payload.billing_connection_id,
           },
         },
       },
@@ -111,12 +115,12 @@ describe("resolved enrichment member guard", () => {
   });
 
   it("accepts a current, correctly signed lease", () => {
-    assert.equal(
+    assert.deepEqual(
       validateEnrichmentLease(makeSecurityContext(), {
         signingKey: KEY,
         now: NOW,
-      }).valid,
-      true,
+      }),
+      { valid: true, connectionId: BILLING_CONNECTION_ID },
     );
     assert.doesNotThrow(() =>
       assertEnrichmentQueryAuthorized(
@@ -133,9 +137,10 @@ describe("resolved enrichment member guard", () => {
       makeSecurityContext({ valid_until: "2026-08-30T09:59:59.000Z" }),
       makeSecurityContext({ enabled: false }),
       makeSecurityContext({ products: [PRODUCTS[0]] }),
+      makeSecurityContext({ billing_connection_id: null }),
       makeSecurityContext(),
     ];
-    cases[4].userScope.teamProperties.premium.enrichment.signature = "invalid";
+    cases[5].userScope.teamProperties.premium.enrichment.signature = "invalid";
 
     for (const securityContext of cases) {
       assert.throws(

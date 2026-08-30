@@ -28,6 +28,7 @@ const canonicalPayload = (payload) =>
     issued_at: payload.issued_at,
     valid_until: payload.valid_until,
     products: payload.products,
+    billing_connection_id: payload.billing_connection_id,
   });
 
 function signaturesMatch(left, right) {
@@ -125,6 +126,9 @@ export function validateEnrichmentLease(
     typeof lease.entitlement_revision !== "string" ||
     !Array.isArray(lease.products) ||
     lease.products.join(",") !== ENRICHMENT_PRODUCTS.join(",") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      lease.billing_connection_id || "",
+    ) ||
     !Number.isFinite(issuedAt) ||
     !Number.isFinite(validUntil) ||
     !Number.isFinite(nowMs) ||
@@ -142,11 +146,16 @@ export function validateEnrichmentLease(
     issued_at: lease.issued_at,
     valid_until: lease.valid_until,
     products: lease.products,
+    billing_connection_id: lease.billing_connection_id,
   };
   const expected = createHmac("sha256", signingKey)
     .update(canonicalPayload(payload))
     .digest("base64url");
-  return { valid: signaturesMatch(expected, lease.signature) };
+  const valid = signaturesMatch(expected, lease.signature);
+  return {
+    valid,
+    connectionId: valid ? lease.billing_connection_id : null,
+  };
 }
 
 export function assertEnrichmentQueryAuthorized(

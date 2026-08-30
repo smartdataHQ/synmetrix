@@ -9,6 +9,7 @@ import {
 } from "../../utils/defaultModels/enrichmentEntitlement.js";
 
 const KEY = "test-only-entitlement-key-with-at-least-32-bytes";
+const BILLING_CONNECTION_ID = "11111111-1111-4111-8111-111111111111";
 const NOW = new Date("2026-08-30T12:00:00.000Z");
 
 const signedLease = (overrides = {}) => {
@@ -20,6 +21,7 @@ const signedLease = (overrides = {}) => {
     issued_at: "2026-08-30T11:55:00.000Z",
     valid_until: "2026-08-30T12:25:00.000Z",
     products: ["ctx:day-archetype", "ctx:weather-archetype"],
+    billing_connection_id: BILLING_CONNECTION_ID,
     ...overrides,
   };
   return {
@@ -48,6 +50,7 @@ describe("enrichment entitlement reconciliation", () => {
     assert.equal(result.valid, true);
     assert.equal(result.enabled, true);
     assert.equal(result.lease.entitlement_revision, "7");
+    assert.equal(result.lease.billing_connection_id, BILLING_CONNECTION_ID);
   });
 
   it("fails closed on signature tampering, expiry, and account mismatch", async () => {
@@ -55,6 +58,7 @@ describe("enrichment entitlement reconciliation", () => {
       { ...signedLease(), signature: "tampered" },
       signedLease({ valid_until: "2026-08-30T11:59:59.000Z" }),
       signedLease({ account_partition: "other.is" }),
+      signedLease({ billing_connection_id: null }),
     ]) {
       const result = await resolveEnrichmentEntitlement("customer.is", config, {
         now: () => NOW,
@@ -94,6 +98,7 @@ describe("enrichment entitlement reconciliation", () => {
         signature_version: "hmac-sha256-v1",
         signature: "opaque",
         products: ["ctx:day-archetype", "ctx:weather-archetype"],
+        billing_connection_id: BILLING_CONNECTION_ID,
       },
     });
     assert.deepEqual(merged.default_models, settings.default_models);
