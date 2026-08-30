@@ -47,16 +47,12 @@ export function parseEnrichmentCodePricing(
     const currency = String(entry?.currency || "")
       .trim()
       .toUpperCase();
-    const connectionId = String(entry?.connection_id || "").trim();
-    if (!/^[A-Z]{3}$/.test(currency) || !connectionId) {
-      throw configurationError(
-        `${item} requires currency and a real Connection`,
-      );
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      throw configurationError(`${item} requires currency`);
     }
     items[item] = {
       amount: parseAmount(entry.amount),
       currency,
-      connectionId,
     };
   }
 
@@ -96,7 +92,6 @@ export function resolveEnrichmentCodePrice(item, options = {}) {
     );
   }
   return {
-    connectionId: entry.connectionId,
     pricingCodeVersion: config.pricingCodeVersion,
     unitAmount: entry.amount,
     pricingResolution,

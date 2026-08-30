@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { describe, it } from "node:test";
 
-import { collectResolvedMembers } from "../enrichmentEntitlement.js";
+import {
+  collectResolvedMembers,
+  validateEnrichmentLease,
+} from "../enrichmentEntitlement.js";
 import {
   buildEnrichmentBillingBatch,
   deterministicBillingMessageId,
@@ -12,10 +16,41 @@ import {
   resolveEnrichmentCodePrice,
 } from "../enrichmentPricing.js";
 
+const KEY = "test-enrichment-signing-key-at-least-32-bytes";
+const NOW = new Date("2026-08-30T10:00:00.000Z");
+const BILLING_CONNECTION_ID = "11111111-1111-4111-8111-111111111111";
+const LEASE_PAYLOAD = {
+  schema_version: 1,
+  account_partition: "tenant.is",
+  enabled: true,
+  entitlement_revision: "7",
+  issued_at: "2026-08-30T09:00:00.000Z",
+  valid_until: "2026-08-30T11:00:00.000Z",
+  products: ["ctx:day-archetype", "ctx:weather-archetype"],
+  billing_connection_id: BILLING_CONNECTION_ID,
+};
 const SECURITY_CONTEXT = {
   userId: "person-1",
   tokenPayload: { accountId: "account-real-1", partition: "tenant.is" },
-  userScope: { teamProperties: { partition: "tenant.is" } },
+  userScope: {
+    teamProperties: {
+      partition: "tenant.is",
+      premium: {
+        enrichment: {
+          enabled: LEASE_PAYLOAD.enabled,
+          entitlement_revision: LEASE_PAYLOAD.entitlement_revision,
+          issued_at: LEASE_PAYLOAD.issued_at,
+          valid_until: LEASE_PAYLOAD.valid_until,
+          products: LEASE_PAYLOAD.products,
+          billing_connection_id: LEASE_PAYLOAD.billing_connection_id,
+          signature_version: "hmac-sha256-v1",
+          signature: createHmac("sha256", KEY)
+            .update(JSON.stringify(LEASE_PAYLOAD))
+            .digest("base64url"),
+        },
+      },
+    },
+  },
 };
 const PRICING = Object.freeze({
   pricingCodeVersion: "ctx-pricing-v1",
@@ -23,12 +58,10 @@ const PRICING = Object.freeze({
     "ctx:day-archetype": Object.freeze({
       amount: "0.10",
       currency: "ISK",
-      connectionId: "connection-day-real",
     }),
     "ctx:weather-archetype": Object.freeze({
       amount: "0.25",
       currency: "ISK",
-      connectionId: "connection-weather-real",
     }),
   }),
 });
@@ -60,6 +93,8 @@ const build = (req, result, options = {}) =>
   buildEnrichmentBillingBatch(req, result, {
     resolveItems,
     resolvePrice,
+    validateLease: (securityContext) =>
+      validateEnrichmentLease(securityContext, { signingKey: KEY, now: NOW }),
     ...options,
   });
 
@@ -175,6 +210,17 @@ describe("enrichment result-commit metering", () => {
       tokenPayload: { accountId: null, partition: "tenant.is" },
     };
     await assert.rejects(build(req, response([])), /real Account/);
+
+    const missingConnection = structuredClone(SECURITY_CONTEXT);
+    missingConnection.userScope.teamProperties.premium.enrichment.billing_connection_id = null;
+    const missingConnectionRequest = request({
+      dimensions: ["CtxDayContext.isHoliday"],
+    });
+    missingConnectionRequest.context.securityContext = missingConnection;
+    await assert.rejects(
+      build(missingConnectionRequest, response([])),
+      /per-account enrichment billing Connection/,
+    );
   });
 
   it("does not commit a result when durable enqueue fails", async () => {
@@ -235,7 +281,6 @@ describe("enrichment result-commit metering", () => {
           "ctx:day-archetype": {
             amount: "0.10",
             currency: "isk",
-            connection_id: "connection-day-real",
           },
         },
       }),
@@ -250,5 +295,23 @@ describe("enrichment result-commit metering", () => {
     assert.equal(price.pricingResolution.pricingSource, "legacy_runtime_rate");
     assert.equal(price.pricingCodeVersion, "ctx-pricing-v1");
     assert.equal(price.unitAmount, "0.10");
+    assert.equal("connectionId" in price, false);
+  });
+
+  it("attributes every enrichment item to the Connection in the signed account lease", async () => {
+    const result = await build(
+      request({
+        dimensions: [
+          "CtxDayContext.isHoliday",
+          "CtxWeatherContext.temperature",
+        ],
+      }),
+      response([]),
+    );
+    assert.equal(result.length, 2);
+    assert.deepEqual(
+      result.map((entry) => entry.envelope.properties.connection_id),
+      [BILLING_CONNECTION_ID, BILLING_CONNECTION_ID],
+    );
   });
 });

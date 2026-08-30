@@ -5,7 +5,10 @@ import { recordBillingFailure } from "./billingMetrics.js";
 import { buildConnectionCalled } from "./eventEmitter.js";
 import { resolveEnrichmentCodePrice } from "./enrichmentPricing.js";
 import { resolveEnrichmentBillingItems } from "./queryRewrite.js";
-import { sqlEnrichmentBillingItems } from "./enrichmentEntitlement.js";
+import {
+  sqlEnrichmentBillingItems,
+  validateEnrichmentLease,
+} from "./enrichmentEntitlement.js";
 
 function billingError(message) {
   const error = new Error(`enrichment billing unavailable: ${message}`);
@@ -101,6 +104,7 @@ export async function buildEnrichmentBillingBatch(
   {
     resolveItems = resolveEnrichmentBillingItems,
     resolvePrice = resolveEnrichmentCodePrice,
+    validateLease = validateEnrichmentLease,
     surface = request?.apiType === "sql" ? "sql-api" : "rest",
     cacheStatus = "unknown",
     returnedRows = null,
@@ -123,6 +127,7 @@ export async function buildEnrichmentBillingBatch(
       securityContext.userScope?.teamProperties?.partition ||
       "",
   ).trim();
+  let billingConnectionId = null;
 
   const entries = [];
   for (let index = 0; index < queries.length; index += 1) {
@@ -130,6 +135,15 @@ export async function buildEnrichmentBillingBatch(
     if (!items.length) continue;
     if (!accountId || !partition) {
       throw billingError("real Account and tenant partition are required");
+    }
+    if (!billingConnectionId) {
+      const entitlement = validateLease(securityContext);
+      if (!entitlement?.valid || !entitlement.connectionId) {
+        throw billingError(
+          "a valid per-account enrichment billing Connection is required",
+        );
+      }
+      billingConnectionId = entitlement.connectionId;
     }
     const logicalExecutionId = logicalExecutionIdForRequest(
       request,
@@ -144,7 +158,7 @@ export async function buildEnrichmentBillingBatch(
         userId: securityContext.userId || null,
         provider: "ctx",
         item,
-        connectionId: price.connectionId,
+        connectionId: billingConnectionId,
         billingMode: true,
         messageId,
         logicalExecutionId,
