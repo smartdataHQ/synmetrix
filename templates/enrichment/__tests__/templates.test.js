@@ -68,6 +68,8 @@ describe("Spec 102 enrichment templates", () => {
           products: ["day", "weather"],
           event_time_expr: "{CUBE}.timestamp",
           timezone_source: "{CUBE}.context_timezone",
+          timezone_valid_expr: "{CUBE}.timezone_is_valid = 1",
+          local_date_expr: "toDate({CUBE}.local_time)",
           location_rule: "context_point",
           country_source: "{CUBE}.country_code",
           country_location_proof: "evidence/gate-1/profile.json",
@@ -84,6 +86,42 @@ describe("Spec 102 enrichment templates", () => {
     assert.doesNotMatch(stub.joins[0].sql, /= 'IS'/);
     assert.doesNotMatch(stub.joins[1].sql, /= 'IS'/);
     assert.ok(stub.joins.every((join) => join.sql.includes("countryCode")));
+    assert.ok(
+      stub.joins.every((join) =>
+        join.sql.startsWith("({CUBE}.timezone_is_valid = 1) AND"),
+      ),
+    );
+    assert.ok(
+      stub.joins.every((join) =>
+        join.sql.includes("(toDate({CUBE}.local_time))"),
+      ),
+    );
+    assert.ok(stub.joins.every((join) => !join.sql.includes("toTimeZone")));
+  });
+
+  it("rejects an entry without an explicit timezone guard and local-date expression", () => {
+    assert.throws(
+      () =>
+        validateCompatibilityMatrix({
+          schema_version: 1,
+          status: "approved",
+          entries: [
+            {
+              fact_model: "SemanticEvents",
+              products: ["day"],
+              event_time_expr: "{CUBE}.timestamp",
+              timezone_source: "{CUBE}.context_timezone",
+              location_rule: "unique_only",
+              country_source: "{CUBE}.country_code",
+              country_location_proof: "evidence/gate-1/profile.json",
+              geohash_expr: "{CUBE}.geohash6",
+              cardinality: "many_to_one",
+              verification_owner: "analytics-platform",
+            },
+          ],
+        }),
+      /timezone_valid_expr/,
+    );
   });
 
   it("publishes no join stubs while Gate 1 remains empty and is checksum-idempotent", async () => {

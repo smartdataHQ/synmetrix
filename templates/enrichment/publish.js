@@ -29,6 +29,8 @@ export function validateCompatibilityMatrix(matrix) {
       "fact_model",
       "event_time_expr",
       "timezone_source",
+      "timezone_valid_expr",
+      "local_date_expr",
       "location_rule",
       "country_source",
       "country_location_proof",
@@ -54,7 +56,11 @@ export function validateCompatibilityMatrix(matrix) {
 
 const joinSql = (entry, product) => {
   const cube = PRODUCT_CUBES[product];
-  return `(${entry.geohash_expr}) = {${cube}}.requestGeohash6 AND (${entry.country_source}) = {${cube}}.countryCode AND toDate(toTimeZone(${entry.event_time_expr}, ${entry.timezone_source})) = {${cube}}.localDate`;
+  // ClickHouse 26.7 requires a constant time-zone argument to toTimeZone().
+  // The compatibility gate therefore supplies a separately proven local-date
+  // expression and an explicit IANA-zone validity predicate. Invalid or
+  // missing timezone rows fail the join instead of falling back to UTC.
+  return `(${entry.timezone_valid_expr}) AND (${entry.geohash_expr}) = {${cube}}.requestGeohash6 AND (${entry.country_source}) = {${cube}}.countryCode AND (${entry.local_date_expr}) = {${cube}}.localDate`;
 };
 
 export function generateJoinStubs(matrix) {
