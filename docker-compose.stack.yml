@@ -18,6 +18,7 @@ services:
   cubestore:
     image: cubejs/cubestore:${CUBESTORE_VERSION:-v1.6.68}
     environment:
+      - CUBESTORE_DATA_DIR=/cube/data
       - CUBESTORE_REMOTE_DIR=/cube/data
     volumes:
       - cube_store_data:/cube/data
