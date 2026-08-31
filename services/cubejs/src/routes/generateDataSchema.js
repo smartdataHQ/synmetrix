@@ -7,7 +7,7 @@ import {
 import { emitModelEvent } from "../utils/eventEmitter.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { NO_SCHEMA_KEY } from "./getSchema.js";
-import { removeEnrichmentSchema } from "../utils/enrichmentEntitlement.js";
+import { removeLegacyEnrichmentSchema } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 const camelize = (value) =>
   value.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
@@ -110,7 +110,7 @@ export default async (req, res, cubejs) => {
 
   try {
     driver = await tenantDriverFactory(cubejs)({ securityContext });
-    let schema = removeEnrichmentSchema(await driver.tablesSchema());
+    let schema = removeLegacyEnrichmentSchema(await driver.tablesSchema());
     const {
       tables = [],
       overwrite = false,

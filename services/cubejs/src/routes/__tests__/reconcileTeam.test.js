@@ -108,41 +108,6 @@ describe('computeVersionChecksum', () => {
 });
 
 describe('reconcileTeamCore — worker pipeline', () => {
-  it('revokes only managed enrichment cubes and preserves team-authored siblings', async () => {
-    const mixed = `cubes:
-  - name: CtxDayContext
-    sql_table: enrich.day_context_v
-    meta:
-      default_model: true
-      managed_by: ctx-enrichment
-      template: ctx_day_context
-  - name: TeamNotes
-    sql_table: team.notes
-    dimensions:
-      - name: note
-        sql: note
-        type: string
-`;
-    const { deps, calls } = makeDeps({
-      loadCurrentSchemas: async () => [
-        { id: 'ds-1', name: 'ctx_day_context.yml', code: mixed },
-      ],
-    });
-    const result = await reconcileTeamCore(
-      baseParams({
-        templates: [],
-        revokeTemplates: ['ctx_day_context', 'ctx_weather_context'],
-      }),
-      deps
-    );
-
-    assert.equal(result.outcomes[0].template, 'ctx_day_context');
-    assert.equal(result.outcomes[0].result, 'removed');
-    assert.equal(calls.publish.length, 1);
-    assert.match(calls.publish[0].files[0].code, /TeamNotes/);
-    assert.doesNotMatch(calls.publish[0].files[0].code, /CtxDayContext/);
-  });
-
   it('collision: team-authored file without provenance meta is skipped, nothing written', async () => {
     const { deps, calls } = makeDeps({
       loadCurrentSchemas: async () => [

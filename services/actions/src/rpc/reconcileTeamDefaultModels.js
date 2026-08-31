@@ -12,11 +12,6 @@ import {
   getTeam as getTeamImpl,
   reconcileOneTeam as reconcileOneTeamImpl,
 } from "../utils/defaultModels/shared.js";
-import {
-  ENRICHMENT_TEMPLATE_NAMES,
-  reconcileEnrichmentEntitlement,
-  templatesForEntitlement,
-} from "../utils/defaultModels/enrichmentEntitlement.js";
 
 export default async (session, input, headers, deps = {}) => {
   const {
@@ -26,7 +21,6 @@ export default async (session, input, headers, deps = {}) => {
     fetchTemplates = fetchPublishedTemplates,
     getTeam = getTeamImpl,
     reconcileOneTeam = reconcileOneTeamImpl,
-    reconcileEntitlement = reconcileEnrichmentEntitlement,
     isAdmin,
   } = deps;
 
@@ -74,17 +68,7 @@ export default async (session, input, headers, deps = {}) => {
 
     let outcomes;
     try {
-      const entitlement = await reconcileEntitlement(team, config);
-      outcomes = await reconcileOneTeam(
-        entitlement.team,
-        templatesForEntitlement(templates, entitlement.enrichmentEnabled),
-        config,
-        {
-          revokeTemplates: entitlement.enrichmentRevokeRequired
-            ? ENRICHMENT_TEMPLATE_NAMES
-            : [],
-        }
-      );
+      outcomes = await reconcileOneTeam(team, templates, config);
     } catch (err) {
       outcomes = [
         {

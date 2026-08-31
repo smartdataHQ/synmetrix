@@ -10,7 +10,7 @@
  */
 
 import { buildWhereClause } from "../utils/smart-generation/profiler.js";
-import { assertNoDirectEnrichmentObject } from "../utils/enrichmentEntitlement.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 export default async (req, res, cubejs) => {
@@ -36,7 +36,7 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    assertNoDirectEnrichmentObject(schema, table);
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     // Same extraction as profile-table — all values from team settings in the database
     const partition = securityContext.userScope?.dataSource?.partition || null;
     const internalTables =

@@ -42,7 +42,7 @@ import {
   smokeTestQuery,
 } from "../utils/smart-generation/modelValidator.js";
 import { fetchClickHouseAliasColumnNames } from "../utils/smart-generation/clickHouseAliasColumns.js";
-import { assertNoDirectEnrichmentObject } from "../utils/enrichmentEntitlement.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 
 function reorderProfileColumns(profiledTable) {
   if (!profiledTable?.columns || !(profiledTable.columns instanceof Map))
@@ -218,7 +218,7 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    assertNoDirectEnrichmentObject(schema, table);
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     const { userId } = securityContext;
     const partition = securityContext.userScope?.dataSource?.partition || null;
     // 099 T087/T088 (FR-091): one tenant-attribution source of truth, shared by

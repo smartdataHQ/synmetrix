@@ -179,7 +179,7 @@ export const resolveTeamTarget = async (team, config) => {
  * (contracts/cubejs-internal.md).
  */
 export const callWorker = async (
-  { team, datasourceId, branchId, templates, optOut, dryRun, revokeTemplates },
+  { team, datasourceId, branchId, templates, optOut, dryRun },
   config
 ) => {
   const { default: generateUserAccessToken } = await import("../jwt.js");
@@ -202,7 +202,6 @@ export const callWorker = async (
     templates,
     optOut,
     dryRun,
-    revokeTemplates,
   });
   return res?.outcomes || [];
 };
@@ -253,7 +252,6 @@ export const reconcileOneTeam = async (team, templates, config, options = {}) =>
         templates,
         optOut,
         dryRun: options.dryRun || false,
-        revokeTemplates: options.revokeTemplates || [],
       },
       config
     );

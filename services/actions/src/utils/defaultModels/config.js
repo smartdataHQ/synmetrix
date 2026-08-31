@@ -83,13 +83,6 @@ export const loadDefaultModelsConfig = (env = process.env) => {
     .map((id) => id.trim())
     .filter(Boolean);
 
-  const enrichmentTimeoutMs = env.ENRICHMENT_ENTITLEMENT_TIMEOUT_MS
-    ? Number(env.ENRICHMENT_ENTITLEMENT_TIMEOUT_MS)
-    : 5_000;
-  if (!Number.isInteger(enrichmentTimeoutMs) || enrichmentTimeoutMs <= 0) {
-    fail("ENRICHMENT_ENTITLEMENT_TIMEOUT_MS must be a positive integer");
-  }
-
   return {
     templateDatasourceId,
     systemUserId,
@@ -99,11 +92,6 @@ export const loadDefaultModelsConfig = (env = process.env) => {
     cohorts,
     driftProbes: parseDriftProbes(env.DEFAULT_MODELS_DRIFT_PROBES),
     cronSecret: env.ACTIONS_CRON_SECRET || null,
-    enrichmentEntitlementUrl:
-      env.CXS2_ENRICHMENT_ENTITLEMENT_URL?.trim() || null,
-    enrichmentServiceKey: env.INTERNAL_SERVICE_API_KEY || null,
-    enrichmentSigningKey: env.ENRICHMENT_ENTITLEMENT_SIGNING_KEY || null,
-    enrichmentTimeoutMs,
   };
 };
 
