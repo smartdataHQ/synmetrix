@@ -1,4 +1,4 @@
-import { assertNoDirectEnrichmentObject } from "../utils/enrichmentEntitlement.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 /** Naming patterns that indicate a lookup/discriminator column. */
@@ -37,7 +37,7 @@ export default async function discoverNested(req, res, cubejs) {
 
   let driver;
   try {
-    assertNoDirectEnrichmentObject(schema, table);
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     driver = await tenantDriverFactory(cubejs)({ securityContext });
 
     // 1. Fetch all columns for the table from system.columns

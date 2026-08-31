@@ -5,11 +5,6 @@ import { describe, it } from "node:test";
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { escapeCSVField } from "../utils/csvSerializer.js";
-import {
-  queryUsesEnrichment,
-  sqlEnrichmentBillingItems,
-} from "../utils/enrichmentEntitlement.js";
-import { deterministicBillingMessageId } from "../utils/enrichmentMetering.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import { patchCompilerSource } from "../../scripts/patchCubeYamlCompiler.mjs";
 
@@ -24,20 +19,13 @@ const CORPUS = {
     "../utils/smart-generation/__tests__/cubeBuilder.test.js",
     "../routes/__tests__/reconcileTeam.test.js",
   ],
-  guards: ["../routes/__tests__/enrichmentGuards.test.js"],
   formats: [
     "../utils/formatValidator.js",
     "../utils/csvSerializer.js",
     "../utils/arrowSerializer.js",
   ],
-  sql_api: ["../routes/__tests__/runSqlMetering.test.js"],
   auth: ["../utils/__tests__/workosAuth.test.js"],
   pre_aggregations: ["../routes/__tests__/validateInBranch.corpus.test.js"],
-  outbox: ["../utils/__tests__/billingOutbox.test.js"],
-  metering: [
-    "../utils/__tests__/enrichmentMetering.test.js",
-    "../utils/__tests__/connectionCalledBilling.test.js",
-  ],
 };
 
 describe("Cube 1.6.68 to 1.7.30 comparative corpus", () => {
@@ -63,27 +51,6 @@ describe("Cube 1.6.68 to 1.7.30 comparative corpus", () => {
     assert.equal(validateFormat("arrow"), "arrow");
     assert.equal(escapeCSVField('Iceland, "weather"'), '"Iceland, ""weather"""');
     assert.throws(() => validateFormat("parquet"), /Unsupported format/);
-  });
-
-  it("keeps enrichment detection and charge identity stable", () => {
-    assert.equal(
-      queryUsesEnrichment({ filters: [{ member: "CtxWeatherContext.marker" }] }),
-      true,
-    );
-    assert.deepEqual(
-      sqlEnrichmentBillingItems(
-        "SELECT * FROM enrich.day_context_v JOIN enrich.weather_context_v USING (event_date)",
-      ),
-      ["ctx:day-archetype", "ctx:weather-archetype"],
-    );
-    assert.equal(
-      deterministicBillingMessageId("logical-1", "ctx:day-archetype"),
-      deterministicBillingMessageId("logical-1", "ctx:day-archetype"),
-    );
-    assert.notEqual(
-      deterministicBillingMessageId("logical-1", "ctx:day-archetype"),
-      deterministicBillingMessageId("logical-1", "ctx:weather-archetype"),
-    );
   });
 
   it("preserves JSON-valued metadata as a literal string", async () => {

@@ -9,7 +9,7 @@ import { ColumnType } from "../utils/smart-generation/typeParser.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 import { loadRules } from "../utils/queryRewrite.js";
 import { emitQueryEvent } from "../utils/eventEmitter.js";
-import { assertNoDirectEnrichmentObject } from "../utils/enrichmentEntitlement.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 /**
@@ -136,7 +136,7 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    assertNoDirectEnrichmentObject(schema, table);
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     const partition = securityContext.userScope?.dataSource?.partition || null;
     const internalTables =
       securityContext.userScope?.dataSource?.internalTables || [];

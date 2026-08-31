@@ -1,9 +1,6 @@
 import mapSchemaToFile from "./mapSchemaToFile.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
-import {
-  validateEnrichmentLease,
-  ENRICHMENT_CUBES,
-} from "./enrichmentEntitlement.js";
+import { LEGACY_ENRICHMENT_CUBES } from "./legacyEnrichmentGuard.js";
 import YAML from "yaml";
 
 const MANAGED_TEMPLATE_NAMES = new Set([
@@ -11,19 +8,12 @@ const MANAGED_TEMPLATE_NAMES = new Set([
   "ctx_weather_context",
 ]);
 
-const isManagedEnrichmentCube = (cube) =>
-  ENRICHMENT_CUBES.has(cube?.name) ||
+const isLegacyEnrichmentCube = (cube) =>
+  LEGACY_ENRICHMENT_CUBES.has(cube?.name) ||
   cube?.meta?.managed_by === "ctx-enrichment" ||
   MANAGED_TEMPLATE_NAMES.has(cube?.meta?.template);
 
-export function filterUnentitledEnrichmentSchemas(
-  dataSchemas,
-  securityContext,
-  options,
-) {
-  if (validateEnrichmentLease(securityContext, options).valid)
-    return dataSchemas;
-
+export function filterLegacyEnrichmentSchemas(dataSchemas) {
   const filtered = [];
   for (const schema of dataSchemas || []) {
     const managedFile = MANAGED_TEMPLATE_NAMES.has(
@@ -40,7 +30,7 @@ export function filterUnentitledEnrichmentSchemas(
         continue;
       }
       const cubes = document.cubes.filter(
-        (cube) => !isManagedEnrichmentCube(cube),
+        (cube) => !isLegacyEnrichmentCube(cube),
       );
       if (cubes.length === 0) continue;
       if (cubes.length === document.cubes.length) {
@@ -76,10 +66,7 @@ const repositoryFactory = ({ securityContext }) => {
       const ids = securityContext?.userScope?.dataSource?.files;
       const dataSchemas = await findDataSchemasByIds({ ids });
 
-      return filterUnentitledEnrichmentSchemas(
-        dataSchemas,
-        securityContext,
-      ).map(mapSchemaToFile);
+      return filterLegacyEnrichmentSchemas(dataSchemas).map(mapSchemaToFile);
     },
   };
 };

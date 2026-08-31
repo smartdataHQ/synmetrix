@@ -18,10 +18,6 @@ import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts from "./src/utils/scheduledRefreshContexts.js";
-import redisClient from "./src/utils/redis.js";
-import { BillingOutboxWorker } from "./src/utils/billingOutboxWorker.js";
-import { createBillingMetricsHandler } from "./src/utils/billingMetrics.js";
-import { installEnrichmentGatewayMetering } from "./src/utils/enrichmentMetering.js";
 
 // Installed before anything else so failures during startup are covered too.
 // A pre-aggregation whose build query fails rejects past Cube's orchestrator;
@@ -42,9 +38,6 @@ const {
 
 const port = parseInt(process.env.PORT, 10) || 4000;
 const app = express();
-const billingOutboxWorker = redisClient
-  ? new BillingOutboxWorker(redisClient)
-  : null;
 
 // Hasura auth proxy — mounted BEFORE body parsers for raw body passthrough (R8)
 const hasuraProxy = createHasuraProxy();
@@ -52,10 +45,6 @@ app.use(hasuraProxy);
 
 app.use(express.json({ limit: "50mb", extended: true }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-app.get(
-  "/internal/metrics/billing",
-  createBillingMetricsHandler({ redis: redisClient, worker: billingOutboxWorker }),
-);
 
 const contextToOrchestratorId = ({ securityContext }) =>
   `CUBEJS_APP_${securityContext?.userScope?.dataSource?.dataSourceVersion}_${securityContext?.userScope?.dataSource?.schemaVersion}}`;
@@ -111,7 +100,6 @@ const cubejs = new ServerCore(options);
 // Custom raw-SQL routes require driver instances; Cube's server-level factory
 // must remain config-only so 1.7 can derive the dialect per tenant context.
 cubejs.tenantDriverFactory = driverFactory;
-installEnrichmentGatewayMetering(cubejs, redisClient);
 
 const file = fs.readFileSync("./src/swagger.yaml", "utf8");
 const swaggerDocument = YAML.parse(file);
@@ -146,13 +134,11 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(port);
-billingOutboxWorker?.start();
 
 let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
-  await billingOutboxWorker?.stop();
   server.close();
 };
 process.once("SIGTERM", shutdown);

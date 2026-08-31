@@ -12,7 +12,7 @@ import {
   shapeJsonEntries,
   createProbeCache,
 } from "../utils/dynamicPropertyProbe.js";
-import { assertNoDirectEnrichmentObject } from "../utils/enrichmentEntitlement.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 /**
@@ -122,7 +122,7 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
     const tableParts = String(table)
       .replace(/[`"\[\]]/g, "")
       .split(".");
-    assertNoDirectEnrichmentObject(
+    assertNoDirectLegacyEnrichmentObject(
       tableParts.length > 1 ? tableParts.at(-2) : null,
       table,
     );

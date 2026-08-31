@@ -3,11 +3,7 @@ import YAML from "yaml";
 import { fetchGraphQL } from "./graphql.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
 import { parseCubesFromJs } from "./smart-generation/diffModels.js";
-import {
-  assertEnrichmentQueryAuthorized,
-  collectResolvedMembers,
-  ENRICHMENT_PRODUCTS,
-} from "./enrichmentEntitlement.js";
+import { assertNoLegacyEnrichmentQuery } from "./legacyEnrichmentGuard.js";
 
 const getColumnsArray = (cube) => [
   ...(cube?.dimensions || []),
@@ -140,14 +136,7 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
         const dims = new Set(
           (cube.dimensions || []).map((d) => d.name).filter(Boolean),
         );
-        const billingItems =
-          cube.meta?.managed_by === "ctx-enrichment" &&
-          Array.isArray(cube.meta?.billing_items)
-            ? cube.meta.billing_items.filter((item) =>
-                ENRICHMENT_PRODUCTS.includes(item),
-              )
-            : [];
-        mapping.set(cube.name, { sourceTable, dimensions: dims, billingItems });
+        mapping.set(cube.name, { sourceTable, dimensions: dims });
       }
     }
   } catch (err) {
@@ -165,30 +154,6 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
   cubeTableMapCache.set(schemaVersion, mapping);
 
   return mapping;
-}
-
-/**
- * Resolve billable products from the immutable metadata on the compiled
- * managed cubes. Generated SQL is deliberately not inspected: a physical
- * join can be present for planning reasons without the caller selecting an
- * enrichment member.
- */
-export async function resolveEnrichmentBillingItems(query, securityContext) {
-  const dataSource = securityContext?.userScope?.dataSource;
-  if (!dataSource?.schemaVersion || !Array.isArray(dataSource?.files))
-    return [];
-
-  const cubeMap = await buildCubeToTableMap(
-    dataSource.schemaVersion,
-    dataSource.files,
-  );
-  const items = new Set();
-  for (const member of collectResolvedMembers(query)) {
-    const cubeName = member.split(".", 1)[0];
-    for (const item of cubeMap.get(cubeName)?.billingItems || [])
-      items.add(item);
-  }
-  return ENRICHMENT_PRODUCTS.filter((item) => items.has(item));
 }
 
 /**
@@ -215,10 +180,9 @@ function extractCubeNames(query) {
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
 const queryRewrite = async (query, { securityContext }) => {
-  // Premium model authorization is evaluated against every resolved-member
-  // location before any rewrite can remove or replace query fields. This is
-  // the shared compiler boundary for REST and native SQL API sessions.
-  assertEnrichmentQueryAuthorized(query, securityContext);
+  // Retired managed enrichment cubes remain unavailable even if an old
+  // historical tenant version is restored.
+  assertNoLegacyEnrichmentQuery(query);
 
   const { userScope } = securityContext;
   const {

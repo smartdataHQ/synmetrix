@@ -1,13 +1,6 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-
-export const ENRICHMENT_PRODUCTS = [
-  "ctx:day-archetype",
-  "ctx:weather-archetype",
-];
-export const ENRICHMENT_CUBES = new Set(["CtxDayContext", "CtxWeatherContext"]);
-export const ENRICHMENT_SERVING_TABLES = new Set([
-  "day_context_v",
-  "weather_context_v",
+export const LEGACY_ENRICHMENT_CUBES = new Set([
+  "CtxDayContext",
+  "CtxWeatherContext",
 ]);
 
 const MEMBER_KEYS = new Set(["member", "dimension", "id"]);
@@ -18,24 +11,6 @@ const QUERY_MEMBER_ARRAYS = [
   "timeDimensions",
   "filters",
 ];
-
-const canonicalPayload = (payload) =>
-  JSON.stringify({
-    schema_version: payload.schema_version,
-    account_partition: payload.account_partition,
-    enabled: payload.enabled,
-    entitlement_revision: payload.entitlement_revision,
-    issued_at: payload.issued_at,
-    valid_until: payload.valid_until,
-    products: payload.products,
-    billing_connection_id: payload.billing_connection_id,
-  });
-
-function signaturesMatch(left, right) {
-  const a = Buffer.from(String(left || ""));
-  const b = Buffer.from(String(right || ""));
-  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
-}
 
 function unavailableError() {
   const error = new Error("403: Requested data is not available");
@@ -99,74 +74,14 @@ export function collectResolvedMembers(query) {
   return [...members];
 }
 
-export function queryUsesEnrichment(query) {
+export function queryUsesLegacyEnrichment(query) {
   return collectResolvedMembers(query).some((member) =>
-    ENRICHMENT_CUBES.has(member.split(".", 1)[0]),
+    LEGACY_ENRICHMENT_CUBES.has(member.split(".", 1)[0]),
   );
 }
 
-export function validateEnrichmentLease(
-  securityContext,
-  {
-    signingKey = process.env.ENRICHMENT_ENTITLEMENT_SIGNING_KEY,
-    now = new Date(),
-  } = {},
-) {
-  const teamSettings = securityContext?.userScope?.teamProperties;
-  const partition = teamSettings?.partition;
-  const lease = teamSettings?.premium?.enrichment;
-  if (!partition || !signingKey || !lease) return { valid: false };
-
-  const issuedAt = Date.parse(lease.issued_at);
-  const validUntil = Date.parse(lease.valid_until);
-  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
-  if (
-    lease.signature_version !== "hmac-sha256-v1" ||
-    lease.enabled !== true ||
-    typeof lease.entitlement_revision !== "string" ||
-    !Array.isArray(lease.products) ||
-    lease.products.join(",") !== ENRICHMENT_PRODUCTS.join(",") ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      lease.billing_connection_id || "",
-    ) ||
-    !Number.isFinite(issuedAt) ||
-    !Number.isFinite(validUntil) ||
-    !Number.isFinite(nowMs) ||
-    issuedAt > nowMs ||
-    validUntil <= nowMs
-  ) {
-    return { valid: false };
-  }
-
-  const payload = {
-    schema_version: 1,
-    account_partition: partition,
-    enabled: lease.enabled,
-    entitlement_revision: lease.entitlement_revision,
-    issued_at: lease.issued_at,
-    valid_until: lease.valid_until,
-    products: lease.products,
-    billing_connection_id: lease.billing_connection_id,
-  };
-  const expected = createHmac("sha256", signingKey)
-    .update(canonicalPayload(payload))
-    .digest("base64url");
-  const valid = signaturesMatch(expected, lease.signature);
-  return {
-    valid,
-    connectionId: valid ? lease.billing_connection_id : null,
-  };
-}
-
-export function assertEnrichmentQueryAuthorized(
-  query,
-  securityContext,
-  options,
-) {
-  if (!queryUsesEnrichment(query)) return;
-  if (!validateEnrichmentLease(securityContext, options).valid) {
-    throw unavailableError();
-  }
+export function assertNoLegacyEnrichmentQuery(query) {
+  if (queryUsesLegacyEnrichment(query)) throw unavailableError();
 }
 
 function tokenizeSql(sql) {
@@ -287,34 +202,14 @@ export function parseSqlTableReferences(sql) {
   return references;
 }
 
-export function sqlEnrichmentBillingItems(sql) {
-  const items = new Set();
-  for (const reference of parseSqlTableReferences(sql)) {
-    if (reference.schema !== "enrich") continue;
-    if (reference.table === "day_context_v") items.add("ctx:day-archetype");
-    if (reference.table === "weather_context_v") {
-      items.add("ctx:weather-archetype");
-    }
-  }
-  return ENRICHMENT_PRODUCTS.filter((item) => items.has(item));
-}
-
-export function assertSqlEnrichmentAuthorized(sql, securityContext, options) {
+export function assertNoLegacyEnrichmentSql(sql) {
   const enrichmentRefs = parseSqlTableReferences(sql).filter(
     (reference) => reference.schema === "enrich",
   );
-  if (enrichmentRefs.length === 0) return;
-  if (
-    enrichmentRefs.some(
-      (reference) => !ENRICHMENT_SERVING_TABLES.has(reference.table),
-    ) ||
-    !validateEnrichmentLease(securityContext, options).valid
-  ) {
-    throw unavailableError();
-  }
+  if (enrichmentRefs.length > 0) throw unavailableError();
 }
 
-export function assertNoDirectEnrichmentObject(schema, table) {
+export function assertNoDirectLegacyEnrichmentObject(schema, table) {
   const schemaName = String(schema || "")
     .replace(/^[`"[]|[`"\]]$/g, "")
     .toLowerCase();
@@ -330,7 +225,7 @@ export function assertNoDirectEnrichmentObject(schema, table) {
   }
 }
 
-export function removeEnrichmentSchema(schema) {
+export function removeLegacyEnrichmentSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema))
     return schema;
   return Object.fromEntries(

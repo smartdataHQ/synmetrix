@@ -26,11 +26,9 @@ import {
 import { emitQueryEvent } from "../utils/eventEmitter.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 import {
-  assertEnrichmentQueryAuthorized,
-  assertSqlEnrichmentAuthorized,
-} from "../utils/enrichmentEntitlement.js";
-import { commitEnrichmentBilling } from "../utils/enrichmentMetering.js";
-import redisClient from "../utils/redis.js";
+  assertNoLegacyEnrichmentQuery,
+  assertNoLegacyEnrichmentSql,
+} from "../utils/legacyEnrichmentGuard.js";
 
 const prepareAnnotation =
   typeof prepareAnnotationModule.prepareAnnotation === "function"
@@ -303,7 +301,7 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
 
   try {
     await apiGateway.assertApiScope("data", context.securityContext);
-    assertEnrichmentQueryAuthorized(query, context.securityContext);
+    assertNoLegacyEnrichmentQuery(query);
 
     const [queryType, normalizedQueries] =
       await apiGateway.getNormalizedQueries(query, context, true);
@@ -373,8 +371,8 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
   }
 }
 
-export function authorizeNativeEnrichmentSql(sql, securityContext, options) {
-  assertSqlEnrichmentAuthorized(sql, securityContext, options);
+export function authorizeNativeLegacySql(sql) {
+  assertNoLegacyEnrichmentSql(sql);
 }
 
 async function prepareNativeClickHouseExport(plan) {
@@ -478,17 +476,6 @@ async function executeNativeClickHouseArrow(
   return Number(result.summary?.result_rows || 0);
 }
 
-function countedRows(stream) {
-  const state = { count: 0 };
-  state.rows = (async function* count() {
-    for await (const row of stream) {
-      state.count += 1;
-      yield row;
-    }
-  })();
-  return state;
-}
-
 async function streamSemanticRows(plan) {
   const adapterApi = await plan.apiGateway.getAdapterApi(plan.context);
   return adapterApi.streamQuery(plan.streamingQuery);
@@ -518,22 +505,6 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
   const exportStart = Date.now();
   let exported = false;
   let exportPath = null;
-  const commitExportBilling = (returnedRows) =>
-    commitEnrichmentBilling(
-      redisClient,
-      {
-        query,
-        logicalExecutionId: plan.context.requestId,
-        signal: abortController.signal,
-        context: plan.context,
-      },
-      { data: [] },
-      {
-        surface: "export",
-        returnedRows,
-        cacheStatus: "cache_miss",
-      },
-    );
   const emitDatasetExported = (status, extra) =>
     emitQueryEvent({
       event: "Dataset Exported",
@@ -568,15 +539,12 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     }
 
     if (format === "csv" && nativeQuery?.query) {
-      authorizeNativeEnrichmentSql(
-        nativeQuery.query,
-        plan.context.securityContext,
-      );
+      authorizeNativeLegacySql(nativeQuery.query);
       const driver = await tenantDriverFactory(cubejs)({
         securityContext: plan.context.securityContext,
       });
       res.set(CSV_HEADERS);
-      const returnedRows = await executeNativeClickHouseCsv(
+      await executeNativeClickHouseCsv(
         res,
         nativeQuery.query,
         nativeQuery.values,
@@ -584,7 +552,6 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         abortController.signal,
         getAliasNameToMember(plan),
       );
-      await commitExportBilling(returnedRows);
       exported = true;
       exportPath = "native-clickhouse";
       res.end();
@@ -592,23 +559,19 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     }
 
     if (format === "arrow" && nativeQuery?.query) {
-      authorizeNativeEnrichmentSql(
-        nativeQuery.query,
-        plan.context.securityContext,
-      );
+      authorizeNativeLegacySql(nativeQuery.query);
       const driver = await tenantDriverFactory(cubejs)({
         securityContext: plan.context.securityContext,
       });
       res.set(ARROW_HEADERS);
       setNativeArrowFieldMappingHeaders(res, plan);
-      const returnedRows = await executeNativeClickHouseArrow(
+      await executeNativeClickHouseArrow(
         res,
         nativeQuery.query,
         nativeQuery.values,
         driver,
         abortController.signal,
       );
-      await commitExportBilling(returnedRows);
       exported = true;
       exportPath = "native-clickhouse";
       res.end();
@@ -620,15 +583,13 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     }
 
     const stream = await streamSemanticRows(plan);
-    const counted = countedRows(stream);
 
     if (format === "csv") {
       res.set(CSV_HEADERS);
-      await writeRowStreamAsCSV(res, counted.rows, {
+      await writeRowStreamAsCSV(res, stream, {
         columns: plan.columns,
         signal: abortController.signal,
       });
-      await commitExportBilling(counted.count);
       exported = true;
       exportPath = "semantic-stream";
       res.end();
@@ -636,12 +597,11 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     }
 
     res.set(ARROW_HEADERS);
-    await writeRowStreamAsArrow(res, counted.rows, {
+    await writeRowStreamAsArrow(res, stream, {
       columns: plan.columns,
       annotation: plan.annotation,
       signal: abortController.signal,
     });
-    await commitExportBilling(counted.count);
     exported = true;
     exportPath = "semantic-stream";
     res.end();
