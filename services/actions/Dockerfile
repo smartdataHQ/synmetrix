@@ -31,3 +31,5 @@ COPY src/ /app/src/
 RUN ln -s $NODE_PATH ./node_modules
 
 CMD ["yarn", "start.dev"]
+
+# registry.fraios.dev mirror enabled — rebuild trigger

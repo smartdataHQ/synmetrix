@@ -40,3 +40,5 @@ RUN apt-get update && apt-get install -y wget unzip && \
     rm /tmp/DatabricksJDBC.zip
 
 CMD ["yarn", "start"]
+
+# registry.fraios.dev mirror enabled — rebuild trigger
