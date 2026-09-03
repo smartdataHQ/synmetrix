@@ -145,8 +145,8 @@ describe('LC probe – profiler Pass 3', () => {
   });
 });
 
-describe('LC probe – cubeBuilder propagation', () => {
-  it('should attach lc_values to field meta for basic columns', () => {
+describe('LC probe – cubeBuilder does NOT bake values into meta (§4)', () => {
+  it('does not attach lc_values to basic-column meta even when the profile has them', () => {
     const columns = new Map([
       ['status', {
         name: 'status',
@@ -161,10 +161,14 @@ describe('LC probe – cubeBuilder propagation', () => {
     const { cubes } = buildCubes({ database: 'db', table: 'test', partition: null, columns });
     const dim = cubes[0].dimensions.find(d => d.name === 'status');
     assert.ok(dim, 'status dimension should exist');
-    assert.deepStrictEqual(dim.meta.lc_values, ['a', 'b', 'c']);
+    // The profiler still probes lcValues (used for pruning heuristics), but the
+    // builder no longer bakes them into the model — /meta/dynamic answers value
+    // questions at query time (§4). Only `auto_generated` remains on meta.
+    assert.strictEqual(dim.meta.lc_values, undefined);
+    assert.strictEqual(dim.meta.auto_generated, true);
   });
 
-  it('should attach per-key lc_values to Map-expanded fields', () => {
+  it('does not attach per-key lc_values to Map-expanded fields', () => {
     const columns = new Map([
       ['props', {
         name: 'props',
@@ -182,14 +186,16 @@ describe('LC probe – cubeBuilder propagation', () => {
     ]);
 
     const { cubes } = buildCubes({ database: 'db', table: 'test', partition: null, columns });
-    // After the shortest-unique resolver, map keys land at their bare leaf
-    // names when nothing else claims them.
+    // Map keys still expand into dimensions; only the baked per-key values are
+    // gone. After the shortest-unique resolver they land at their bare leaves.
     const envDim = cubes[0].dimensions.find(d => d.name === 'env');
     const regionDim = cubes[0].dimensions.find(d => d.name === 'region');
     assert.ok(envDim, `expected 'env' dim. Got: ${cubes[0].dimensions.map(d => d.name).join(', ')}`);
     assert.ok(regionDim);
-    assert.deepStrictEqual(envDim.meta.lc_values, ['prod', 'staging']);
-    assert.deepStrictEqual(regionDim.meta.lc_values, ['us', 'eu']);
+    assert.strictEqual(envDim.meta.lc_values, undefined);
+    assert.strictEqual(regionDim.meta.lc_values, undefined);
+    // structural map marker stays
+    assert.strictEqual(envDim.meta.map_key, 'env');
   });
 
   it('should NOT attach lc_values when profile has no lcValues', () => {

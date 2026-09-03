@@ -2,6 +2,7 @@ import YAML from "yaml";
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import { fetchGraphQL } from "../utils/graphql.js";
 import { createDataSchema } from "../utils/dataSourceHelpers.js";
 import defineUserScope from "../utils/defineUserScope.js";
@@ -13,6 +14,7 @@ import { buildCubesFromTemplate } from "../utils/smart-generation/cubeBuilder.js
 import { generateYaml } from "../utils/smart-generation/yamlGenerator.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 import { mergeTemplateModel } from "../utils/smart-generation/templateMerger.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 const PROBE_TIMEOUT_MS = 60_000;
 
@@ -498,7 +500,13 @@ export default async function reconcileTeam(req, res, cubejs) {
     dryRun = false,
   } = req.body || {};
 
-  if (!teamId || !datasourceId || !branchId || !partition || !Array.isArray(templates)) {
+  if (
+    !teamId ||
+    !datasourceId ||
+    !branchId ||
+    !partition ||
+    !Array.isArray(templates)
+  ) {
     return res.status(400).json({
       code: "invalid_input",
       message:
@@ -575,6 +583,14 @@ export default async function reconcileTeam(req, res, cubejs) {
     userScope,
   };
 
+  // 099 T087 (FR-091): reconcile events are attributed to the TEAM being
+  // reconciled (its partition), performed by the default-models system user.
+  const reconcileTenant = {
+    accountId: verified.payload?.accountId ?? null,
+    partition,
+    userId: systemUserId,
+  };
+
   const previousDataschemas = branch.versions?.[0]?.dataschemas || [];
   const previousSchemaVersion = createMd5Hex(
     previousDataschemas.map((s) => s.id)
@@ -596,7 +612,7 @@ export default async function reconcileTeam(req, res, cubejs) {
   const deps = {
     loadCurrentSchemas: async () => previousDataschemas,
     probe: async ({ schema, table, eventScope = null, jsonPaths = null }) => {
-      const driver = await cubejs.options.driverFactory({ securityContext });
+      const driver = await tenantDriverFactory(cubejs)({ securityContext });
       const escape = (v) => String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
       const profile = await withTimeout(
         profileTable(driver, schema, table, {
@@ -645,6 +661,8 @@ export default async function reconcileTeam(req, res, cubejs) {
             datasource_id: datasourceId,
           })),
         },
+        // Persistence chokepoint emits `Model Saved` for the created version.
+        emit: reconcileTenant,
       });
       return { versionId: version?.id || null };
     },
@@ -686,6 +704,25 @@ export default async function reconcileTeam(req, res, cubejs) {
         }
       });
     }
+
+    // 099 T087 (FR-091): the per-team default-models reconcile completed.
+    // Fire-and-forget; never blocks the response (FR-007).
+    emitModelEvent({
+      event: "Default Models Reconciled",
+      ...reconcileTenant,
+      modelId: versionId || branchId,
+      status: "ok",
+      metrics: { record_count: outcomes.length },
+      properties: {
+        team_id: teamId,
+        datasource_id: datasourceId,
+        branch_id: branchId,
+        version_id: versionId,
+        dry_run: dryRun,
+        outcomes_count: outcomes.length,
+        changed: Boolean(versionId),
+      },
+    });
 
     return res.json({ teamId, outcomes, versionId });
   } catch (err) {

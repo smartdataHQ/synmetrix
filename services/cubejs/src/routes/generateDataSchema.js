@@ -1,10 +1,71 @@
 import { ScaffoldingTemplate } from "@cubejs-backend/schema-compiler";
+import yaml from "js-yaml";
 import {
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { NO_SCHEMA_KEY } from "./getSchema.js";
+import { removeLegacyEnrichmentSchema } from "../utils/legacyEnrichmentGuard.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
+const camelize = (value) =>
+  value.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+
+const ensureYamlPrimaryKeys = (files, schema) => {
+  const columnsByTable = {};
+  Object.values(schema || {}).forEach((tables) => {
+    Object.entries(tables || {}).forEach(([tableName, columns]) => {
+      columnsByTable[tableName] = (columns || []).map((c) => c.name);
+    });
+  });
+
+  files.forEach((file) => {
+    let doc;
+    try {
+      doc = yaml.load(file.content);
+    } catch {
+      return;
+    }
+    let changed = false;
+    (doc?.cubes || []).forEach((cube) => {
+      // Every scaffolded cube gets a primary key when an id-pattern column
+      // exists — join SOURCES need it to compile, and join TARGETS need it
+      // for aggregate correctness ("primary key for 'X' is required when
+      // join is defined" fires for the referenced cube too).
+      const dimensions = cube.dimensions || [];
+      if (dimensions.some((d) => d.primary_key || d.primaryKey)) return;
+
+      const tableMatch = /from\s+(?:[\w"]+\.)?"?(\w+)"?/i.exec(cube.sql || "");
+      const tableName = tableMatch?.[1];
+      const columns = (tableName && columnsByTable[tableName]) || [];
+      const joins = cube.joins || [];
+      const pkColumn =
+        columns.find((c) => c === "id") ||
+        columns.find((c) => c === `${tableName}_id`) ||
+        columns.find(
+          (c) =>
+            /_id$/.test(c) &&
+            joins.every((j) => !(j.sql || "").includes(`{CUBE}.${c}`)),
+        );
+      if (!pkColumn) return;
+
+      dimensions.unshift({
+        name: camelize(pkColumn),
+        sql: pkColumn,
+        type: "number",
+        primary_key: true,
+        public: false,
+      });
+      cube.dimensions = dimensions;
+      changed = true;
+    });
+    if (changed) {
+      file.content = yaml.dump(doc, { lineWidth: 120 });
+    }
+  });
+};
+
 const filterFiles = (mainFiles, addFiles) => {
   const fileNames = mainFiles.map((f) => f.fileName);
   return [
@@ -37,11 +98,19 @@ export default async (req, res, cubejs) => {
   const { userScope, userId, authToken } = securityContext;
   const { dataSourceId } = userScope.dataSource;
 
+  // 099 T087 (FR-091): tenant attribution for the model lifecycle events.
+  const tokenPayload = securityContext.tokenPayload || {};
+  const tenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId,
+  };
+
   let driver;
 
   try {
-    driver = await cubejs.options.driverFactory({ securityContext });
-    let schema = await driver.tablesSchema();
+    driver = await tenantDriverFactory(cubejs)({ securityContext });
+    let schema = removeLegacyEnrichmentSchema(await driver.tablesSchema());
     const {
       tables = [],
       overwrite = false,
@@ -57,11 +126,22 @@ export default async (req, res, cubejs) => {
       driver,
       {
         format,
-      }
+      },
     );
 
     const newFiles =
       scaffoldingTemplate.generateFilesByTableNames(normalizedTables);
+
+    // ScaffoldingTemplate emits joins for FK-pattern columns but only marks a
+    // primary key for columns literally named "id" — schemas using
+    // `<table>_id` keys (e.g. Pagila) then scaffold cubes with joins and no
+    // primary_key, and the WHOLE branch fails to compile ("primary key for X
+    // is required when join is defined"). Post-process YAML scaffolds: when a
+    // cube has joins and no primary-key dimension, promote the id-pattern
+    // column to a hidden primary-key dimension.
+    if (format === "yaml") {
+      ensureYamlPrimaryKeys(newFiles, normalizedSchema);
+    }
 
     if (!newFiles.length) {
       return res.status(400).json({
@@ -70,10 +150,13 @@ export default async (req, res, cubejs) => {
       });
     }
 
+    // Use admin secret (no authToken) for internal Hasura calls — the caller
+    // may be authenticated with an externally-issued JWT (e.g. WorkOS) that
+    // Hasura cannot verify; checkAuth + defineUserScope already authorized the
+    // request. Mirrors the smartGenerate precedent.
     const dataSchemas = await findDataSchemas({
       dataSourceId,
       branchId,
-      authToken,
     });
 
     const existedFiles = dataSchemas.map((row) => ({
@@ -99,20 +182,36 @@ export default async (req, res, cubejs) => {
     }));
 
     const commitObject = {
-      authToken,
       user_id: userId,
       branch_id: branchId,
       checksum: commitChecksum,
       dataschemas: {
         data: [...preparedSchemas],
       },
+      // Persistence chokepoint emits `Model Saved` for the created version.
+      emit: tenant,
     };
 
-    await createDataSchema(commitObject);
+    const genResult = await createDataSchema(commitObject);
 
     if (cubejs.compilerCache) {
       cubejs.compilerCache.purgeStale();
     }
+
+    // 099 T087 (FR-091): scaffolding persisted a model version.
+    // Fire-and-forget; never blocks the response (FR-007).
+    emitModelEvent({
+      event: "Model Scaffolded",
+      ...tenant,
+      modelId: genResult?.id || null,
+      status: "ok",
+      properties: {
+        branch_id: branchId,
+        format,
+        file_count: files.length,
+        overwrite,
+      },
+    });
 
     res.json({ code: "ok", message: "Generation finished" });
   } catch (err) {

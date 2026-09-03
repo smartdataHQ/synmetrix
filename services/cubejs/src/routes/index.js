@@ -36,6 +36,8 @@ import runSql from "./runSql.js";
 import smartGenerate from "./smartGenerate.js";
 import columnValues from "./columnValues.js";
 import discoverNested from "./discoverNested.js";
+import discoverRowTypes from "./discoverRowTypes.js";
+import publishedTemplate from "./publishedTemplate.js";
 import discover from "./discover.js";
 import metaAll from "./metaAll.js";
 import testConnection from "./testConnection.js";
@@ -276,6 +278,16 @@ export default ({ basePath, cubejs }) => {
     `${basePath}/v1/discover-nested`,
     checkAuthMiddleware,
     async (req, res) => discoverNested(req, res, cubejs)
+  );
+
+  router.post(
+    `${basePath}/v1/discover-row-types`,
+    checkAuthMiddleware,
+    async (req, res) => discoverRowTypes(req, res, cubejs)
+  );
+
+  router.get(`${basePath}/v1/published-template`, async (req, res) =>
+    publishedTemplate(req, res)
   );
 
   router.post(

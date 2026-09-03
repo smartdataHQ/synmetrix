@@ -1,0 +1,7 @@
+{
+  "name": "extract-zip",
+  "version": "0.0.0-disabled",
+  "private": true,
+  "main": "index.js",
+  "description": "Fail-closed runtime shim; archive extraction is not a Cube runtime capability"
+}

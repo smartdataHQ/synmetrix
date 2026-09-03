@@ -68,9 +68,8 @@ export function coerceAggNum(v) {
  * @returns {string} SQL WHERE clause with leading ` WHERE `, or empty string
  */
 export function buildWhereClause(schema, table, partition, internalTables, filters, tableColumns) {
-  // Partition clause — apply when partition is set and either:
-  //  (a) internalTables explicitly lists this table, OR
-  //  (b) internalTables is not configured (empty/missing) — all tables are internal
+  // Partition scoping is allowlist-only. Missing/empty/invalid configuration
+  // must never broaden access by treating every table as internal.
   let partitionClause = '';
   if (partition) {
     if (Array.isArray(internalTables) && internalTables.length > 0 && internalTables.includes(table)) {
@@ -1134,7 +1133,12 @@ export async function profileTable(driver, schema, table, options = {}) {
           if (candidate.unsafeKeyCardinality) {
             selectParts.push(`uniq(${expr}) as ${keyAlias}__uniq`);
           } else {
-            selectParts.push(`uniqIf(${expr}, ${expr} != '') as ${keyAlias}__uniq`);
+            // Count only MEANINGFUL distinct values — a key whose values are all
+            // empty / whitespace / '0' is an unused placeholder and must not
+            // become a member (spec 080: only-used-fields). Excluding '0' only
+            // zeroes keys that are entirely ''/'0'; a key with '0' plus real
+            // values keeps its real cardinality.
+            selectParts.push(`uniqIf(${expr}, trimBoth(${expr}) != '' AND ${expr} != '0') as ${keyAlias}__uniq`);
           }
         }
 

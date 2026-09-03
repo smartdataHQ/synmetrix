@@ -141,15 +141,138 @@ describe('cubeBuilder – buildCubes', () => {
   });
 
   describe('provenance metadata', () => {
-    it('should embed auto_generated, source_database, source_table, and generated_at', () => {
+    it('embeds auto_generated, source_database, source_table (no volatile generated_at — §4)', () => {
       const { cubes } = buildCubes(table);
       const meta = cubes[0].meta;
       assert.strictEqual(meta.auto_generated, true);
       assert.strictEqual(meta.source_database, 'test_db');
       assert.strictEqual(meta.source_table, 'events');
-      assert.ok(typeof meta.generated_at === 'string');
-      // Should be a valid ISO date
-      assert.ok(!isNaN(Date.parse(meta.generated_at)));
+      // Lean trim (§4): generated_at is volatile (breaks byte-identical reruns,
+      // SC-002) and grain_description duplicates `grain` — both are gone.
+      assert.strictEqual(meta.generated_at, undefined);
+      assert.strictEqual(meta.grain_description, undefined);
+    });
+  });
+
+  describe('meta trim — bounded, data-plane-first', () => {
+    it('bakes no volatile or redundant per-field meta (range / raw_type / max_array_length)', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('amount', 'Float64', ColumnType.BASIC, ValueType.NUMBER, {
+            hasValues: true, uniqueValues: 4200, minValue: 1, maxValue: 950, avgValue: 77.3,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const amount = cubes[0].measures.find((m) => m.name === 'amount');
+      assert.ok(amount, 'amount measure expected');
+      assert.strictEqual(amount.meta.range, undefined);
+      assert.strictEqual(amount.meta.raw_type, undefined);
+      assert.strictEqual(amount.meta.max_array_length, undefined);
+      // §4: source_column + field_type are dropped — the member's own `type`
+      // carries the shape; only `auto_generated` (the merge key) remains.
+      assert.strictEqual(amount.meta.field_type, undefined);
+      assert.strictEqual(amount.meta.source_column, undefined);
+      assert.strictEqual(amount.meta.auto_generated, true);
+    });
+
+    it('does not bake per-field cardinality snapshots (unique_values) — §4 data-plane-first', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('status', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 5, lcValues: ['a', 'b', 'c', 'd', 'e'],
+          }),
+          col('city', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 8314,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const status = cubes[0].dimensions.find((d) => d.name === 'status');
+      const city = cubes[0].dimensions.find((d) => d.name === 'city');
+      // Cardinality snapshots rot as data arrives — /meta/dynamic answers it.
+      assert.strictEqual(status.meta.unique_values, undefined);
+      assert.strictEqual(city.meta.unique_values, undefined);
+    });
+
+    it('does not bake sampled values (lc_values) into meta — §4 (they rot and leak data)', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('tier', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 3, lcValues: ['bronze', 'gold', 'silver'],
+          }),
+          col('sku_bucket', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 40,
+            lcValues: Array.from({ length: 12 }, (_, i) => `v${i}`),
+          }),
+          // identifier-shaped values are especially PII-adjacent — never baked
+          col('user_ref', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 2,
+            lcValues: [
+              '067289d0-cd97-401e-b0cc-d45630bd9e97',
+              'b99d4d95-cdfc-4c8a-8085-a8030c15ad78',
+            ],
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const dim = (n) => cubes[0].dimensions.find((d) => d.name === n);
+      // No enum list is baked anymore — live queries answer value questions.
+      assert.strictEqual(dim('tier').meta.lc_values, undefined);
+      assert.strictEqual(dim('sku_bucket').meta.lc_values, undefined);
+      assert.strictEqual(dim('user_ref').meta.lc_values, undefined);
+    });
+
+    it('emits descriptions as the Cube-native property, never meta, and not on expanded map keys', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('status', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 2, lcValues: ['on', 'off'],
+          }),
+          col('props', 'Map(String, String)', ColumnType.MAP, ValueType.OTHER, {
+            uniqueKeys: ['color'],
+          }),
+        ]),
+        columnDescriptions: new Map([
+          ['status', 'Current status'],
+          ['props', 'Additional low-cardinality dimensions'],
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const dim = (n) => cubes[0].dimensions.find((d) => d.name === n);
+      assert.strictEqual(dim('status').description, 'Current status');
+      assert.strictEqual(dim('status').meta.description, undefined);
+      // expanded key: no parent-description copy
+      assert.strictEqual(dim('color').description, undefined);
+      // native map accessor keeps the column description, no baked key inventory
+      assert.strictEqual(dim('props_map').description, 'Additional low-cardinality dimensions');
+      assert.strictEqual(dim('props_map').meta.known_keys, undefined);
+    });
+
+    it('bakes titles only where they differ from the derived default (acronyms)', () => {
+      const t = makeTable({
+        columns: new Map([
+          col('order_id', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 900,
+          }),
+          col('store_format', 'String', ColumnType.BASIC, ValueType.STRING, {
+            hasValues: true, uniqueValues: 8,
+          }),
+        ]),
+      });
+      const { cubes } = buildCubes(t);
+      const dim = (n) => cubes[0].dimensions.find((d) => d.name === n);
+      assert.strictEqual(dim('order_id').title, 'Order ID');
+      assert.strictEqual(dim('store_format').title, undefined);
+    });
+
+    it('cube meta carries no refresh_cadence or description duplicate (native description wins)', () => {
+      const { cubes } = buildCubes(table);
+      assert.strictEqual(cubes[0].meta.refresh_cadence, undefined);
+      assert.strictEqual(cubes[0].meta.description, undefined);
+      assert.ok(typeof cubes[0].description === 'string' && cubes[0].description.length > 0);
+      // generated_at trimmed (§4) — no volatile timestamp in cube meta
+      assert.strictEqual(cubes[0].meta.generated_at, undefined);
     });
   });
 
@@ -300,8 +423,10 @@ describe('cubeBuilder – buildCubes', () => {
 
       // Resolver shortens unique keys → expanded keys land as their leaf
       // names. Plus the native `big_map_map` accessor.
+      // source_column is trimmed from serialized meta (§4); the builder keeps
+      // the origin on the transient `_sourceColumn` (present on in-memory cubes).
       const allMapFields = cubes[0].dimensions.filter(
-        (d) => d.meta?.source_column === 'big_map'
+        (d) => d._sourceColumn === 'big_map'
       );
       assert.strictEqual(allMapFields.length, 4); // 3 expanded + big_map_map
       assert.ok(dimNames.includes('big_map_map'));
@@ -320,7 +445,7 @@ describe('cubeBuilder – buildCubes', () => {
       const { cubes } = buildCubes(t, { maxMapKeys: 500 });
       const dimNames = cubes[0].dimensions.map((d) => d.name);
       const allMapFields = cubes[0].dimensions.filter(
-        (d) => d.meta?.source_column === 'small_map'
+        (d) => d._sourceColumn === 'small_map'
       );
       assert.strictEqual(allMapFields.length, 4); // 3 expanded + small_map_map
       assert.ok(dimNames.includes('small_map_map'));

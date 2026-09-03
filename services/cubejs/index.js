@@ -10,11 +10,19 @@ import { logging } from "./src/utils/logging.js";
 
 import { checkAuth } from "./src/utils/checkAuth.js";
 import checkSqlAuth from "./src/utils/checkSqlAuth.js";
-import driverFactory from "./src/utils/driverFactory.js";
+import driverFactory, {
+  driverConfigFactory,
+} from "./src/utils/driverFactory.js";
+import { installProcessGuards } from "./src/utils/processGuards.js";
 import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts from "./src/utils/scheduledRefreshContexts.js";
+
+// Installed before anything else so failures during startup are covered too.
+// A pre-aggregation whose build query fails rejects past Cube's orchestrator;
+// without this the refresh worker exits and loses every in-flight build.
+installProcessGuards({ logger: logging });
 
 const {
   CUBEJS_SECRET,
@@ -38,8 +46,6 @@ app.use(hasuraProxy);
 app.use(express.json({ limit: "50mb", extended: true }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-const dbType = ({ securityContext }) =>
-  securityContext?.userScope?.dataSource?.dbType || "none";
 const contextToOrchestratorId = ({ securityContext }) =>
   `CUBEJS_APP_${securityContext?.userScope?.dataSource?.dataSourceVersion}_${securityContext?.userScope?.dataSource?.schemaVersion}}`;
 
@@ -64,13 +70,12 @@ const options = {
   queryRewrite,
   contextToAppId,
   contextToOrchestratorId,
-  dbType,
   devServer: false,
   checkAuth,
   apiSecret: CUBEJS_SECRET,
   basePath,
   schemaVersion,
-  driverFactory,
+  driverFactory: driverConfigFactory,
   repositoryFactory,
   preAggregationsSchema,
   telemetry: CUBEJS_TELEMETRY,
@@ -81,7 +86,7 @@ const options = {
   scheduledRefreshContexts,
   externalDbType: "cubestore",
   externalDriverFactory,
-  cacheAndQueueDriver: "cubestore",
+  cacheAndQueueDriver: process.env.CUBEJS_CACHE_AND_QUEUE_DRIVER || "cubestore",
   logger: logging,
 
   // sql server
@@ -92,6 +97,9 @@ const options = {
 };
 
 const cubejs = new ServerCore(options);
+// Custom raw-SQL routes require driver instances; Cube's server-level factory
+// must remain config-only so 1.7 can derive the dialect per tenant context.
+cubejs.tenantDriverFactory = driverFactory;
 
 const file = fs.readFileSync("./src/swagger.yaml", "utf8");
 const swaggerDocument = YAML.parse(file);
@@ -103,7 +111,7 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 // mounted ahead of cubejs.initApp. Fails open to gateway auth on any error.
 app.use(
   ["/api/v1/load", "/api/v1/dry-run", "/api/v1/sql"],
-  createQueryPreprocessor()
+  createQueryPreprocessor(),
 );
 
 app.use(routes({ basePath, cubejs }));
@@ -126,6 +134,15 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(port);
+
+let shuttingDown = false;
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.close();
+};
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
 
 // WebSocket proxy: forward /v1/graphql upgrade requests to Hasura (T016)
 server.on("upgrade", (req, socket, head) => {

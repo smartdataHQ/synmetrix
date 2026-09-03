@@ -5,6 +5,7 @@
  */
 
 import { prepareCompiler } from '@cubejs-backend/schema-compiler';
+import tenantDriverFactory from '../tenantDriverFactory.js';
 
 /**
  * In-memory schema file repository for the compiler.
@@ -97,7 +98,7 @@ export async function smokeTestQuery(cubejs, securityContext, cubes) {
 
   try {
     // Use the internal API to execute a test query
-    const driver = await cubejs.options.driverFactory({ securityContext });
+    const driver = await tenantDriverFactory(cubejs)({ securityContext });
     try {
       // Build a minimal SQL query directly — avoids needing a full Cube.js
       // query pipeline which requires the model to be loaded already.

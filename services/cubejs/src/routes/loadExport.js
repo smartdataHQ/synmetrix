@@ -23,6 +23,12 @@ import {
   writeBinaryChunk,
   writeRowStreamAsArrow,
 } from "../utils/arrowSerializer.js";
+import { emitQueryEvent } from "../utils/eventEmitter.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
+import {
+  assertNoLegacyEnrichmentQuery,
+  assertNoLegacyEnrichmentSql,
+} from "../utils/legacyEnrichmentGuard.js";
 
 const prepareAnnotation =
   typeof prepareAnnotationModule.prepareAnnotation === "function"
@@ -44,9 +50,11 @@ const CSV_STREAM_CHUNK_SIZE = 128 * 1024;
 const CLICKHOUSE_NULL_TOKEN_RE = /(?<=,|^)\\N(?=,|\r?\n|$)/g;
 
 function getRequestId(req) {
-  return req.get?.("x-request-id")
-    || req.get?.("traceparent")
-    || `${randomUUID()}-span-1`;
+  return (
+    req.get?.("x-request-id") ||
+    req.get?.("traceparent") ||
+    `${randomUUID()}-span-1`
+  );
 }
 
 function isClickHouseContext(securityContext) {
@@ -136,7 +144,14 @@ function sendGatewayError(res, err, statusOverride) {
   res.status(statusOverride || getGatewayErrorStatus(err)).json(err);
 }
 
-function emitGatewayHandledError(apiGateway, res, context, query, error, requestStarted) {
+function emitGatewayHandledError(
+  apiGateway,
+  res,
+  context,
+  query,
+  error,
+  requestStarted,
+) {
   if (typeof apiGateway?.handleError !== "function") {
     sendGatewayError(res, {
       error: error?.message || error?.error || String(error),
@@ -172,7 +187,9 @@ function getChangedAliasNameToMember(plan) {
   if (!aliasNameToMember) return null;
 
   const changedAliasNameToMember = Object.fromEntries(
-    Object.entries(aliasNameToMember).filter(([alias, member]) => alias !== member)
+    Object.entries(aliasNameToMember).filter(
+      ([alias, member]) => alias !== member,
+    ),
   );
 
   return Object.keys(changedAliasNameToMember).length > 0
@@ -202,9 +219,14 @@ function appendResponseHeaderValues(res, name, values) {
       ? existing.split(",")
       : [];
   const normalized = new Set(
-    currentValues.map((value) => value.trim()).filter(Boolean).map((value) => value.toLowerCase())
+    currentValues
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.toLowerCase()),
   );
-  const mergedValues = currentValues.map((value) => value.trim()).filter(Boolean);
+  const mergedValues = currentValues
+    .map((value) => value.trim())
+    .filter(Boolean);
 
   for (const value of values) {
     const normalizedValue = value.toLowerCase();
@@ -223,7 +245,7 @@ function setNativeArrowFieldMappingHeaders(res, plan) {
 
   const encodedMapping = Buffer.from(
     JSON.stringify(aliasNameToMember),
-    "utf8"
+    "utf8",
   ).toString("base64url");
 
   res.set(ARROW_FIELD_MAPPING_HEADER, encodedMapping);
@@ -238,9 +260,10 @@ function rewriteNativeCsvHeader(line, aliasNameToMember) {
   const stripped = line.replace(/\r?\n$/, "");
   const aliases = stripped.length > 0 ? stripped.split(",") : [];
   const members = aliases.map((alias) => {
-    const unquoted = alias.startsWith('"') && alias.endsWith('"')
-      ? alias.slice(1, -1).replace(/""/g, '"')
-      : alias;
+    const unquoted =
+      alias.startsWith('"') && alias.endsWith('"')
+        ? alias.slice(1, -1).replace(/""/g, '"')
+        : alias;
     return escapeCSVField(aliasNameToMember?.[unquoted] || unquoted);
   });
   return members.join(",") + "\r\n";
@@ -262,7 +285,7 @@ async function prepareLoadContext(req, res, cubejs) {
     req.context = await apiGateway.contextByReq(
       req,
       req.securityContext,
-      getRequestId(req)
+      getRequestId(req),
     );
   }
 
@@ -278,17 +301,15 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
 
   try {
     await apiGateway.assertApiScope("data", context.securityContext);
+    assertNoLegacyEnrichmentQuery(query);
 
-    const [queryType, normalizedQueries] = await apiGateway.getNormalizedQueries(
-      query,
-      context,
-      true
-    );
+    const [queryType, normalizedQueries] =
+      await apiGateway.getNormalizedQueries(query, context, true);
 
     if (
-      queryType !== QueryType.REGULAR_QUERY
-      || !Array.isArray(normalizedQueries)
-      || normalizedQueries.length !== 1
+      queryType !== QueryType.REGULAR_QUERY ||
+      !Array.isArray(normalizedQueries) ||
+      normalizedQueries.length !== 1
     ) {
       return { handled: false, unsupported: true };
     }
@@ -302,10 +323,9 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
     metaConfig = apiGateway.filterVisibleItemsInMeta(context, metaConfig);
 
     const annotation = prepareAnnotation(metaConfig, normalizedQuery);
-    const sqlQuery = (await apiGateway.getSqlQueriesInternal(
-      context,
-      normalizedQueries
-    ))[0];
+    const sqlQuery = (
+      await apiGateway.getSqlQueriesInternal(context, normalizedQueries)
+    )[0];
     const streamingQuery = {
       ...sqlQuery,
       query: sqlQuery.sql[0],
@@ -322,8 +342,9 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
     // Neither the native ClickHouse path nor semantic streaming can reach
     // CubeStore tables, so flag it so tryHandleLoadExport can bail out early
     // and let the standard Cube.js load pipeline handle it.
-    const usesPreAggregations = Array.isArray(sqlQuery.preAggregations)
-      && sqlQuery.preAggregations.length > 0;
+    const usesPreAggregations =
+      Array.isArray(sqlQuery.preAggregations) &&
+      sqlQuery.preAggregations.length > 0;
 
     return {
       handled: false,
@@ -344,10 +365,14 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
       context,
       query,
       err,
-      requestStarted
+      requestStarted,
     );
     return { handled: true };
   }
+}
+
+export function authorizeNativeLegacySql(sql) {
+  assertNoLegacyEnrichmentSql(sql);
 }
 
 async function prepareNativeClickHouseExport(plan) {
@@ -368,13 +393,11 @@ async function prepareNativeClickHouseExport(plan) {
   // indicate pre-aggs), the orchestrator may still resolve lambda tables
   // at runtime.  Those inline tables are not compatible with the native
   // ClickHouse passthrough, so check and bail out if present.
-  const {
-    preAggregationsTablesToTempTables,
-    values,
-  } = await preAggregations.loadAllPreAggregationsIfNeeded(plan.streamingQuery);
+  const { preAggregationsTablesToTempTables, values } =
+    await preAggregations.loadAllPreAggregationsIfNeeded(plan.streamingQuery);
 
   const hasLambdaTables = preAggregationsTablesToTempTables.some(
-    ([, preAggregation]) => Boolean(preAggregation.lambdaTable)
+    ([, preAggregation]) => Boolean(preAggregation.lambdaTable),
   );
 
   if (hasLambdaTables) {
@@ -393,7 +416,7 @@ async function executeNativeClickHouseCsv(
   values,
   driver,
   signal,
-  aliasNameToMember
+  aliasNameToMember,
 ) {
   const resultSet = await driver.client.query({
     query: sqlstring.format(query, values || []),
@@ -404,6 +427,7 @@ async function executeNativeClickHouseCsv(
 
   let chunk = "";
   let wroteHeader = false;
+  let rowCount = 0;
   for await (const rows of resultSet.stream()) {
     for (const row of rows) {
       if (!wroteHeader) {
@@ -413,6 +437,7 @@ async function executeNativeClickHouseCsv(
       }
 
       chunk += normalizeClickHouseCSVLine(row.text);
+      rowCount += 1;
       if (chunk.length >= CSV_STREAM_CHUNK_SIZE) {
         await writeTextChunk(res, chunk, signal);
         chunk = "";
@@ -423,9 +448,16 @@ async function executeNativeClickHouseCsv(
   if (chunk.length > 0) {
     await writeTextChunk(res, chunk, signal);
   }
+  return rowCount;
 }
 
-async function executeNativeClickHouseArrow(res, query, values, driver, signal) {
+async function executeNativeClickHouseArrow(
+  res,
+  query,
+  values,
+  driver,
+  signal,
+) {
   const result = await driver.client.exec({
     query: `${removeTrailingSemicolon(sqlstring.format(query, values || []))}\nFORMAT ArrowStream`,
     clickhouse_settings: {
@@ -435,13 +467,13 @@ async function executeNativeClickHouseArrow(res, query, values, driver, signal) 
     abort_signal: signal,
   });
 
-  const stream = typeof result.stream === "function"
-    ? result.stream()
-    : result.stream;
+  const stream =
+    typeof result.stream === "function" ? result.stream() : result.stream;
 
   for await (const chunk of stream) {
     await writeBinaryChunk(res, chunk, signal);
   }
+  return Number(result.summary?.result_rows || 0);
 }
 
 async function streamSemanticRows(plan) {
@@ -456,6 +488,37 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
 
   const abortController = createAbortController(res);
 
+  // 099 T089 (FR-091): `Dataset Exported` audit. Tenant rides tokenPayload
+  // (populated by checkAuth, which the gateway checkAuth reuses on /load). Only
+  // the branches that actually stream a dataset flip `exported`; the finally
+  // emits `ok` for those, the catch emits `error`. Fire-and-forget, never
+  // blocks (FR-007), skips when no tenant.
+  const securityContext =
+    req.securityContext || plan.context?.securityContext || {};
+  const tokenPayload = securityContext.tokenPayload || {};
+  const exportTenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId: securityContext.userId ?? null,
+  };
+  const exportDbType = securityContext.userScope?.dataSource?.dbType ?? null;
+  const exportStart = Date.now();
+  let exported = false;
+  let exportPath = null;
+  const emitDatasetExported = (status, extra) =>
+    emitQueryEvent({
+      event: "Dataset Exported",
+      ...exportTenant,
+      status,
+      dimensions: exportDbType ? { datasource_type: exportDbType } : null,
+      metrics: { duration_ms: Date.now() - exportStart },
+      properties: {
+        format,
+        ...(exportPath ? { export_path: exportPath } : {}),
+        ...(extra || {}),
+      },
+    });
+
   try {
     let nativeQuery = null;
 
@@ -467,16 +530,17 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
     // below goes through QueryOrchestrator.streamQuery which loads
     // pre-aggregations and routes to the correct data source.
     if (
-      !plan.usesPreAggregations
-      && (format === "csv" && plan.capabilities.nativeCsvPassthrough
-        || format === "arrow" && plan.capabilities.nativeArrowPassthrough)
-      && isClickHouseContext(plan.context.securityContext)
+      !plan.usesPreAggregations &&
+      ((format === "csv" && plan.capabilities.nativeCsvPassthrough) ||
+        (format === "arrow" && plan.capabilities.nativeArrowPassthrough)) &&
+      isClickHouseContext(plan.context.securityContext)
     ) {
       nativeQuery = await prepareNativeClickHouseExport(plan);
     }
 
     if (format === "csv" && nativeQuery?.query) {
-      const driver = await cubejs.options.driverFactory({
+      authorizeNativeLegacySql(nativeQuery.query);
+      const driver = await tenantDriverFactory(cubejs)({
         securityContext: plan.context.securityContext,
       });
       res.set(CSV_HEADERS);
@@ -486,14 +550,17 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         nativeQuery.values,
         driver,
         abortController.signal,
-        getAliasNameToMember(plan)
+        getAliasNameToMember(plan),
       );
+      exported = true;
+      exportPath = "native-clickhouse";
       res.end();
       return true;
     }
 
     if (format === "arrow" && nativeQuery?.query) {
-      const driver = await cubejs.options.driverFactory({
+      authorizeNativeLegacySql(nativeQuery.query);
+      const driver = await tenantDriverFactory(cubejs)({
         securityContext: plan.context.securityContext,
       });
       res.set(ARROW_HEADERS);
@@ -503,8 +570,10 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         nativeQuery.query,
         nativeQuery.values,
         driver,
-        abortController.signal
+        abortController.signal,
       );
+      exported = true;
+      exportPath = "native-clickhouse";
       res.end();
       return true;
     }
@@ -521,6 +590,8 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         columns: plan.columns,
         signal: abortController.signal,
       });
+      exported = true;
+      exportPath = "semantic-stream";
       res.end();
       return true;
     }
@@ -531,10 +602,21 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       annotation: plan.annotation,
       signal: abortController.signal,
     });
+    exported = true;
+    exportPath = "semantic-stream";
     res.end();
     return true;
   } catch (err) {
     if (abortController.signal.aborted) return true;
+
+    // 099 T089: the export failed before completing — audit the error outcome.
+    // Guard on !exported so a post-stream throw can't double-emit (the finally
+    // already records the ok).
+    if (!exported) {
+      emitDatasetExported("error", {
+        error_message: err?.message || String(err),
+      });
+    }
 
     emitGatewayHandledError(
       plan.apiGateway,
@@ -542,9 +624,12 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       plan.context,
       query,
       err,
-      plan.requestStarted
+      plan.requestStarted,
     );
     return true;
+  } finally {
+    // 099 T089: a dataset was streamed to the client — audit the success once.
+    if (exported) emitDatasetExported("ok");
   }
 }
 

@@ -12,6 +12,8 @@ import {
   shapeJsonEntries,
   createProbeCache,
 } from "../utils/dynamicPropertyProbe.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 /**
  * POST /api/v1/meta/dynamic — dynamic property discovery (014, FR-005..007).
@@ -52,7 +54,7 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
   const {
     loadSchemas = (ids) => findDataSchemasByIds({ ids }),
     getDriver = () =>
-      cubejs.options.driverFactory({ securityContext: req.securityContext }),
+      tenantDriverFactory(cubejs)({ securityContext: req.securityContext }),
     ttlMs = DEFAULT_TTL_MS,
     sampleLimit = DEFAULT_SAMPLES,
     cache = deps.cache === undefined ? sharedCache : deps.cache,
@@ -100,7 +102,7 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
     let cubeDef = null;
     for (const schema of schemas || []) {
       cubeDef = parseCubesFromFile(schema.name, schema.code).find(
-        (c) => c?.name === cube
+        (c) => c?.name === cube,
       );
       if (cubeDef) break;
     }
@@ -117,13 +119,26 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
       });
     }
 
+    const tableParts = String(table)
+      .replace(/[`"\[\]]/g, "")
+      .split(".");
+    assertNoDirectLegacyEnrichmentObject(
+      tableParts.length > 1 ? tableParts.at(-2) : null,
+      table,
+    );
+
     const driver = await getDriver();
 
     // discover map/JSON columns on the source table (also feeds the filter
     // fallback: skeleton models may lack the member, but the column is real)
     const described = await driver.query(`DESCRIBE TABLE ${table}`);
     const tableColumns = new Set((described || []).map((r) => r.name));
-    const where = buildFilterWhere({ partition, filters, cubeDef, tableColumns });
+    const where = buildFilterWhere({
+      partition,
+      filters,
+      cubeDef,
+      tableColumns,
+    });
     const wanted = targets ? new Set(targets) : null;
     const mapColumns = [];
     const jsonColumns = [];
@@ -138,7 +153,7 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
     }
 
     const totalRows = Number(
-      (await driver.query(buildTotalSql({ table, where })))?.[0]?.total || 0
+      (await driver.query(buildTotalSql({ table, where })))?.[0]?.total || 0,
     );
 
     // probe all target columns in parallel (SC-002: cold ≤ 2s)
@@ -148,10 +163,15 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
         rows:
           totalRows > 0
             ? await driver.query(
-                buildMapProbeSql({ table, column: column.name, where, sampleLimit })
+                buildMapProbeSql({
+                  table,
+                  column: column.name,
+                  where,
+                  sampleLimit,
+                }),
               )
             : [],
-      }))
+      })),
     );
     const jsonResults = await Promise.all(
       jsonColumns.map(async (column) => ({
@@ -159,10 +179,10 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
         rows:
           totalRows > 0
             ? await driver.query(
-                buildJsonProbeSql({ table, column: column.name, where })
+                buildJsonProbeSql({ table, column: column.name, where }),
               )
             : [],
-      }))
+      })),
     );
 
     const dimensions = [];
@@ -187,7 +207,7 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
     const properties = [];
     for (const { column, rows } of jsonResults) {
       properties.push(
-        ...shapeJsonEntries({ cube, column: column.name, rows, totalRows })
+        ...shapeJsonEntries({ cube, column: column.name, rows, totalRows }),
       );
     }
 

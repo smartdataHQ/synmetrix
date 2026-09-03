@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 
 import {
   findUser,
+  invalidateUserCache,
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
@@ -47,14 +48,24 @@ const checkAuth = async (req) => {
   let userId;
   const tokenType = detectTokenType(authToken);
 
+  // 099 T086 (FR-091): retain the FraiOS tenant attribution alongside the
+  // resolved userId so downstream semantic-event emitters can attribute events
+  // to the right tenant. Purely ADDITIVE — the auth validation below is
+  // unchanged; accountId/partition populate only on the token paths that carry
+  // them (FraiOS always; WorkOS partition when present), null otherwise.
+  const tokenPayload = { accountId: null, partition: null, tokenType };
+
   if (tokenType === "workos") {
     // WorkOS RS256 path
     const payload = await verifyWorkOSToken(authToken);
     userId = await provisionUserFromWorkOS(payload);
+    tokenPayload.partition = payload?.partition ?? null;
   } else if (tokenType === "fraios") {
     // FraiOS HS256 path
     const payload = await verifyFraiOSToken(authToken);
     userId = await provisionUserFromFraiOS(payload);
+    tokenPayload.accountId = payload?.accountId ?? null;
+    tokenPayload.partition = payload?.partition ?? null;
   } else {
     // Hasura HS256 path (existing)
     let jwtDecoded;
@@ -78,7 +89,7 @@ const checkAuth = async (req) => {
     throw error;
   }
 
-  const user = await findUser({ userId });
+  let user = await findUser({ userId });
 
   if (!user.dataSources?.length || !user.members?.length) {
     const error = new Error(`404: user "${userId}" not found`);
@@ -86,18 +97,40 @@ const checkAuth = async (req) => {
     throw error;
   }
 
-  const userScope = defineUserScope(
-    user.dataSources,
-    user.members,
-    dataSourceId,
-    branchId,
-    branchVersionId
-  );
+  let userScope;
+  try {
+    userScope = defineUserScope(
+      user.dataSources,
+      user.members,
+      dataSourceId,
+      branchId,
+      branchVersionId
+    );
+  } catch (err) {
+    // Self-heal a stale user cache: a datasource/branch/version created moments
+    // ago (e.g. testing a just-created datasource, or the pre-create transient
+    // test) may not be in the cached scope yet. Invalidate and retry ONCE with
+    // fresh data before surfacing a 404 "not found".
+    if (err.status === 404 && (dataSourceId || branchId || branchVersionId)) {
+      invalidateUserCache(userId);
+      user = await findUser({ userId });
+      userScope = defineUserScope(
+        user.dataSources,
+        user.members,
+        dataSourceId,
+        branchId,
+        branchVersionId
+      );
+    } else {
+      throw err;
+    }
+  }
 
   req.securityContext = {
     authToken,
     userId,
     userScope,
+    tokenPayload,
   };
 };
 

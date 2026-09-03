@@ -22,7 +22,7 @@ COPY ./package.json ./yarn.lock /opt/
 
 ENV NODE_PATH=/opt/node_modules
 ENV PATH /opt/node_modules/.bin:$PATH
-RUN yarn --network-timeout 100000
+RUN yarn --frozen-lockfile --network-timeout 100000
 
 WORKDIR /app
 COPY package.json /app

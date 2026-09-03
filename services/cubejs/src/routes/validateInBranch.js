@@ -1,6 +1,7 @@
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import {
   findUser,
   findDataSchemas,
@@ -363,6 +364,24 @@ export default async function validateInBranch(req, res) {
         result.blockingReferences = hits;
       }
     }
+
+    // 099 T087 (FR-091): the agent compile gate is a model lifecycle fact.
+    // Fire-and-forget; never blocks the validation response (FR-007).
+    emitModelEvent({
+      event: "Model Draft Validated",
+      accountId: payload?.accountId ?? null,
+      partition: payload?.partition ?? null,
+      userId,
+      modelId: targetDataschemaId || branchId,
+      status: result.valid ? "ok" : "error",
+      properties: {
+        mode,
+        valid: result.valid,
+        error_count: result.errors.length,
+        warning_count: result.warnings.length,
+        branch_id: branchId,
+      },
+    });
 
     return res.json(result);
   } catch (err) {

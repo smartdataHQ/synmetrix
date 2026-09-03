@@ -3,12 +3,140 @@ import YAML from "yaml";
 import { fetchGraphQL } from "./graphql.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
 import { parseCubesFromJs } from "./smart-generation/diffModels.js";
+import { assertNoLegacyEnrichmentQuery } from "./legacyEnrichmentGuard.js";
 
 const getColumnsArray = (cube) => [
   ...(cube?.dimensions || []),
   ...(cube?.measures || []),
   ...(cube?.segments || []),
 ];
+
+// --- Partition pruning policy (owner rule, 2026-09-03) ---
+// A cube over a partitioned event table must never reach the warehouse
+// without a predicate on the partition time column. `cst.semantic_events`
+// is partitioned by (partition, toStartOfMonth(timestamp)); a row-type cube
+// whose time dimension is a JSON payload path (e.g. `properties.started_at`)
+// makes ClickHouse read the JSON column for every row of every month —
+// measured 10 GiB / 18.6M rows for a one-week POI query, 13 MiB / 119 ms
+// once the timestamp window is present. The rewrite derives that window from
+// the query's explicit date ranges, widened by `marginDays` on both sides so
+// events recorded later than the payload time (a stay ends days after it
+// starts) are never excluded. Policy per source table; override with
+// CUBEJS_PARTITION_PRUNING (JSON: { table: { dimension, marginDays } }), and
+// per cube with `meta.partition_dimension`.
+const DEFAULT_PARTITION_PRUNING = {
+  semantic_events: { dimension: "timestamp", marginDays: 31 },
+};
+
+function loadPartitionPruningPolicy() {
+  const raw = process.env.CUBEJS_PARTITION_PRUNING;
+  if (!raw) return DEFAULT_PARTITION_PRUNING;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object"
+      ? { ...DEFAULT_PARTITION_PRUNING, ...parsed }
+      : DEFAULT_PARTITION_PRUNING;
+  } catch (err) {
+    console.error(
+      "[queryRewrite] CUBEJS_PARTITION_PRUNING is not valid JSON:",
+      err.message,
+    );
+    return DEFAULT_PARTITION_PRUNING;
+  }
+}
+
+const PARTITION_PRUNING = loadPartitionPruningPolicy();
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseExplicitDate(value) {
+  if (typeof value !== "string") return null;
+  // Cube accepts "YYYY-MM-DD" and ISO datetimes; relative expressions
+  // ("last 7 days") are left to Cube and yield no pruning window.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return null;
+  const ms = Date.parse(value.length === 10 ? `${value}T00:00:00Z` : value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatDay(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Explicit [from, to] windows the query states for members of `cubeName`,
+ * from timeDimensions.dateRange and inDateRange filters.
+ */
+function explicitDateWindows(query, cubeName) {
+  const windows = [];
+  const consider = (member, range) => {
+    if (typeof member !== "string" || !member.startsWith(`${cubeName}.`)) {
+      return;
+    }
+    const pair = Array.isArray(range) ? range : [range, range];
+    if (pair.length !== 2) return;
+    const from = parseExplicitDate(pair[0]);
+    const to = parseExplicitDate(pair[1]);
+    if (from === null || to === null) return;
+    windows.push([from, to]);
+  };
+  for (const td of query.timeDimensions || []) {
+    if (td?.dateRange) consider(td.dimension, td.dateRange);
+  }
+  for (const f of query.filters || []) {
+    if (f?.operator === "inDateRange") consider(f.member, f.values);
+  }
+  return windows;
+}
+
+function mentionsMember(query, member) {
+  return (
+    (query.timeDimensions || []).some((td) => td?.dimension === member) ||
+    (query.filters || []).some((f) => f?.member === member) ||
+    (query.dimensions || []).includes(member)
+  );
+}
+
+/**
+ * Add the partition-column window for every query cube whose source table
+ * is governed by the pruning policy. Mutates and returns `query`.
+ * Exported for tests.
+ */
+export function applyPartitionPruning(
+  query,
+  cubeToTable,
+  policy = PARTITION_PRUNING,
+) {
+  if (!query || !cubeToTable || cubeToTable.size === 0) return query;
+  if (process.env.CUBEJS_PARTITION_PRUNING_DEBUG === "1") {
+    console.log("[queryRewrite] pruning map", {
+      cubes: [...cubeToTable.entries()].map(([k, v]) => `${k}→${v.sourceTable}`),
+      query: extractCubeNames(query),
+    });
+  }
+  for (const cubeName of extractCubeNames(query)) {
+    const info = cubeToTable.get(cubeName);
+    if (!info?.sourceTable) continue;
+    const rule = policy[info.sourceTable];
+    if (!rule) continue;
+    const dimension = info.partitionDimension || rule.dimension;
+    if (!dimension || !info.dimensions?.has(dimension)) continue;
+    const member = `${cubeName}.${dimension}`;
+    // Already constrained on the partition column — nothing to add.
+    if (mentionsMember(query, member)) continue;
+    const windows = explicitDateWindows(query, cubeName);
+    if (windows.length === 0) continue;
+    const margin = (Number(rule.marginDays) || 0) * DAY_MS;
+    const from = Math.min(...windows.map((w) => w[0])) - margin;
+    const to = Math.max(...windows.map((w) => w[1])) + margin;
+    if (!query.filters) query.filters = [];
+    query.filters.push({
+      member,
+      operator: "inDateRange",
+      values: [formatDay(from), formatDay(to)],
+    });
+  }
+  return query;
+}
 
 // --- Rule cache with 60-second TTL ---
 let rulesCache = null;
@@ -83,7 +211,7 @@ function extractTableName(cube) {
   const sql = cube.sql;
   if (typeof sql === "string") {
     const match = sql.match(
-      /\bFROM\s+[`"]?(?:[\w-]+\.)?[`"]?([a-zA-Z_][\w]*)[`"]?/i
+      /\bFROM\s+[`"]?(?:[\w-]+\.)?[`"]?([a-zA-Z_][\w]*)[`"]?/i,
     );
     if (match) return match[1];
   }
@@ -133,13 +261,20 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
         if (!cube.name) continue;
         const sourceTable = extractTableName(cube);
         const dims = new Set(
-          (cube.dimensions || []).map((d) => d.name).filter(Boolean)
+          (cube.dimensions || []).map((d) => d.name).filter(Boolean),
         );
-        mapping.set(cube.name, { sourceTable, dimensions: dims });
+        mapping.set(cube.name, {
+          sourceTable,
+          dimensions: dims,
+          partitionDimension: cube.meta?.partition_dimension || null,
+        });
       }
     }
   } catch (err) {
-    console.error("[queryRewrite] Failed to build cube-to-table map:", err.message);
+    console.error(
+      "[queryRewrite] Failed to build cube-to-table map:",
+      err.message,
+    );
   }
 
   // Evict oldest entry if cache is full
@@ -176,18 +311,50 @@ function extractCubeNames(query) {
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
 const queryRewrite = async (query, { securityContext }) => {
+  // Retired managed enrichment cubes remain unavailable even if an old
+  // historical tenant version is restored.
+  assertNoLegacyEnrichmentQuery(query);
+
   const { userScope } = securityContext;
-  const { dataSourceAccessList, hasAccessList, role, teamProperties, memberProperties } = userScope;
+  const {
+    dataSourceAccessList,
+    hasAccessList,
+    role,
+    teamProperties,
+    memberProperties,
+  } = userScope;
+
+  // --- Step 0: Strip unresolvable "no order" placeholders ---
+  // The client query builder emits `emptyCube.emptyKey` as a sentinel for
+  // "no order selected". The legacy planner silently ignored the unresolvable
+  // member; the Tesseract planner rejects it ("Cannot resolve: emptyCube") and
+  // 500s the query. Removing it is safe — it just means "no explicit order".
+  if (query && query.order) {
+    const isPlaceholder = (m) =>
+      typeof m === "string" && m.startsWith("emptyCube.");
+    if (Array.isArray(query.order)) {
+      query.order = query.order.filter((o) =>
+        Array.isArray(o)
+          ? !isPlaceholder(o[0])
+          : !isPlaceholder(o && (o.id || o.member)),
+      );
+    } else if (typeof query.order === "object") {
+      for (const key of Object.keys(query.order)) {
+        if (isPlaceholder(key)) delete query.order[key];
+      }
+    }
+  }
+
+  // --- Step 0b: Partition pruning (applies to ALL roles, before any rule) ---
+  const { schemaVersion, files } = userScope.dataSource;
+  const cubeToTable = await buildCubeToTableMap(schemaVersion, files);
+  applyPartitionPruning(query, cubeToTable);
 
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
   const rules = await loadRules();
 
   if (rules.length > 0) {
     const queryCubeNames = extractCubeNames(query);
-
-    // Build cube → source table mapping from active schemas
-    const { schemaVersion, files } = userScope.dataSource;
-    const cubeToTable = await buildCubeToTableMap(schemaVersion, files);
 
     // Index rules by table name for fast lookup
     const rulesByTable = new Map();
@@ -231,7 +398,8 @@ const queryRewrite = async (query, { securityContext }) => {
 
         if (appliedFilters.has(filterKey)) continue;
 
-        const source = rule.property_source === "team" ? teamProperties : memberProperties;
+        const source =
+          rule.property_source === "team" ? teamProperties : memberProperties;
         const value = source?.[rule.property_key];
 
         if (value === undefined || value === null) {
@@ -286,7 +454,7 @@ const queryRewrite = async (query, { securityContext }) => {
   const queryNames = getColumnsArray(query);
   const accessNames = Object.values(dataSourceAccessList).reduce(
     (acc, cube) => [...acc, ...getColumnsArray(cube)],
-    []
+    [],
   );
 
   queryNames.forEach((cn) => {

@@ -1,13 +1,16 @@
-import YAML from 'yaml';
+import YAML from "yaml";
 
-import { findDataSchemas } from '../utils/dataSourceHelpers.js';
-import { profileTable } from '../utils/smart-generation/profiler.js';
-import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
-import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
-import { serializeProfile } from '../utils/smart-generation/profileSerializer.js';
-import { ColumnType } from '../utils/smart-generation/typeParser.js';
-import { parseCubesFromJs } from '../utils/smart-generation/diffModels.js';
-import { loadRules } from '../utils/queryRewrite.js';
+import { findDataSchemas } from "../utils/dataSourceHelpers.js";
+import { profileTable } from "../utils/smart-generation/profiler.js";
+import { detectPrimaryKeys } from "../utils/smart-generation/primaryKeyDetector.js";
+import { createProgressEmitter } from "../utils/smart-generation/progressEmitter.js";
+import { serializeProfile } from "../utils/smart-generation/profileSerializer.js";
+import { ColumnType } from "../utils/smart-generation/typeParser.js";
+import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
+import { loadRules } from "../utils/queryRewrite.js";
+import { emitQueryEvent } from "../utils/eventEmitter.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
 
 /**
  * Analyze an existing data schema file for user content and reprofile support.
@@ -18,9 +21,8 @@ import { loadRules } from '../utils/queryRewrite.js';
  * @returns {object} Analysis result
  */
 function analyzeExistingModel(code, fileName) {
-  const fileFormat = fileName.endsWith('.yml') || fileName.endsWith('.yaml')
-    ? 'yml'
-    : 'js';
+  const fileFormat =
+    fileName.endsWith(".yml") || fileName.endsWith(".yaml") ? "yml" : "js";
 
   let hasUserContent = false;
   let supportsReprofile = false;
@@ -28,7 +30,7 @@ function analyzeExistingModel(code, fileName) {
 
   let cubes = [];
 
-  if (fileFormat === 'yml') {
+  if (fileFormat === "yml") {
     try {
       const parsed = YAML.parse(code);
       cubes = parsed?.cubes || [];
@@ -53,12 +55,19 @@ function analyzeExistingModel(code, fileName) {
     }
 
     // Check for joins, pre_aggregations, segments — these indicate user content
-    if (cube.joins?.length || cube.pre_aggregations?.length || cube.segments?.length) {
+    if (
+      cube.joins?.length ||
+      cube.pre_aggregations?.length ||
+      cube.segments?.length
+    ) {
       hasUserContent = true;
     }
 
     // Check dimensions and measures for field categories
-    for (const field of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+    for (const field of [
+      ...(cube.dimensions || []),
+      ...(cube.measures || []),
+    ]) {
       if (field?.meta?.ai_generated) {
         hasAIMetrics = true;
       } else if (!field?.meta?.auto_generated) {
@@ -67,7 +76,8 @@ function analyzeExistingModel(code, fileName) {
     }
   }
 
-  const suggestedMergeStrategy = (hasUserContent || hasAIMetrics) ? 'merge' : 'replace';
+  const suggestedMergeStrategy =
+    hasUserContent || hasAIMetrics ? "merge" : "replace";
 
   // Extract generation_filters from cube meta (if any)
   let previousFilters = null;
@@ -91,26 +101,47 @@ function analyzeExistingModel(code, fileName) {
 
 export default async (req, res, cubejs) => {
   const { securityContext } = req;
-  const { table, schema, branchId, filters: rawFilters, nestedFilters: rawNestedFilters } = req.body;
+  const {
+    table,
+    schema,
+    branchId,
+    filters: rawFilters,
+    nestedFilters: rawNestedFilters,
+  } = req.body;
 
   // Normalize filters: default to empty array if missing/invalid
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
   const nestedFilters = Array.isArray(rawNestedFilters) ? rawNestedFilters : [];
 
+  // 099 T089 (FR-091): tenant attribution for `Table Profiled`. NOTE: the
+  // event tenant partition lives on tokenPayload (FraiOS tenant) — NOT the
+  // `dataSource.partition` used below for ClickHouse row-scoping, which is a
+  // different concept. `dbType` rides the datasource_type dimension.
+  const tokenPayload = securityContext?.tokenPayload || {};
+  const tenant = {
+    accountId: tokenPayload.accountId ?? null,
+    partition: tokenPayload.partition ?? null,
+    userId: securityContext?.userId ?? null,
+  };
+  const dbType = securityContext?.userScope?.dataSource?.dbType ?? null;
+  const profileStart = Date.now();
+
   if (!table || !schema) {
     return res.status(400).json({
-      code: 'profile_table_missing_params',
-      message: 'The table and schema parameters are required.',
+      code: "profile_table_missing_params",
+      message: "The table and schema parameters are required.",
     });
   }
 
   let driver;
 
   try {
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     const partition = securityContext.userScope?.dataSource?.partition || null;
-    const internalTables = securityContext.userScope?.dataSource?.internalTables || [];
+    const internalTables =
+      securityContext.userScope?.dataSource?.internalTables || [];
 
-    driver = await cubejs.options.driverFactory({ securityContext });
+    driver = await tenantDriverFactory(cubejs)({ securityContext });
 
     // Apply query rewrite rules as additional filters.
     // Rules are defined by source table name and add mandatory row-level filters
@@ -118,22 +149,35 @@ export default async (req, res, cubejs) => {
     const ruleFilters = [];
     try {
       const rules = await loadRules();
-      const { teamProperties, memberProperties } = securityContext.userScope || {};
+      const { teamProperties, memberProperties } =
+        securityContext.userScope || {};
       for (const rule of rules) {
         if (rule.cube_name !== table) continue;
-        const source = rule.property_source === 'team' ? teamProperties : memberProperties;
+        const source =
+          rule.property_source === "team" ? teamProperties : memberProperties;
         const value = source?.[rule.property_key];
         if (value === undefined || value === null) continue;
         // Translate Cube.js operator to SQL — rules use 'equals', 'notEquals', 'contains', etc.
-        const sqlOp = rule.operator === 'equals' ? '='
-          : rule.operator === 'notEquals' ? '!='
-          : rule.operator === 'contains' ? 'LIKE'
-          : '=';
-        const sqlVal = sqlOp === 'LIKE' ? `%${String(value)}%` : String(value);
-        ruleFilters.push({ column: rule.dimension, operator: sqlOp, value: sqlVal });
+        const sqlOp =
+          rule.operator === "equals"
+            ? "="
+            : rule.operator === "notEquals"
+              ? "!="
+              : rule.operator === "contains"
+                ? "LIKE"
+                : "=";
+        const sqlVal = sqlOp === "LIKE" ? `%${String(value)}%` : String(value);
+        ruleFilters.push({
+          column: rule.dimension,
+          operator: sqlOp,
+          value: sqlVal,
+        });
       }
     } catch (err) {
-      console.warn('[profileTable] Failed to load query rewrite rules (non-fatal):', err.message);
+      console.warn(
+        "[profileTable] Failed to load query rewrite rules (non-fatal):",
+        err.message,
+      );
     }
 
     // Merge rule filters with user-specified filters
@@ -161,14 +205,20 @@ export default async (req, res, cubejs) => {
         // during the long-running profiling flow.
         const dataSchemas = await findDataSchemas({ branchId });
         const matchingFile = dataSchemas.find(
-          (f) => f.name === `${table}.yml` || f.name === `${table}.js`
+          (f) => f.name === `${table}.yml` || f.name === `${table}.js`,
         );
 
         if (matchingFile) {
-          existingModel = analyzeExistingModel(matchingFile.code, matchingFile.name);
+          existingModel = analyzeExistingModel(
+            matchingFile.code,
+            matchingFile.name,
+          );
         }
       } catch (schemaErr) {
-        console.warn('Could not look up existing model (non-fatal):', schemaErr.message || schemaErr);
+        console.warn(
+          "Could not look up existing model (non-fatal):",
+          schemaErr.message || schemaErr,
+        );
       }
     }
 
@@ -178,7 +228,7 @@ export default async (req, res, cubejs) => {
       if (colData.columnType === ColumnType.ARRAY) {
         arrayCandidates.push({
           column: colName,
-          element_type: colData.valueType || 'String',
+          element_type: colData.valueType || "String",
           suggested_alias: `${colName}_item`,
         });
       }
@@ -202,7 +252,8 @@ export default async (req, res, cubejs) => {
         max_array_length: p.maxArrayLength ?? null,
         unique_keys: p.uniqueKeys?.length > 0 ? p.uniqueKeys : null,
         lc_values: p.lcValues || null,
-        key_stats: p.keyStats && Object.keys(p.keyStats).length > 0 ? p.keyStats : null,
+        key_stats:
+          p.keyStats && Object.keys(p.keyStats).length > 0 ? p.keyStats : null,
       };
 
       // Add column description from ClickHouse metadata if available
@@ -217,7 +268,7 @@ export default async (req, res, cubejs) => {
     const rawProfile = serializeProfile(profiledTable, primaryKeys);
 
     const payload = {
-      code: 'ok',
+      code: "ok",
       database: schema,
       table,
       partition: partition || null,
@@ -231,16 +282,57 @@ export default async (req, res, cubejs) => {
       raw_profile: rawProfile,
     };
 
+    // 099 T089 (FR-091): the table was profiled. Fire-and-forget; never blocks
+    // (FR-007). No ABOUT subject id at profile time (the physical table is not a
+    // model version yet) — the house involves anchor it; schema/table ride
+    // properties, never dimensions (FR-031).
+    emitQueryEvent({
+      event: "Table Profiled",
+      ...tenant,
+      status: "ok",
+      dimensions: dbType ? { datasource_type: dbType } : null,
+      metrics: {
+        duration_ms: Date.now() - profileStart,
+        ...(Number.isFinite(Number(profiledTable.row_count))
+          ? { record_count: Number(profiledTable.row_count) }
+          : {}),
+      },
+      properties: {
+        schema,
+        table,
+        sampled: profiledTable.sampled ?? null,
+        sample_size: profiledTable.sample_size ?? null,
+        column_count: columnsOutput.length,
+        ...(branchId ? { branch_id: branchId } : {}),
+        ...(partition ? { datasource_partition: partition } : {}),
+      },
+    });
+
     emitter.complete(payload);
   } catch (err) {
     console.error(err);
+
+    // 099 T089 (FR-091): profiling failed — audit the error outcome.
+    emitQueryEvent({
+      event: "Table Profiled",
+      ...tenant,
+      status: "error",
+      dimensions: dbType ? { datasource_type: dbType } : null,
+      metrics: { duration_ms: Date.now() - profileStart },
+      properties: {
+        schema,
+        table,
+        ...(branchId ? { branch_id: branchId } : {}),
+        error_message: err?.message || String(err),
+      },
+    });
 
     if (driver && driver.release) {
       await driver.release();
     }
 
-    res.status(500).json({
-      code: 'profile_table_error',
+    res.status(err.status || 500).json({
+      code: "profile_table_error",
       message: err.message || err,
     });
   }

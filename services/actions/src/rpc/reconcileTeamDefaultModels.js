@@ -68,7 +68,7 @@ export default async (session, input, headers, deps = {}) => {
 
     let outcomes;
     try {
-      outcomes = await reconcileOneTeam(team, templates, config, {});
+      outcomes = await reconcileOneTeam(team, templates, config);
     } catch (err) {
       outcomes = [
         {

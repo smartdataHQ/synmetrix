@@ -129,6 +129,17 @@ describe('templateMerger — three-class merge (D4)', () => {
     assert.equal(merged.meta.team_note, 'keep me', 'team meta key preserved');
   });
 
+  it('sheds legacy generator meta keys the candidate no longer writes', () => {
+    const legacyExisting = EXISTING.replace(
+      '      team_note: keep me\n',
+      '      team_note: keep me\n      refresh_cadence: 1 hour\n      description: legacy duplicate\n'
+    );
+    const out = YAML.parse(mergeTemplateModel(legacyExisting, CANDIDATE)).cubes[0];
+    assert.equal(out.meta.refresh_cadence, undefined, 'legacy refresh_cadence shed');
+    assert.equal(out.meta.description, undefined, 'legacy meta description shed (native wins)');
+    assert.equal(out.meta.team_note, 'keep me', 'genuine team keys still preserved');
+  });
+
   it('is stable: merging the merged output with the same candidate is a no-op', () => {
     const once = mergeTemplateModel(EXISTING, CANDIDATE);
     const twice = mergeTemplateModel(once, CANDIDATE);

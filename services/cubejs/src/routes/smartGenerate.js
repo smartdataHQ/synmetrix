@@ -1,31 +1,57 @@
 import {
   createDataSchema,
   findDataSchemas,
-} from '../utils/dataSourceHelpers.js';
-import createMd5Hex from '../utils/md5Hex.js';
-import { profileTable } from '../utils/smart-generation/profiler.js';
-import { detectPrimaryKeys } from '../utils/smart-generation/primaryKeyDetector.js';
-import { buildCubes, mergeAIMetrics, deriveCubeNameFromFlatFilters } from '../utils/smart-generation/cubeBuilder.js';
+} from "../utils/dataSourceHelpers.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
+import createMd5Hex from "../utils/md5Hex.js";
+import { profileTable } from "../utils/smart-generation/profiler.js";
+import { detectPrimaryKeys } from "../utils/smart-generation/primaryKeyDetector.js";
+import {
+  buildCubes,
+  buildCubesFromTemplate,
+  mergeAIMetrics,
+  deriveCubeNameFromFlatFilters,
+  filtersToSqlConditions,
+} from "../utils/smart-generation/cubeBuilder.js";
+import { fetchPublishedTemplate } from "../utils/smart-generation/templateResolver.js";
+import { mergeTemplateModel } from "../utils/smart-generation/templateMerger.js";
 import {
   generateJs,
   generateYaml,
   requiresJsOutput,
-} from '../utils/smart-generation/yamlGenerator.js';
-import { enrichWithAIMetrics } from '../utils/smart-generation/llmEnricher.js';
-import { createProgressEmitter } from '../utils/smart-generation/progressEmitter.js';
-import { adviseModel, applyAdvisoryPasses } from '../utils/smart-generation/modelAdvisor.js';
-import { mergeModels, extractAIMetrics } from '../utils/smart-generation/merger.js';
-import { deserializeProfile } from '../utils/smart-generation/profileSerializer.js';
-import { diffModels, parseCubeContent } from '../utils/smart-generation/diffModels.js';
-import { loadRules } from '../utils/queryRewrite.js';
-import { validateModelSyntax, smokeTestQuery } from '../utils/smart-generation/modelValidator.js';
-import { fetchClickHouseAliasColumnNames } from '../utils/smart-generation/clickHouseAliasColumns.js';
+} from "../utils/smart-generation/yamlGenerator.js";
+import { enrichWithAIMetrics } from "../utils/smart-generation/llmEnricher.js";
+import { createProgressEmitter } from "../utils/smart-generation/progressEmitter.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
+import {
+  adviseModel,
+  applyAdvisoryPasses,
+} from "../utils/smart-generation/modelAdvisor.js";
+import {
+  mergeModels,
+  extractAIMetrics,
+} from "../utils/smart-generation/merger.js";
+import { deserializeProfile } from "../utils/smart-generation/profileSerializer.js";
+import {
+  diffModels,
+  parseCubeContent,
+} from "../utils/smart-generation/diffModels.js";
+import { loadRules } from "../utils/queryRewrite.js";
+import {
+  validateModelSyntax,
+  smokeTestQuery,
+} from "../utils/smart-generation/modelValidator.js";
+import { fetchClickHouseAliasColumnNames } from "../utils/smart-generation/clickHouseAliasColumns.js";
+import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 
 function reorderProfileColumns(profiledTable) {
-  if (!profiledTable?.columns || !(profiledTable.columns instanceof Map)) return profiledTable;
+  if (!profiledTable?.columns || !(profiledTable.columns instanceof Map))
+    return profiledTable;
   const ordered = new Map();
   const seen = new Set();
-  const preferred = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : [];
+  const preferred = Array.isArray(profiledTable.columnOrder)
+    ? profiledTable.columnOrder
+    : [];
 
   for (const colName of preferred) {
     if (profiledTable.columns.has(colName)) {
@@ -47,28 +73,41 @@ function reorderProfileColumns(profiledTable) {
   };
 }
 
-async function hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table) {
-  if (!driver || !profiledTable?.columns || !(profiledTable.columns instanceof Map)) {
+async function hydrateColumnOrderFromClickHouse(
+  driver,
+  profiledTable,
+  schema,
+  table,
+) {
+  if (
+    !driver ||
+    !profiledTable?.columns ||
+    !(profiledTable.columns instanceof Map)
+  ) {
     return profiledTable;
   }
   const hasStableOrder =
-    Array.isArray(profiledTable.columnOrder)
-    && profiledTable.columnOrder.length > 0
-    && profiledTable.columnOrder.length >= profiledTable.columns.size;
+    Array.isArray(profiledTable.columnOrder) &&
+    profiledTable.columnOrder.length > 0 &&
+    profiledTable.columnOrder.length >= profiledTable.columns.size;
   if (hasStableOrder) {
     return reorderProfileColumns(profiledTable);
   }
 
   try {
     const rows = await driver.query(
-      `SELECT name FROM system.columns WHERE database = '${schema}' AND table = '${table}' ORDER BY position`
+      `SELECT name FROM system.columns WHERE database = '${schema}' AND table = '${table}' ORDER BY position`,
     );
-    const ddlOrder = rows.map((r) => r.name).filter((name) => profiledTable.columns.has(name));
+    const ddlOrder = rows
+      .map((r) => r.name)
+      .filter((name) => profiledTable.columns.has(name));
     if (ddlOrder.length > 0) {
       return reorderProfileColumns({ ...profiledTable, columnOrder: ddlOrder });
     }
   } catch (err) {
-    console.warn(`[smartGenerate] Column order hydration failed (non-fatal): ${err.message}`);
+    console.warn(
+      `[smartGenerate] Column order hydration failed (non-fatal): ${err.message}`,
+    );
   }
 
   return reorderProfileColumns(profiledTable);
@@ -82,7 +121,7 @@ export default async (req, res, cubejs) => {
     branchId,
     arrayJoinColumns: rawArrayJoinColumns,
     maxMapKeys: rawMaxMapKeys,
-    mergeStrategy = 'auto',
+    mergeStrategy = "auto",
     profileData: rawProfileData,
     dryRun: rawDryRun,
     filters: rawFilters,
@@ -93,54 +132,115 @@ export default async (req, res, cubejs) => {
   } = req.body;
 
   // Hasura sends {} instead of null for optional fields — normalize
-  const arrayJoinColumns = Array.isArray(rawArrayJoinColumns) ? rawArrayJoinColumns : [];
-  const maxMapKeys = typeof rawMaxMapKeys === 'number' ? rawMaxMapKeys : 500;
-  const profileData = (rawProfileData && typeof rawProfileData === 'object' && rawProfileData.profiledTable)
-    ? rawProfileData
-    : null;
+  const arrayJoinColumns = Array.isArray(rawArrayJoinColumns)
+    ? rawArrayJoinColumns
+    : [];
+  const maxMapKeys = typeof rawMaxMapKeys === "number" ? rawMaxMapKeys : 500;
+  const profileData =
+    rawProfileData &&
+    typeof rawProfileData === "object" &&
+    rawProfileData.profiledTable
+      ? rawProfileData
+      : null;
   const dryRun = rawDryRun === true;
-  const skipLlm = req.body.skip_llm === true;
+  // 080 (research D2): optional template-seeded generation. When present, the
+  // named global template is the seed (buildCubesFromTemplate: seed +
+  // probe-prune against `filters`) and LLM stages are skipped — the scaffold
+  // is deterministic; the modeling agent matures it out of band.
+  const templateName =
+    typeof req.body.template_name === "string" && req.body.template_name.trim()
+      ? req.body.template_name.trim()
+      : null;
+  // 080: optional cube-level provenance meta stamped by the caller (marker
+  // family #2 — managed_by / row_type / registry_ref).
+  const cubeMeta =
+    req.body.cube_meta &&
+    typeof req.body.cube_meta === "object" &&
+    !Array.isArray(req.body.cube_meta)
+      ? req.body.cube_meta
+      : null;
+  const skipLlm = req.body.skip_llm === true || templateName !== null;
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
-  const nestedFilters = Array.isArray(req.body.nestedFilters) ? req.body.nestedFilters : [];
-  const fileNameOverride = typeof rawFileName === 'string' && rawFileName.trim() ? rawFileName.trim() : null;
+  const nestedFilters = Array.isArray(req.body.nestedFilters)
+    ? req.body.nestedFilters
+    : [];
+  const fileNameOverride =
+    typeof rawFileName === "string" && rawFileName.trim()
+      ? rawFileName.trim()
+      : null;
   // Derive cube name from file name if not explicitly set (strip extension)
-  const explicitCubeName = typeof rawCubeName === 'string' && rawCubeName.trim() ? rawCubeName.trim() : null;
+  const explicitCubeName =
+    typeof rawCubeName === "string" && rawCubeName.trim()
+      ? rawCubeName.trim()
+      : null;
   const fileDerivedCubeName = fileNameOverride
-    ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '')
+    ? fileNameOverride.replace(/\.(js|yml|yaml)$/, "")
     : null;
   // Auto-derive a model name from `=` / `IN` filter values when the user has
   // not supplied an explicit cube/file name. This produces e.g. `stockout_ended`
   // for a filter `event = 'Stockout Ended'`, keeping the model semantically
   // distinct from the source table when filtering rows. Falls back to the table
   // name (handled in buildRawCube) when no usable filter is present.
-  const filterDerivedCubeName = (!explicitCubeName && !fileDerivedCubeName && filters.length > 0)
-    ? deriveCubeNameFromFlatFilters(filters)
-    : '';
-  const cubeNameOverride = explicitCubeName
-    || fileDerivedCubeName
-    || (filterDerivedCubeName || null);
+  const filterDerivedCubeName =
+    !explicitCubeName && !fileDerivedCubeName && filters.length > 0
+      ? deriveCubeNameFromFlatFilters(filters)
+      : "";
+  const cubeNameOverride =
+    explicitCubeName || fileDerivedCubeName || filterDerivedCubeName || null;
   // When provided, only these AI metric names are merged into the model (user selection from preview)
-  const selectedAIMetrics = Array.isArray(rawSelectedAIMetrics) ? new Set(rawSelectedAIMetrics) : null;
+  const selectedAIMetrics = Array.isArray(rawSelectedAIMetrics)
+    ? new Set(rawSelectedAIMetrics)
+    : null;
   // When provided, these fully-qualified field names (cube.field) are excluded from the final model
   const rawExcludedFields = req.body.excluded_fields;
-  console.log('[smartGenerate] raw excluded_fields:', typeof rawExcludedFields, Array.isArray(rawExcludedFields) ? rawExcludedFields.length : rawExcludedFields);
-  const excludedFields = Array.isArray(rawExcludedFields) ? new Set(rawExcludedFields) : null;
+  console.log(
+    "[smartGenerate] raw excluded_fields:",
+    typeof rawExcludedFields,
+    Array.isArray(rawExcludedFields)
+      ? rawExcludedFields.length
+      : rawExcludedFields,
+  );
+  const excludedFields = Array.isArray(rawExcludedFields)
+    ? new Set(rawExcludedFields)
+    : null;
   // When provided, only these column names become dimensions/measures (user field selection)
-  const selectedColumns = Array.isArray(rawSelectedColumns) ? new Set(rawSelectedColumns) : null;
+  const selectedColumns = Array.isArray(rawSelectedColumns)
+    ? new Set(rawSelectedColumns)
+    : null;
 
   if (!table || !schema || !branchId) {
     return res.status(400).json({
-      code: 'smart_generate_missing_params',
-      message: 'The table, schema, and branchId parameters are required.',
+      code: "smart_generate_missing_params",
+      message: "The table, schema, and branchId parameters are required.",
     });
   }
 
   let driver;
 
   try {
+    assertNoDirectLegacyEnrichmentObject(schema, table);
     const { userId } = securityContext;
     const partition = securityContext.userScope?.dataSource?.partition || null;
-    const internalTables = securityContext.userScope?.dataSource?.internalTables || [];
+    // 099 T087/T088 (FR-091): one tenant-attribution source of truth, shared by
+    // the LLM call sites (enrich/advise emit billable `Connection Called`) and
+    // the model lifecycle events (`Model Generated` / `Model Saved`). Hoisted so
+    // both run before and after the version-create chokepoint.
+    const tokenPayload = securityContext.tokenPayload || {};
+    const tenant = {
+      accountId: tokenPayload.accountId ?? null,
+      partition: tokenPayload.partition ?? null,
+      userId,
+    };
+    let internalTables =
+      securityContext.userScope?.dataSource?.internalTables || [];
+    // 080: template-seeded generation targets the CANONICAL internal tables by
+    // definition — force partition scoping for the target table even when the
+    // team's internalTables setting doesn't enumerate it (tenancy is
+    // non-negotiable for row-type models; profiling AND the cube source WHERE
+    // both ride this list).
+    if (templateName && table && !internalTables.includes(table)) {
+      internalTables = [...internalTables, table];
+    }
 
     const emitter = createProgressEmitter(res, req.headers.accept);
 
@@ -150,61 +250,87 @@ export default async (req, res, cubejs) => {
 
     if (profileData) {
       // Use cached profile data from the profile_table step — no ClickHouse queries
-      emitter.emit('building', 'Using cached profile...', 0.5);
+      emitter.emit("building", "Using cached profile...", 0.5);
 
       const deserialized = deserializeProfile(profileData);
       profiledTable = deserialized.profiledTable;
       primaryKeys = deserialized.primaryKeys;
       // Ensure column order is stable even when profile_data transport reorders object keys.
 
-      driver = await cubejs.options.driverFactory({ securityContext });
+      driver = await tenantDriverFactory(cubejs)({ securityContext });
 
-      profiledTable = await hydrateColumnOrderFromClickHouse(driver, profiledTable, schema, table);
-
+      profiledTable = await hydrateColumnOrderFromClickHouse(
+        driver,
+        profiledTable,
+        schema,
+        table,
+      );
 
       // Load rewrite rules even on cached path — needed for required_fields
       try {
         const rules = await loadRules();
         for (const rule of rules) {
-          if (rule.cube_name === table) rewriteRuleDimensions.add(rule.dimension);
+          if (rule.cube_name === table)
+            rewriteRuleDimensions.add(rule.dimension);
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        /* non-fatal */
+      }
     } else {
       // Legacy path: profile from scratch (two ClickHouse round-trips)
-      driver = await cubejs.options.driverFactory({ securityContext });
+      driver = await tenantDriverFactory(cubejs)({ securityContext });
 
       // Apply query rewrite rules as mandatory filters
       const ruleFilters = [];
       try {
         const rules = await loadRules();
-        const { teamProperties, memberProperties } = securityContext.userScope || {};
+        const { teamProperties, memberProperties } =
+          securityContext.userScope || {};
         for (const rule of rules) {
           if (rule.cube_name !== table) continue;
           rewriteRuleDimensions.add(rule.dimension);
-          const source = rule.property_source === 'team' ? teamProperties : memberProperties;
+          const source =
+            rule.property_source === "team" ? teamProperties : memberProperties;
           const value = source?.[rule.property_key];
           if (value === undefined || value === null) continue;
-          const sqlOp = rule.operator === 'equals' ? '='
-            : rule.operator === 'notEquals' ? '!='
-            : rule.operator === 'contains' ? 'LIKE'
-            : '=';
-          const sqlVal = sqlOp === 'LIKE' ? `%${String(value)}%` : String(value);
-          ruleFilters.push({ column: rule.dimension, operator: sqlOp, value: sqlVal });
+          const sqlOp =
+            rule.operator === "equals"
+              ? "="
+              : rule.operator === "notEquals"
+                ? "!="
+                : rule.operator === "contains"
+                  ? "LIKE"
+                  : "=";
+          const sqlVal =
+            sqlOp === "LIKE" ? `%${String(value)}%` : String(value);
+          ruleFilters.push({
+            column: rule.dimension,
+            operator: sqlOp,
+            value: sqlVal,
+          });
         }
       } catch (err) {
-        console.warn('[smartGenerate] Failed to load query rewrite rules (non-fatal):', err.message);
+        console.warn(
+          "[smartGenerate] Failed to load query rewrite rules (non-fatal):",
+          err.message,
+        );
       }
 
-      emitter.emit('profile', 'Profiling table...', 0.05);
+      emitter.emit("profile", "Profiling table...", 0.05);
       profiledTable = await profileTable(driver, schema, table, {
         partition,
         internalTables,
         filters: [...filters, ...ruleFilters],
         nestedFilters,
         emitter,
+        // 080: template-seeded generation prunes registry members against the
+        // profiled key inventory — sampling would make that pruning flap on
+        // rare keys (owner directive: full-but-filtered profiling of a single
+        // row type). Deep profiling stays exact on this path.
+        ...(templateName ? { sampleThreshold: Number.MAX_SAFE_INTEGER } : {}),
       });
 
-      emitter.emit('primary_keys', 'Detecting primary keys...', 0.5);
+      emitter.emit("primary_keys", "Detecting primary keys...", 0.5);
       primaryKeys = await detectPrimaryKeys(driver, schema, table);
       profiledTable = reorderProfileColumns(profiledTable);
     }
@@ -219,38 +345,137 @@ export default async (req, res, cubejs) => {
       const fullColumns = profiledTable.columns;
       const filtered = new Map();
       for (const [name, data] of fullColumns) {
-        const isNestedChild = data.columnType === 'GROUPED' && data.parentName
-          && nestedGroupNames.has(data.parentName);
-        const isNestedParent = data.columnType === 'NESTED';
+        const isNestedChild =
+          data.columnType === "GROUPED" &&
+          data.parentName &&
+          nestedGroupNames.has(data.parentName);
+        const isNestedParent = data.columnType === "NESTED";
         if (selectedColumns.has(name) || isNestedChild || isNestedParent) {
           filtered.set(name, data);
         }
       }
-      const existingOrder = Array.isArray(profiledTable.columnOrder) ? profiledTable.columnOrder : [];
-      const filteredOrder = existingOrder.length > 0
-        ? existingOrder.filter((name) => filtered.has(name))
-        : Array.from(filtered.keys());
-      profiledTable = { ...profiledTable, columns: filtered, columnOrder: filteredOrder };
+      const existingOrder = Array.isArray(profiledTable.columnOrder)
+        ? profiledTable.columnOrder
+        : [];
+      const filteredOrder =
+        existingOrder.length > 0
+          ? existingOrder.filter((name) => filtered.has(name))
+          : Array.from(filtered.keys());
+      profiledTable = {
+        ...profiledTable,
+        columns: filtered,
+        columnOrder: filteredOrder,
+      };
     }
 
     // Build cubes — include ClickHouse ALIAS columns explicitly in cube sql (after SELECT *)
     let aliasColumnNames = [];
     if (driver) {
-      aliasColumnNames = await fetchClickHouseAliasColumnNames(driver, schema, table);
+      aliasColumnNames = await fetchClickHouseAliasColumnNames(
+        driver,
+        schema,
+        table,
+      );
     }
 
-    emitter.emit('building', 'Building cube definitions...', 0.6);
-    const cubeResult = buildCubes(profiledTable, {
-      partition,
-      internalTables,
-      arrayJoinColumns,
-      maxMapKeys,
-      primaryKeys,
-      cubeName: cubeNameOverride,
-      filters,
-      nestedFilters,
-      aliasColumnNames,
-    });
+    emitter.emit("building", "Building cube definitions...", 0.6);
+    let cubeResult;
+    let templateSeed = null;
+    if (templateName) {
+      // 080 (research D2): template-seeded path — resolve the published global
+      // template and generate via buildCubesFromTemplate (seed + probe-prune
+      // against `filters`). Everything after (naming, versioning, no-change
+      // guard, validation) is the shared pipeline.
+      templateSeed = await fetchPublishedTemplate(templateName);
+      if (!templateSeed || templateSeed.cubes.length === 0) {
+        return res.status(400).json({
+          code: "smart_generate_template_not_found",
+          message: `No published global template named '${templateName}' was found.`,
+        });
+      }
+      const primaryTemplateCube = templateSeed.cubes[0];
+
+      // Registry-path pruning needs JSON path presence for the filtered slice
+      // (reconciler parity — 014 FR-010): probe JSONAllPaths per registry
+      // column, scoped by partition + the row-type filters.
+      const registryPathColumns = new Set();
+      for (const list of [
+        primaryTemplateCube.dimensions,
+        primaryTemplateCube.measures,
+        primaryTemplateCube.segments,
+      ]) {
+        for (const field of list || []) {
+          const raw = field?.meta?.registry_path;
+          if (!raw) continue;
+          const match = /^([A-Za-z_][A-Za-z0-9_]*)\./.exec(raw);
+          if (match) registryPathColumns.add(match[1]);
+        }
+      }
+      if (
+        registryPathColumns.size > 0 &&
+        driver &&
+        profiledTable &&
+        (profiledTable.row_count || 0) > 0
+      ) {
+        const where = [];
+        if (partition)
+          where.push(`partition = '${String(partition).replace(/'/g, "''")}'`);
+        if (filters.length > 0) where.push(filtersToSqlConditions(filters));
+        profiledTable.jsonPaths = new Set();
+        for (const column of registryPathColumns) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) continue;
+          try {
+            const rows = await driver.query(
+              `SELECT DISTINCT arrayJoin(JSONAllPaths(${column})) AS p ` +
+                `FROM ${schema ? `${schema}.` : ""}${table}` +
+                (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""),
+            );
+            for (const row of rows || []) profiledTable.jsonPaths.add(row.p);
+          } catch (err) {
+            console.warn(
+              `[smartGenerate] JSON path probe failed for ${column} (non-fatal): ${err.message}`,
+            );
+          }
+        }
+      }
+
+      const { cube } = buildCubesFromTemplate(
+        primaryTemplateCube,
+        profiledTable,
+        {
+          partition,
+          internalTables,
+          templateName,
+          templateChecksum: templateSeed.checksum,
+          filters,
+          cubeName: cubeNameOverride,
+          cubeMeta,
+        },
+      );
+      cubeResult = {
+        cubes: [cube],
+        summary: {
+          cubes_count: 1,
+          dimensions_count: (cube.dimensions || []).length,
+          measures_count: (cube.measures || []).length,
+          columns_profiled: profiledTable?.columns?.size ?? 0,
+          columns_skipped: 0,
+          map_keys_discovered: 0,
+        },
+      };
+    } else {
+      cubeResult = buildCubes(profiledTable, {
+        partition,
+        internalTables,
+        arrayJoinColumns,
+        maxMapKeys,
+        primaryKeys,
+        cubeName: cubeNameOverride,
+        filters,
+        nestedFilters,
+        aliasColumnNames,
+      });
+    }
 
     // Store filters in cube-level meta for provenance tracking
     if (filters.length > 0) {
@@ -265,20 +490,21 @@ export default async (req, res, cubejs) => {
     // File name follows the cube name when the cube name was derived from
     // filters (flat or nested) — required so Cube.js can resolve the model
     // and so re-running the same filter set updates the same file.
-    const fileShouldFollowCube = cubeName && (
-      nestedFilters.length > 0
-      || (filterDerivedCubeName && cubeName === filterDerivedCubeName)
-    );
+    const fileShouldFollowCube =
+      cubeName &&
+      (nestedFilters.length > 0 ||
+        (filterDerivedCubeName && cubeName === filterDerivedCubeName));
     const baseName = fileShouldFollowCube
       ? cubeName
-      : (fileNameOverride
-          ? fileNameOverride.replace(/\.(js|yml|yaml)$/, '')
-          : table);
-    const explicitFileName = fileNameOverride && /\.(js|yml|yaml)$/.test(fileNameOverride)
-      ? fileNameOverride
-      : null;
+      : fileNameOverride
+        ? fileNameOverride.replace(/\.(js|yml|yaml)$/, "")
+        : table;
+    const explicitFileName =
+      fileNameOverride && /\.(js|yml|yaml)$/.test(fileNameOverride)
+        ? fileNameOverride
+        : null;
 
-    emitter.emit('versioning', 'Checking existing schemas...', 0.62);
+    emitter.emit("versioning", "Checking existing schemas...", 0.62);
     // Use admin secret (no authToken) for internal Hasura calls — the user's
     // JWT may expire during the long-running profiling + LLM enrichment flow.
     const existingSchemas = await findDataSchemas({ branchId });
@@ -293,8 +519,8 @@ export default async (req, res, cubejs) => {
     // would otherwise be chosen, so the model stays correct.
     const existingByBase = explicitFileName
       ? null
-      : existingSchemas.find((f) =>
-          f.name.replace(/\.(js|yml|yaml)$/, '') === baseName
+      : existingSchemas.find(
+          (f) => f.name.replace(/\.(js|yml|yaml)$/, "") === baseName,
         ) || null;
     const cubesNeedJs = requiresJsOutput(cubeResult.cubes);
     let fileName;
@@ -303,19 +529,21 @@ export default async (req, res, cubejs) => {
     } else if (existingByBase) {
       fileName = existingByBase.name;
     } else {
-      fileName = `${baseName}.${cubesNeedJs ? 'js' : 'yml'}`;
+      fileName = `${baseName}.${cubesNeedJs ? "js" : "yml"}`;
     }
     const useJsOutput = cubesNeedJs || /\.js$/.test(fileName);
-    const existingFileIndex = existingSchemas.findIndex((f) => f.name === fileName);
-    const existingCode = existingFileIndex >= 0
-      ? existingSchemas[existingFileIndex].code
-      : null;
+    const existingFileIndex = existingSchemas.findIndex(
+      (f) => f.name === fileName,
+    );
+    const existingCode =
+      existingFileIndex >= 0 ? existingSchemas[existingFileIndex].code : null;
 
     // Collect profiler field names and measure names for validation
     const profilerFieldNames = [];
     const existingMeasureNames = [];
     for (const cube of cubeResult.cubes) {
-      for (const dim of cube.dimensions || []) profilerFieldNames.push(dim.name);
+      for (const dim of cube.dimensions || [])
+        profilerFieldNames.push(dim.name);
       for (const m of cube.measures || []) {
         profilerFieldNames.push(m.name);
         existingMeasureNames.push(m.name);
@@ -325,10 +553,15 @@ export default async (req, res, cubejs) => {
 
     // AI metric enrichment — runs on BOTH dry-run and apply so the preview
     // shows the full picture including AI suggestions before the user commits.
-    let aiEnrichment = { status: 'skipped', model: null, metrics_count: 0, error: null };
+    let aiEnrichment = {
+      status: "skipped",
+      model: null,
+      metrics_count: 0,
+      error: null,
+    };
 
     if (!skipLlm) {
-      emitter.emit('ai_enrich', 'Generating AI metrics...', 0.63);
+      emitter.emit("ai_enrich", "Generating AI metrics...", 0.63);
 
       // Extract existing AI metrics from the previous model for superset regeneration
       const existingAIMetrics = existingCode
@@ -344,10 +577,17 @@ export default async (req, res, cubejs) => {
           existingMeasureNames,
           profilerFields: profilerFieldNames,
           profiledTableColumns: tableColumnNames,
+          // 099 T088 (FR-040/FR-091): attribute the billable `Connection Called`
+          // record emitted per OpenAI call to the operating tenant.
+          ...tenant,
         },
       );
 
-      if ((enrichResult.status === 'success' || enrichResult.status === 'partial') && enrichResult.metrics.length > 0) {
+      if (
+        (enrichResult.status === "success" ||
+          enrichResult.status === "partial") &&
+        enrichResult.metrics.length > 0
+      ) {
         const validMetrics = enrichResult.metrics;
 
         // Filter by user selection if provided (apply step with selected metrics)
@@ -365,7 +605,10 @@ export default async (req, res, cubejs) => {
           const columnSet = new Set(tableColumnNames);
           const mergedNames = new Set();
           for (const cube of cubeResult.cubes) {
-            for (const f of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+            for (const f of [
+              ...(cube.dimensions || []),
+              ...(cube.measures || []),
+            ]) {
               mergedNames.add(f.name);
             }
           }
@@ -374,13 +617,14 @@ export default async (req, res, cubejs) => {
           for (const prior of existingAIMetrics) {
             if (mergedNames.has(prior.name)) continue; // already present
             const srcCols = prior.source_columns || [];
-            const allExist = srcCols.length > 0 && srcCols.every((c) => columnSet.has(c));
+            const allExist =
+              srcCols.length > 0 && srcCols.every((c) => columnSet.has(c));
             if (allExist) {
               retainedMetrics.push({
                 name: prior.name,
                 sql: prior.sql,
                 type: prior.type,
-                fieldType: prior.fieldType || 'measure',
+                fieldType: prior.fieldType || "measure",
                 description: prior.description,
                 ai_generation_context: prior.ai_generation_context,
                 source_columns: prior.source_columns,
@@ -397,7 +641,9 @@ export default async (req, res, cubejs) => {
           status: enrichResult.status,
           model: enrichResult.model,
           metrics_count: validMetrics.length,
-          rejected_count: enrichResult.rejected ? enrichResult.rejected.length : 0,
+          rejected_count: enrichResult.rejected
+            ? enrichResult.rejected.length
+            : 0,
           error: null,
           // Full metric objects for the frontend to render as selectable items
           suggested_metrics: validMetrics.map((m) => ({
@@ -419,7 +665,10 @@ export default async (req, res, cubejs) => {
           const columnSet = new Set(tableColumnNames);
           const mergedNames = new Set();
           for (const cube of cubeResult.cubes) {
-            for (const f of [...(cube.dimensions || []), ...(cube.measures || [])]) {
+            for (const f of [
+              ...(cube.dimensions || []),
+              ...(cube.measures || []),
+            ]) {
               mergedNames.add(f.name);
             }
           }
@@ -428,13 +677,14 @@ export default async (req, res, cubejs) => {
           for (const prior of existingAIMetrics) {
             if (mergedNames.has(prior.name)) continue;
             const srcCols = prior.source_columns || [];
-            const allExist = srcCols.length > 0 && srcCols.every((c) => columnSet.has(c));
+            const allExist =
+              srcCols.length > 0 && srcCols.every((c) => columnSet.has(c));
             if (allExist) {
               retainedMetrics.push({
                 name: prior.name,
                 sql: prior.sql,
                 type: prior.type,
-                fieldType: prior.fieldType || 'measure',
+                fieldType: prior.fieldType || "measure",
                 description: prior.description,
                 ai_generation_context: prior.ai_generation_context,
                 source_columns: prior.source_columns,
@@ -448,7 +698,7 @@ export default async (req, res, cubejs) => {
         }
 
         aiEnrichment = {
-          status: enrichResult.status === 'success' ? 'success' : 'failed',
+          status: enrichResult.status === "success" ? "success" : "failed",
           model: enrichResult.model,
           metrics_count: 0,
           error: enrichResult.error,
@@ -459,7 +709,7 @@ export default async (req, res, cubejs) => {
     // ── Stage: LLM Model Advisory Passes (only on Apply, skip if LLM disabled) ──
     let advisorResult = null;
     if (!dryRun && !skipLlm) {
-      emitter.emit('advising', 'Running LLM advisory passes...', 0.65);
+      emitter.emit("advising", "Running LLM advisory passes...", 0.65);
       const generatedPreAdvise = useJsOutput
         ? generateJs(cubeResult.cubes)
         : generateYaml(cubeResult.cubes);
@@ -471,36 +721,53 @@ export default async (req, res, cubejs) => {
         columns: profiledTable.columnOrder
           ? profiledTable.columnOrder.map((name) => {
               const col = profiledTable.columns.get(name);
-              return { name, type: col?.rawType || col?.valueType || 'unknown', description: col?.description || '' };
+              return {
+                name,
+                type: col?.rawType || col?.valueType || "unknown",
+                description: col?.description || "",
+              };
             })
           : [],
       };
 
       try {
-        advisorResult = await adviseModel(generatedPreAdvise, profileSummaryForAdvisor, cubeResult.cubes);
+        // 099 T088 (FR-040/FR-091): tenant attribution for the per-pass billable
+        // `Connection Called` records emitted inside the advisory passes.
+        advisorResult = await adviseModel(
+          generatedPreAdvise,
+          profileSummaryForAdvisor,
+          cubeResult.cubes,
+          tenant,
+        );
 
-        if (advisorResult.status === 'success' && advisorResult.passes.length > 0) {
+        if (
+          advisorResult.status === "success" &&
+          advisorResult.passes.length > 0
+        ) {
           applyAdvisoryPasses(cubeResult.cubes, advisorResult.passes);
         }
       } catch (err) {
-        console.warn('[smartGenerate] Model advisory failed (non-fatal):', err.message);
-        advisorResult = { passes: [], status: 'failed', error: err.message };
+        console.warn(
+          "[smartGenerate] Model advisory failed (non-fatal):",
+          err.message,
+        );
+        advisorResult = { passes: [], status: "failed", error: err.message };
       }
     }
 
     // Strip excluded fields and clean up all cross-references
     if (excludedFields && excludedFields.size > 0) {
-      console.log('[smartGenerate] Excluding fields:', [...excludedFields]);
+      console.log("[smartGenerate] Excluding fields:", [...excludedFields]);
       for (const cube of cubeResult.cubes) {
         cube.dimensions = cube.dimensions.filter(
-          (d) => !excludedFields.has(`${cube.name}.${d.name}`)
+          (d) => !excludedFields.has(`${cube.name}.${d.name}`),
         );
         cube.measures = cube.measures.filter(
-          (m) => !excludedFields.has(`${cube.name}.${m.name}`)
+          (m) => !excludedFields.has(`${cube.name}.${m.name}`),
         );
         if (cube.segments) {
           cube.segments = cube.segments.filter(
-            (s) => !excludedFields.has(`${cube.name}.${s.name}`)
+            (s) => !excludedFields.has(`${cube.name}.${s.name}`),
           );
         }
 
@@ -512,27 +779,36 @@ export default async (req, res, cubejs) => {
         // Drill members: remove references to excluded dimensions
         for (const m of cube.measures) {
           if (m.drill_members) {
-            m.drill_members = m.drill_members.filter((d) => survivingDims.has(d));
+            m.drill_members = m.drill_members.filter((d) =>
+              survivingDims.has(d),
+            );
             if (m.drill_members.length === 0) delete m.drill_members;
           }
         }
 
         // Paired counts: remove if referenced dimension is gone
         cube.measures = cube.measures.filter((m) => {
-          if (m.meta?.filtered_count_for && !survivingDims.has(m.meta.filtered_count_for)) return false;
+          if (
+            m.meta?.filtered_count_for &&
+            !survivingDims.has(m.meta.filtered_count_for)
+          )
+            return false;
           return true;
         });
 
         // Pre-aggregations: filter to surviving measures/dimensions only
         if (cube.pre_aggregations) {
           for (const pa of cube.pre_aggregations) {
-            if (pa.measures) pa.measures = pa.measures.filter((m) => survivingMeasures.has(m));
-            if (pa.dimensions) pa.dimensions = pa.dimensions.filter((d) => survivingDims.has(d));
-            if (pa.time_dimension && !survivingDims.has(pa.time_dimension)) pa.time_dimension = null;
+            if (pa.measures)
+              pa.measures = pa.measures.filter((m) => survivingMeasures.has(m));
+            if (pa.dimensions)
+              pa.dimensions = pa.dimensions.filter((d) => survivingDims.has(d));
+            if (pa.time_dimension && !survivingDims.has(pa.time_dimension))
+              pa.time_dimension = null;
           }
           // Remove pre-aggs with no measures left
           cube.pre_aggregations = cube.pre_aggregations.filter(
-            (pa) => !pa.measures || pa.measures.length > 0
+            (pa) => !pa.measures || pa.measures.length > 0,
           );
         }
 
@@ -552,13 +828,14 @@ export default async (req, res, cubejs) => {
             const curlyRefs = sql.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
             for (const ref of curlyRefs) {
               const name = ref.slice(1, -1);
-              if (name === 'CUBE') continue;
+              if (name === "CUBE") continue;
               if (!currentAll.has(name)) return false;
             }
             // Check {CUBE}.field references
-            const cubeRefs = sql.match(/\{CUBE\}\.([a-zA-Z_][a-zA-Z0-9_]*)/g) || [];
+            const cubeRefs =
+              sql.match(/\{CUBE\}\.([a-zA-Z_][a-zA-Z0-9_]*)/g) || [];
             for (const ref of cubeRefs) {
-              const name = ref.replace('{CUBE}.', '');
+              const name = ref.replace("{CUBE}.", "");
               if (!currentAll.has(name)) return false;
             }
             return true;
@@ -566,7 +843,11 @@ export default async (req, res, cubejs) => {
 
           const prevMeasureCount = cube.measures.length;
           cube.measures = cube.measures.filter((m) => {
-            if (m.meta?.filtered_count_for && !currentDims.has(m.meta.filtered_count_for)) return false;
+            if (
+              m.meta?.filtered_count_for &&
+              !currentDims.has(m.meta.filtered_count_for)
+            )
+              return false;
             return sqlRefsValid(m.sql);
           });
           if (cube.measures.length !== prevMeasureCount) changed = true;
@@ -581,7 +862,9 @@ export default async (req, res, cubejs) => {
           for (const m of cube.measures) {
             if (m.drill_members) {
               const before = m.drill_members.length;
-              m.drill_members = m.drill_members.filter((d) => currentDims.has(d));
+              m.drill_members = m.drill_members.filter((d) =>
+                currentDims.has(d),
+              );
               if (m.drill_members.length === 0) delete m.drill_members;
               if (m.drill_members?.length !== before) changed = true;
             }
@@ -593,12 +876,15 @@ export default async (req, res, cubejs) => {
           const finalMeasures = new Set(cube.measures.map((m) => m.name));
           const finalDims = new Set(cube.dimensions.map((d) => d.name));
           for (const pa of cube.pre_aggregations) {
-            if (pa.measures) pa.measures = pa.measures.filter((m) => finalMeasures.has(m));
-            if (pa.dimensions) pa.dimensions = pa.dimensions.filter((d) => finalDims.has(d));
-            if (pa.time_dimension && !finalDims.has(pa.time_dimension)) pa.time_dimension = null;
+            if (pa.measures)
+              pa.measures = pa.measures.filter((m) => finalMeasures.has(m));
+            if (pa.dimensions)
+              pa.dimensions = pa.dimensions.filter((d) => finalDims.has(d));
+            if (pa.time_dimension && !finalDims.has(pa.time_dimension))
+              pa.time_dimension = null;
           }
           cube.pre_aggregations = cube.pre_aggregations.filter(
-            (pa) => !pa.measures || pa.measures.length > 0
+            (pa) => !pa.measures || pa.measures.length > 0,
           );
         }
       }
@@ -607,14 +893,17 @@ export default async (req, res, cubejs) => {
       // surviving dimensions/measures. This avoids ClickHouse processing
       // unnecessary nested columns in the LEFT ARRAY JOIN.
       for (const cube of cubeResult.cubes) {
-        if (!cube.sql || !cube.sql.includes('LEFT ARRAY JOIN')) continue;
-        // Collect all source_column values from surviving fields
+        if (!cube.sql || !cube.sql.includes("LEFT ARRAY JOIN")) continue;
+        // Collect all source columns from surviving fields. The builder keeps
+        // this on the transient `_sourceColumn` (meta.source_column is trimmed
+        // from the serialized model — spec 080 §4); it is present here because
+        // the AJ-SQL prune runs on the in-memory cubes before generateYaml.
         const usedSourceColumns = new Set();
         for (const d of cube.dimensions || []) {
-          if (d.meta?.source_column) usedSourceColumns.add(d.meta.source_column);
+          if (d._sourceColumn) usedSourceColumns.add(d._sourceColumn);
         }
         for (const m of cube.measures || []) {
-          if (m.meta?.source_column) usedSourceColumns.add(m.meta.source_column);
+          if (m._sourceColumn) usedSourceColumns.add(m._sourceColumn);
         }
         // Also keep filter columns referenced in the WHERE clause
         const nestedFilterMeta = cube.meta?.nested_filters;
@@ -627,10 +916,15 @@ export default async (req, res, cubejs) => {
         }
 
         // Parse and rebuild the ARRAY JOIN clause
-        const ajMatch = cube.sql.match(/([\s\S]*?)LEFT ARRAY JOIN\n([\s\S]*?)(\nWHERE[\s\S]*)?$/);
+        const ajMatch = cube.sql.match(
+          /([\s\S]*?)LEFT ARRAY JOIN\n([\s\S]*?)(\nWHERE[\s\S]*)?$/,
+        );
         if (!ajMatch) continue;
-        const [, selectPart, ajBody, wherePart = ''] = ajMatch;
-        const ajLines = ajBody.split(',\n').map((l) => l.trim()).filter(Boolean);
+        const [, selectPart, ajBody, wherePart = ""] = ajMatch;
+        const ajLines = ajBody
+          .split(",\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
         // Keep only lines whose source column is used
         const keptAjLines = ajLines.filter((line) => {
           // Extract dotted name from: `commerce.products.units` AS `commerce_products_units`
@@ -642,27 +936,38 @@ export default async (req, res, cubejs) => {
         // Rebuild SELECT: keep all base columns, drop alias names for pruned AJ columns
         const selectMatch = selectPart.match(/SELECT\n([\s\S]*?)\nFROM/);
         if (!selectMatch) continue;
-        const selectLines = selectMatch[1].split(',\n').map((l) => l.trim()).filter(Boolean);
+        const selectLines = selectMatch[1]
+          .split(",\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
         // Build the full set of alias names from the ORIGINAL ARRAY JOIN (before pruning)
-        const allAliasNames = new Set(ajLines.map((line) => {
-          const m = line.match(/AS\s+`([^`]+)`/);
-          return m ? m[1] : null;
-        }).filter(Boolean));
+        const allAliasNames = new Set(
+          ajLines
+            .map((line) => {
+              const m = line.match(/AS\s+`([^`]+)`/);
+              return m ? m[1] : null;
+            })
+            .filter(Boolean),
+        );
         // And the surviving subset
-        const keptAliasNames = new Set(keptAjLines.map((line) => {
-          const m = line.match(/AS\s+`([^`]+)`/);
-          return m ? m[1] : null;
-        }).filter(Boolean));
+        const keptAliasNames = new Set(
+          keptAjLines
+            .map((line) => {
+              const m = line.match(/AS\s+`([^`]+)`/);
+              return m ? m[1] : null;
+            })
+            .filter(Boolean),
+        );
         const keptSelectLines = selectLines.filter((line) => {
-          const clean = line.replace(/`/g, '').trim();
+          const clean = line.replace(/`/g, "").trim();
           // If it's a known alias name, only keep if it survived pruning
           if (allAliasNames.has(clean)) return keptAliasNames.has(clean);
           // Not an alias — it's a base column, always keep
           return true;
         });
         const fromMatch = selectPart.match(/\nFROM\s+(.+)/);
-        const fromClause = fromMatch ? fromMatch[1].trim() : '';
-        cube.sql = `SELECT\n${keptSelectLines.map((l) => `  ${l}`).join(',\n')}\nFROM ${fromClause}\nLEFT ARRAY JOIN\n${keptAjLines.map((l) => `  ${l}`).join(',\n')}${wherePart}`;
+        const fromClause = fromMatch ? fromMatch[1].trim() : "";
+        cube.sql = `SELECT\n${keptSelectLines.map((l) => `  ${l}`).join(",\n")}\nFROM ${fromClause}\nLEFT ARRAY JOIN\n${keptAjLines.map((l) => `  ${l}`).join(",\n")}${wherePart}`;
       }
 
       // Recompute summary after field exclusion
@@ -678,13 +983,17 @@ export default async (req, res, cubejs) => {
 
     // Generate model — YAML by default, JS when FILTER_PARAMS arrow callbacks
     // require it (YAML can't represent arrow functions).
-    emitter.emit('generating', `Generating ${useJsOutput ? 'JS' : 'YAML'} model...`, 0.7);
+    emitter.emit(
+      "generating",
+      `Generating ${useJsOutput ? "JS" : "YAML"} model...`,
+      0.7,
+    );
     const yamlContent = useJsOutput
       ? generateJs(cubeResult.cubes)
       : generateYaml(cubeResult.cubes);
 
     // Apply merge strategy
-    emitter.emit('merging', 'Applying merge strategy...', 0.78);
+    emitter.emit("merging", "Applying merge strategy...", 0.78);
 
     // Extract previous generation filters from existing model (if any).
     // parseCubeContent auto-detects YAML vs JS so this works for both formats.
@@ -710,15 +1019,25 @@ export default async (req, res, cubejs) => {
     // different (ARRAY JOIN flattens arrays into scalars). Merging with an
     // existing model that has FILTER_PARAMS on array columns will break.
     // Force replace to start clean.
-    const effectiveMergeStrategy = nestedFilters.length > 0 ? 'replace' : mergeStrategy;
-    if (existingCode && effectiveMergeStrategy !== 'replace') {
-      finalYaml = mergeModels(existingCode, yamlContent, effectiveMergeStrategy);
+    const effectiveMergeStrategy =
+      nestedFilters.length > 0 ? "replace" : mergeStrategy;
+    if (templateName) {
+      // 080 (FR-012): template-seeded regenerations merge with provenance
+      // classes — template-owned converges to the template, auto_generated
+      // refreshes from the probe, ai_generated/team-added members SURVIVE.
+      finalYaml = mergeTemplateModel(existingCode, yamlContent);
+    } else if (existingCode && effectiveMergeStrategy !== "replace") {
+      finalYaml = mergeModels(
+        existingCode,
+        yamlContent,
+        effectiveMergeStrategy,
+      );
     }
 
     // Fix FILTER_PARAMS references: after merge, old cube names may persist
     // in FILTER_PARAMS expressions from the previous model version.
     const actualCubeName = cubeResult.cubes[0]?.name;
-    if (actualCubeName && finalYaml.includes('FILTER_PARAMS.')) {
+    if (actualCubeName && finalYaml.includes("FILTER_PARAMS.")) {
       const fpPattern = /FILTER_PARAMS\.([a-zA-Z_][a-zA-Z0-9_]*)\./g;
       finalYaml = finalYaml.replace(fpPattern, (match, refCubeName) => {
         if (refCubeName !== actualCubeName) {
@@ -729,25 +1048,33 @@ export default async (req, res, cubejs) => {
     }
 
     // Validate generated model — syntax check + smoke-test query
-    emitter.emit('validating', 'Validating model...', 0.79);
+    emitter.emit("validating", "Validating model...", 0.79);
     const syntaxResult = await validateModelSyntax(finalYaml, fileName);
     if (!syntaxResult.valid) {
       return res.status(400).json({
-        code: 'smart_generate_validation_error',
-        message: `Generated model has compile errors: ${syntaxResult.errors.join('; ')}`,
+        code: "smart_generate_validation_error",
+        message: `Generated model has compile errors: ${syntaxResult.errors.join("; ")}`,
         errors: syntaxResult.errors,
       });
     }
 
-    const smokeResult = await smokeTestQuery(cubejs, securityContext, cubeResult.cubes);
+    const smokeResult = await smokeTestQuery(
+      cubejs,
+      securityContext,
+      cubeResult.cubes,
+    );
     const modelValidation = {
       syntax_valid: syntaxResult.valid,
-      query_test: smokeResult.success ? 'passed' : 'failed',
+      query_test: smokeResult.success ? "passed" : "failed",
       query_error: smokeResult.error,
     };
 
     // Compute change preview (pass structured cubes for new model — JS strings can't be YAML-parsed)
-    const changePreview = diffModels(existingCode, cubeResult.cubes, mergeStrategy);
+    const changePreview = diffModels(
+      existingCode,
+      cubeResult.cubes,
+      mergeStrategy,
+    );
 
     // Build required_fields: fields that must always be included (rewrite rules + nested filters).
     // These are fully-qualified "cube.field" names matching the change preview format.
@@ -762,10 +1089,12 @@ export default async (req, res, cubejs) => {
     // Nested filter columns are baked into the cube SQL WHERE — their dimensions must survive
     for (const nf of nestedFilters) {
       for (const f of nf.filters || []) {
-        const childName = f.column.includes('.') ? f.column.split('.').pop() : f.column;
+        const childName = f.column.includes(".")
+          ? f.column.split(".").pop()
+          : f.column;
         for (const cube of cubeResult.cubes) {
-          const dim = (cube.dimensions || []).find((d) =>
-            d.name.includes(childName) && d.meta?.source_group
+          const dim = (cube.dimensions || []).find(
+            (d) => d.name.includes(childName) && d.meta?.source_group,
           );
           if (dim) requiredFields.push(`${cube.name}.${dim.name}`);
         }
@@ -776,7 +1105,7 @@ export default async (req, res, cubejs) => {
     if (dryRun) {
       const { summary } = cubeResult;
       const payload = {
-        code: 'ok',
+        code: "ok",
         message: changePreview.summary,
         version_id: null,
         file_name: fileName,
@@ -789,11 +1118,17 @@ export default async (req, res, cubejs) => {
           cubes_count: summary.cubes_count,
         },
         ai_enrichment: aiEnrichment,
-        advisor: advisorResult ? {
-          status: advisorResult.status,
-          passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
-          error: advisorResult.error || null,
-        } : null,
+        advisor: advisorResult
+          ? {
+              status: advisorResult.status,
+              passes:
+                advisorResult.passes?.map((p) => ({
+                  pass: p.pass,
+                  fields: Object.keys(p.result || {}),
+                })) || [],
+              error: advisorResult.error || null,
+            }
+          : null,
         model_validation: modelValidation,
         previous_filters: previousFilters,
       };
@@ -806,7 +1141,7 @@ export default async (req, res, cubejs) => {
       files = existingSchemas.map((f) =>
         f.name === fileName
           ? { name: fileName, code: finalYaml }
-          : { name: f.name, code: f.code }
+          : { name: f.name, code: f.code },
       );
     } else {
       files = [
@@ -816,19 +1151,19 @@ export default async (req, res, cubejs) => {
     }
 
     // Compute checksum of ALL files
-    emitter.emit('versioning', 'Computing checksum...', 0.8);
+    emitter.emit("versioning", "Computing checksum...", 0.8);
     const commitChecksum = createMd5Hex(
-      files.reduce((acc, f) => acc + f.code, '')
+      files.reduce((acc, f) => acc + f.code, ""),
     );
 
     const existingChecksum = createMd5Hex(
-      existingSchemas.reduce((acc, f) => acc + f.code, '')
+      existingSchemas.reduce((acc, f) => acc + f.code, ""),
     );
 
     if (commitChecksum === existingChecksum) {
       const payload = {
-        code: 'ok',
-        message: 'No changes detected',
+        code: "ok",
+        message: "No changes detected",
         version_id: null,
         file_name: fileName,
         changed: false,
@@ -846,11 +1181,17 @@ export default async (req, res, cubejs) => {
           cubes_count: cubeResult.summary.cubes_count,
         },
         ai_enrichment: aiEnrichment,
-        advisor: advisorResult ? {
-          status: advisorResult.status,
-          passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
-          error: advisorResult.error || null,
-        } : null,
+        advisor: advisorResult
+          ? {
+              status: advisorResult.status,
+              passes:
+                advisorResult.passes?.map((p) => ({
+                  pass: p.pass,
+                  fields: Object.keys(p.result || {}),
+                })) || [],
+              error: advisorResult.error || null,
+            }
+          : null,
         model_validation: modelValidation,
         previous_filters: previousFilters,
       };
@@ -860,7 +1201,7 @@ export default async (req, res, cubejs) => {
     }
 
     // Create new version
-    emitter.emit('versioning', 'Creating new version...', 0.85);
+    emitter.emit("versioning", "Creating new version...", 0.85);
 
     const dataSourceId = securityContext.userScope?.dataSource?.dataSourceId;
     const preparedSchemas = files.map((file) => ({
@@ -870,12 +1211,37 @@ export default async (req, res, cubejs) => {
       datasource_id: dataSourceId,
     }));
 
+    // 099 T087 (FR-091): `tenant` attribution is hoisted to the top of the
+    // handler (shared with the T088 LLM call sites).
     const result = await createDataSchema({
       user_id: userId,
       branch_id: branchId,
       checksum: commitChecksum,
       dataschemas: {
         data: [...preparedSchemas],
+      },
+      // Persistence chokepoint emits `Model Saved` for the created version.
+      emit: tenant,
+    });
+
+    // 099 T087 (FR-091): smart generation produced + saved a model version.
+    // Fire-and-forget; never blocks the response (FR-007).
+    emitModelEvent({
+      event: "Model Generated",
+      ...tenant,
+      modelId: result?.id || null,
+      modelLabel: fileName,
+      status: "ok",
+      properties: {
+        file_name: fileName,
+        branch_id: branchId,
+        cubes_count: cubeResult.summary.cubes_count,
+        dimensions_count: cubeResult.summary.dimensions_count,
+        measures_count: cubeResult.summary.measures_count,
+        template_name: templateName,
+        skip_llm: skipLlm,
+        // 099 T088: the enrichment LLM used (null when skip_llm / no key).
+        llm_model: aiEnrichment.model,
       },
     });
 
@@ -898,18 +1264,24 @@ export default async (req, res, cubejs) => {
         .then(async () => {
           const apiGateway = cubejs.apiGateway?.();
           if (!apiGateway) return;
-          const ctx = await apiGateway.contextByReq(req, warmContext, warmRequestId);
+          const ctx = await apiGateway.contextByReq(
+            req,
+            warmContext,
+            warmRequestId,
+          );
           const compilerApi = await apiGateway.getCompilerApi(ctx);
           await compilerApi.metaConfig(ctx, { requestId: warmRequestId });
         })
         .catch((err) => {
-          console.warn(`[smartGenerate] cache pre-warm failed (non-fatal): ${err?.message || err}`);
+          console.warn(
+            `[smartGenerate] cache pre-warm failed (non-fatal): ${err?.message || err}`,
+          );
         });
     }
 
     const { summary } = cubeResult;
     const payload = {
-      code: 'ok',
+      code: "ok",
       message: `Smart generation complete: ${summary.dimensions_count} dimensions, ${summary.measures_count} measures, ${summary.cubes_count} cubes`,
       version_id: result?.id || null,
       file_name: fileName,
@@ -928,11 +1300,17 @@ export default async (req, res, cubejs) => {
         cubes_count: summary.cubes_count,
       },
       ai_enrichment: aiEnrichment,
-      advisor: advisorResult ? {
-        status: advisorResult.status,
-        passes: advisorResult.passes?.map((p) => ({ pass: p.pass, fields: Object.keys(p.result || {}) })) || [],
-        error: advisorResult.error || null,
-      } : null,
+      advisor: advisorResult
+        ? {
+            status: advisorResult.status,
+            passes:
+              advisorResult.passes?.map((p) => ({
+                pass: p.pass,
+                fields: Object.keys(p.result || {}),
+              })) || [],
+            error: advisorResult.error || null,
+          }
+        : null,
       previous_filters: previousFilters,
     };
 
@@ -945,7 +1323,7 @@ export default async (req, res, cubejs) => {
     }
 
     res.status(500).json({
-      code: 'smart_generate_error',
+      code: "smart_generate_error",
       message: err.message || err,
     });
   }

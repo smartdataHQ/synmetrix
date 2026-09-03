@@ -153,11 +153,11 @@ export default async (session, input, headers, deps = {}) => {
         for (;;) {
           const team = queue.shift();
           if (!team) return;
-          // unchanged team on a schedule tick: skip before any per-team probe
-          if (
+          const unchanged =
             changedPartitions !== null &&
-            !changedPartitions.has(team.settings?.partition)
-          ) {
+            !changedPartitions.has(team.settings?.partition);
+          // unchanged team on a schedule tick: skip before any per-team probe
+          if (unchanged) {
             await record({
               team_id: team.id,
               result: "skipped_no_change",
@@ -166,9 +166,12 @@ export default async (session, input, headers, deps = {}) => {
             continue;
           }
           try {
-            const teamOutcomes = await reconcileOneTeam(team, templates, config, {
-              dryRun,
-            });
+            const teamOutcomes = await reconcileOneTeam(
+              team,
+              templates,
+              config,
+              { dryRun }
+            );
             for (const outcome of teamOutcomes) {
               const row = { team_id: team.id, ...outcome };
               cohortOutcomes.push(row);

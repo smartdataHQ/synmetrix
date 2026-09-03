@@ -1,4 +1,5 @@
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
+import { emitModelEvent } from "../utils/eventEmitter.js";
 import { findUser } from "../utils/dataSourceHelpers.js";
 import { resolvePartitionTeamIds } from "./discover.js";
 import { requireOwnerOrAdmin } from "../utils/requireOwnerOrAdmin.js";
@@ -128,6 +129,19 @@ export default async function refreshCompiler(req, res, cubejs) {
       ts: new Date().toISOString(),
     })
   );
+
+  // 099 T087 (FR-091): compiler-cache refresh affects every caller on the
+  // branch — record it as a model lifecycle fact. Fire-and-forget (FR-007).
+  emitModelEvent({
+    event: "Schema Compiler Refreshed",
+    accountId: payload?.accountId ?? null,
+    partition: payload?.partition ?? null,
+    userId,
+    modelId: branchId,
+    status: "ok",
+    metrics: { record_count: evicted },
+    properties: { branch_id: branchId, schema_version: schemaVersion, evicted },
+  });
 
   return res.json({ evicted, schemaVersion });
 }

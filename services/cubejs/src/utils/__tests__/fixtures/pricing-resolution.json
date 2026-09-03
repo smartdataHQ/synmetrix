@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "name": "provider_amount",
+      "occurredAt": 1787961600000,
+      "usage": { "input_tokens": "1000" },
+      "qualifiers": { "model": "served-model" },
+      "providerBilling": { "amount": "1.25", "currency": "USD" },
+      "billing": null,
+      "expected": {
+        "amount": "1.25",
+        "currency": "USD",
+        "pricing": "actual",
+        "pricingSource": "provider_amount",
+        "priceCardId": null,
+        "componentCount": 0
+      }
+    },
+    {
+      "name": "provider_rate",
+      "occurredAt": 1787961600000,
+      "usage": { "input_tokens": "1500" },
+      "qualifiers": { "model": "served-model" },
+      "providerBilling": {
+        "currency": "USD",
+        "rates": [
+          {
+            "meter": "input_tokens",
+            "unitSize": 1000,
+            "amount": "0.002",
+            "qualifiers": { "model": "served-model" }
+          }
+        ]
+      },
+      "billing": null,
+      "expected": {
+        "amount": "0.003",
+        "currency": "USD",
+        "pricing": "actual",
+        "pricingSource": "provider_rate",
+        "priceCardId": null,
+        "componentCount": 1
+      }
+    },
+    {
+      "name": "connection_override",
+      "occurredAt": 1787961600000,
+      "usage": { "input_tokens": "2000" },
+      "qualifiers": { "model": "served-model" },
+      "providerBilling": null,
+      "billing": {
+        "connectionId": "connection-1",
+        "connectorId": "connector-1",
+        "provider": "openai",
+        "accountingCurrency": "USD",
+        "rateCards": [
+          {
+            "id": "connector-card",
+            "activeFrom": 0,
+            "pricing": {
+              "schemaVersion": 1,
+              "currency": "USD",
+              "billingMode": "metered",
+              "source": {
+                "kind": "provider_catalog",
+                "uri": "https://example.com/catalog",
+                "observedAt": "2026-08-29T00:00:00Z"
+              },
+              "rates": [
+                {
+                  "meter": "input_tokens",
+                  "unitSize": 1000,
+                  "amount": "10.00",
+                  "qualifiers": { "model": "served-model" }
+                }
+              ]
+            }
+          },
+          {
+            "id": "connection-card",
+            "connectionId": "connection-1",
+            "activeFrom": 0,
+            "pricing": {
+              "schemaVersion": 1,
+              "currency": "USD",
+              "billingMode": "metered",
+              "source": {
+                "kind": "provider_contract",
+                "uri": "https://example.com/contract",
+                "observedAt": "2026-08-29T00:00:00Z"
+              },
+              "rates": [
+                {
+                  "meter": "input_tokens",
+                  "unitSize": 1000,
+                  "amount": "4.00",
+                  "qualifiers": { "model": "served-model" }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "amount": "8.00",
+        "currency": "USD",
+        "pricing": "estimated",
+        "pricingSource": "connection_rate",
+        "priceCardId": "connection-card",
+        "componentCount": 1
+      }
+    },
+    {
+      "name": "connector_default",
+      "occurredAt": 1787961600000,
+      "usage": { "input_tokens": "2000" },
+      "qualifiers": { "model": "served-model" },
+      "providerBilling": null,
+      "billing": {
+        "connectionId": "connection-1",
+        "connectorId": "connector-1",
+        "provider": "openai",
+        "accountingCurrency": "USD",
+        "rateCards": [
+          {
+            "id": "connector-card",
+            "activeFrom": 0,
+            "pricing": {
+              "schemaVersion": 1,
+              "currency": "USD",
+              "billingMode": "metered",
+              "source": {
+                "kind": "provider_catalog",
+                "uri": "https://example.com/catalog",
+                "observedAt": "2026-08-29T00:00:00Z"
+              },
+              "rates": [
+                {
+                  "meter": "input_tokens",
+                  "unitSize": 1000,
+                  "amount": "10.00",
+                  "qualifiers": { "model": "served-model" }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "amount": "20.00",
+        "currency": "USD",
+        "pricing": "estimated",
+        "pricingSource": "connector_rate",
+        "priceCardId": "connector-card",
+        "componentCount": 1
+      }
+    },
+    {
+      "name": "legacy_runtime_rate",
+      "occurredAt": 1787961600000,
+      "usage": { "input_tokens": "2000" },
+      "qualifiers": { "model": "served-model" },
+      "providerBilling": null,
+      "billing": {
+        "connectionId": "connection-1",
+        "connectorId": "connector-1",
+        "provider": "openai",
+        "accountingCurrency": "USD",
+        "rateCards": []
+      },
+      "legacyRates": [
+        {
+          "meter": "input_tokens",
+          "unitSize": 1000,
+          "amount": "3.00",
+          "qualifiers": { "model": "served-model" }
+        }
+      ],
+      "legacyCurrency": "USD",
+      "legacyRateSource": "ai-service:LLM_PRICES@2026-08-29",
+      "expected": {
+        "amount": "6.00",
+        "currency": "USD",
+        "pricing": "estimated",
+        "pricingSource": "legacy_runtime_rate",
+        "legacyRateSource": "ai-service:LLM_PRICES@2026-08-29",
+        "priceCardId": null,
+        "componentCount": 1
+      }
+    },
+    {
+      "name": "no_cost",
+      "occurredAt": 1787961600000,
+      "usage": { "requests": "3" },
+      "qualifiers": { "operation": "source:list" },
+      "providerBilling": null,
+      "billing": {
+        "connectionId": "connection-1",
+        "connectorId": "connector-1",
+        "provider": "microsoft-graph",
+        "accountingCurrency": "USD",
+        "rateCards": [
+          {
+            "id": "no-cost-card",
+            "connectionId": "connection-1",
+            "activeFrom": 0,
+            "pricing": {
+              "schemaVersion": 1,
+              "currency": "USD",
+              "billingMode": "no_cost",
+              "source": {
+                "kind": "provider_contract",
+                "uri": "https://example.com/contract",
+                "observedAt": "2026-08-29T00:00:00Z"
+              },
+              "rates": []
+            }
+          }
+        ]
+      },
+      "expected": {
+        "amount": "0",
+        "currency": "USD",
+        "pricing": "no_cost",
+        "pricingSource": "zero_cost_contract",
+        "priceCardId": "no-cost-card",
+        "componentCount": 0
+      }
+    },
+    {
+      "name": "unknown",
+      "occurredAt": 1787961600000,
+      "usage": { "output_tokens": "500" },
+      "qualifiers": { "model": "unpriced-model" },
+      "providerBilling": null,
+      "billing": {
+        "connectionId": "connection-1",
+        "connectorId": "connector-1",
+        "provider": "openai",
+        "accountingCurrency": "USD",
+        "rateCards": []
+      },
+      "expected": {
+        "amount": "0",
+        "currency": "USD",
+        "pricing": "unknown",
+        "pricingSource": "none",
+        "priceCardId": null,
+        "componentCount": 0
+      }
+    }
+  ]
+}

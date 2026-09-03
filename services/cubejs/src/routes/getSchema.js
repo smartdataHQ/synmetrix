@@ -1,3 +1,6 @@
+import { removeLegacyEnrichmentSchema } from "../utils/legacyEnrichmentGuard.js";
+import tenantDriverFactory from "../utils/tenantDriverFactory.js";
+
 export const NO_SCHEMA_KEY = "no_schema";
 
 /**
@@ -16,8 +19,8 @@ export default async (req, res, cubejs) => {
   let driver;
 
   try {
-    driver = await cubejs.options.driverFactory({ securityContext });
-    const schema = await driver.tablesSchema();
+    driver = await tenantDriverFactory(cubejs)({ securityContext });
+    const schema = removeLegacyEnrichmentSchema(await driver.tablesSchema());
 
     if (schema?.[""]) {
       schema[NO_SCHEMA_KEY] = schema[""];
