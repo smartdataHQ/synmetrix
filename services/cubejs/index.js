@@ -86,7 +86,7 @@ const options = {
   scheduledRefreshContexts,
   externalDbType: "cubestore",
   externalDriverFactory,
-  cacheAndQueueDriver: "cubestore",
+  cacheAndQueueDriver: process.env.CUBEJS_CACHE_AND_QUEUE_DRIVER || "cubestore",
   logger: logging,
 
   // sql server
