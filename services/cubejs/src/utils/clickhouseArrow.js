@@ -12,6 +12,16 @@ function removeTrailingSemicolon(query) {
     : trimmed;
 }
 
+function getClickHouseClient(driver) {
+  if (driver?.client && typeof driver.client.exec === "function") {
+    return driver.client;
+  }
+  if (driver && typeof driver.exec === "function") {
+    return driver;
+  }
+  return null;
+}
+
 export function isForbiddenClickHouseArrowCompressionError(err) {
   const msg = String(err?.message || err);
   return (
@@ -23,25 +33,34 @@ export function isForbiddenClickHouseArrowCompressionError(err) {
 /**
  * Native ClickHouse ArrowStream. Prefer uncompressed IPC so the browser
  * apache-arrow decoder can read it. Readonly ClickHouse users cannot SET
- * that codec, even to the current value, so retry without the override.
+ * that codec, even to the current value, so skip or retry without it.
  */
 export async function execClickHouseArrowStream({ driver, sql, signal }) {
+  const client = getClickHouseClient(driver);
+  if (!client) {
+    throw new Error("ClickHouse driver has no exec client for ArrowStream");
+  }
+
   const query = `${removeTrailingSemicolon(sql)}\nFORMAT ArrowStream`;
   const baseSettings = { ...(driver.config?.clickhouseSettings || {}) };
+  const readonly = typeof driver.readOnly === "function" && driver.readOnly();
 
-  const run = (clickhouse_settings) => driver.client.exec({
+  const run = (clickhouse_settings) => client.exec({
     query,
     clickhouse_settings,
     abort_signal: signal
   });
 
-  try {
-    return await run({
-      ...baseSettings,
-      output_format_arrow_compression_method: "none"
-    });
-  } catch (err) {
-    if (!isForbiddenClickHouseArrowCompressionError(err)) throw err;
-    return await run(baseSettings);
+  if (!readonly) {
+    try {
+      return await run({
+        ...baseSettings,
+        output_format_arrow_compression_method: "none"
+      });
+    } catch (err) {
+      if (!isForbiddenClickHouseArrowCompressionError(err)) throw err;
+    }
   }
+
+  return await run(baseSettings);
 }

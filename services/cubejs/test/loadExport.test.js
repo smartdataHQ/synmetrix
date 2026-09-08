@@ -290,6 +290,48 @@ describe("maybeHandleLoadExport", () => {
     assert.deepEqual(res.binaryOutput, nativeArrowBuffer);
   });
 
+  it("falls back to semantic Arrow when the native ClickHouse client has no exec", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"]
+      }
+    });
+    const res = new MockResponse();
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      sqlQuery: {
+        sql: ["SELECT city FROM orders", []],
+        aliasNameToMember: {
+          "Orders.city": "Orders.city"
+        }
+      },
+      metaConfig: createMetaConfig({
+        dimensions: [{ name: "Orders.city", type: "string" }]
+      }),
+      nativePreAggs: {
+        preAggregationsTablesToTempTables: [],
+        values: []
+      },
+      streamRows: [{ "Orders.city": "Reykjavik" }],
+      driver: {
+        config: { clickhouseSettings: {} }
+      }
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      throw new Error("next should not be called");
+    }, cubejs);
+
+    assert.equal(
+      res.headers["Content-Type"],
+      "application/vnd.apache.arrow.stream"
+    );
+    assert.ok(res.binaryOutput.length > 0);
+  });
+
   it("streams Arrow through the semantic export path when native ClickHouse export is unavailable", async () => {
     const req = createRequest({
       format: "arrow",

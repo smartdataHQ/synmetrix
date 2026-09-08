@@ -480,17 +480,26 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       const driver = await cubejs.options.driverFactory({
         securityContext: plan.context.securityContext,
       });
-      res.set(ARROW_HEADERS);
-      setNativeArrowFieldMappingHeaders(res, plan);
-      await executeNativeClickHouseArrow(
-        res,
-        nativeQuery.query,
-        nativeQuery.values,
-        driver,
-        abortController.signal
-      );
-      res.end();
-      return true;
+      try {
+        res.set(ARROW_HEADERS);
+        setNativeArrowFieldMappingHeaders(res, plan);
+        await executeNativeClickHouseArrow(
+          res,
+          nativeQuery.query,
+          nativeQuery.values,
+          driver,
+          abortController.signal
+        );
+        res.end();
+        return true;
+      } catch (err) {
+        if (abortController.signal.aborted) return true;
+        if (res.writableEnded) throw err;
+        console.warn(
+          "Native ClickHouse Arrow failed; falling back to semantic stream:",
+          err?.message || err
+        );
+      }
     }
 
     if (!canSemanticStreamLoadExport(format, plan.capabilities)) {

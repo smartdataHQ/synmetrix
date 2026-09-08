@@ -56,4 +56,30 @@ describe("clickhouseArrow", () => {
       undefined
     );
   });
+
+  it("skips the compression SET when the driver is readonly", async () => {
+    const settingsByCall = [];
+    const driver = {
+      config: { clickhouseSettings: {} },
+      readOnly: () => true,
+      client: {
+        exec: async (opts) => {
+          settingsByCall.push(opts.clickhouse_settings);
+          return { ok: true, query: opts.query };
+        }
+      }
+    };
+
+    await execClickHouseArrowStream({
+      driver,
+      sql: "SELECT 1",
+      signal: undefined
+    });
+
+    assert.equal(settingsByCall.length, 1);
+    assert.equal(
+      settingsByCall[0].output_format_arrow_compression_method,
+      undefined
+    );
+  });
 });
