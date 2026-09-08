@@ -2,6 +2,7 @@ import crypto from "crypto";
 
 import { loadRules } from "../utils/queryRewrite.js";
 import { serializeRowsToArrow } from "../utils/arrowSerializer.js";
+import { execClickHouseArrowStream } from "../utils/clickhouseArrow.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import { writeRowsAsCSV, writeTextChunk } from "../utils/csvSerializer.js";
 import { buildJSONStat } from "../utils/jsonstatBuilder.js";
@@ -60,20 +61,6 @@ function addUniqueColumns(target, names) {
       target.push(name);
     }
   }
-}
-
-function removeTrailingSemicolon(query) {
-  const trimmed = String(query ?? "").trimEnd();
-  let lastNonSemiIdx = trimmed.length;
-  for (let i = lastNonSemiIdx; i > 0; i--) {
-    if (trimmed[i - 1] !== ";") {
-      lastNonSemiIdx = i;
-      break;
-    }
-  }
-  return lastNonSemiIdx !== trimmed.length
-    ? trimmed.slice(0, lastNonSemiIdx)
-    : trimmed;
 }
 
 function deriveExportColumnsFromRunSql(body, rows) {
@@ -213,20 +200,19 @@ export default async (req, res, cubejs) => {
     }
 
     if (format === "arrow" && isClickHouse(securityContext)) {
-      const clickhouseQuery = `${removeTrailingSemicolon(sql)}\nFORMAT ArrowStream`;
-      const result = await driver.client.exec({
-        query: clickhouseQuery,
-        clickhouse_settings: {
-          ...driver.config?.clickhouseSettings,
-          output_format_arrow_compression_method: "none",
-        },
-        abort_signal: abortController.signal,
+      const result = await execClickHouseArrowStream({
+        driver,
+        sql,
+        signal: abortController.signal
       });
 
       res.set(ARROW_HEADERS);
 
       try {
-        for await (const chunk of result.stream) {
+        const stream = typeof result.stream === "function"
+          ? result.stream()
+          : result.stream;
+        for await (const chunk of stream) {
           await writeBinaryChunk(res, chunk, abortController.signal);
         }
       } catch (streamErr) {

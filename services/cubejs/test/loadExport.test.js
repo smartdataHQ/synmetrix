@@ -226,6 +226,70 @@ describe("maybeHandleLoadExport", () => {
     assert.deepEqual(res.binaryOutput, nativeArrowBuffer);
   });
 
+  it("retries native Arrow without compression override when ClickHouse is readonly", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"]
+      }
+    });
+    const res = new MockResponse();
+    const settingsByCall = [];
+    const nativeArrowBuffer = Buffer.from("arrow-readonly-ok");
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      sqlQuery: {
+        sql: ["SELECT city FROM orders", []],
+        aliasNameToMember: {
+          "Orders.city": "Orders.city"
+        }
+      },
+      metaConfig: createMetaConfig({
+        dimensions: [{ name: "Orders.city", type: "string" }]
+      }),
+      nativePreAggs: {
+        preAggregationsTablesToTempTables: [],
+        values: []
+      },
+      driver: createClickHouseDriver({
+        execImpl: async (opts) => {
+          settingsByCall.push(opts.clickhouse_settings);
+          if (settingsByCall.length === 1) {
+            throw new Error(
+              "Cannot modify 'output_format_arrow_compression_method' setting in readonly mode."
+            );
+          }
+          return {
+            async *stream() {
+              yield nativeArrowBuffer;
+            }
+          };
+        }
+      })
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      throw new Error("next should not be called");
+    }, cubejs);
+
+    assert.equal(settingsByCall.length, 2);
+    assert.equal(
+      settingsByCall[0].output_format_arrow_compression_method,
+      "none"
+    );
+    assert.equal(
+      settingsByCall[1].output_format_arrow_compression_method,
+      undefined
+    );
+    assert.equal(
+      res.headers["Content-Type"],
+      "application/vnd.apache.arrow.stream"
+    );
+    assert.deepEqual(res.binaryOutput, nativeArrowBuffer);
+  });
+
   it("streams Arrow through the semantic export path when native ClickHouse export is unavailable", async () => {
     const req = createRequest({
       format: "arrow",
@@ -523,10 +587,10 @@ function createMockCube(options) {
   };
 }
 
-function createClickHouseDriver({ csvLines = [], arrowChunks = [] }) {
+function createClickHouseDriver({ csvLines = [], arrowChunks = [], execImpl } = {}) {
   return {
     config: {
-      clickhouseSettings: {},
+      clickhouseSettings: {}
     },
     client: {
       query: async () => ({
@@ -534,16 +598,19 @@ function createClickHouseDriver({ csvLines = [], arrowChunks = [] }) {
           for (const line of csvLines) {
             yield [{ text: line }];
           }
-        },
+        }
       }),
-      exec: async () => ({
-        async *stream() {
-          for (const chunk of arrowChunks) {
-            yield chunk;
+      exec: async (opts) => {
+        if (execImpl) return execImpl(opts);
+        return {
+          async *stream() {
+            for (const chunk of arrowChunks) {
+              yield chunk;
+            }
           }
-        },
-      }),
-    },
+        };
+      }
+    }
   };
 }
 

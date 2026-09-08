@@ -23,6 +23,7 @@ import {
   writeBinaryChunk,
   writeRowStreamAsArrow,
 } from "../utils/arrowSerializer.js";
+import { execClickHouseArrowStream } from "../utils/clickhouseArrow.js";
 
 const prepareAnnotation =
   typeof prepareAnnotationModule.prepareAnnotation === "function"
@@ -52,20 +53,6 @@ function getRequestId(req) {
 function isClickHouseContext(securityContext) {
   const dbType = securityContext?.userScope?.dataSource?.dbType;
   return typeof dbType === "string" && dbType.toLowerCase() === "clickhouse";
-}
-
-function removeTrailingSemicolon(query) {
-  const trimmed = String(query ?? "").trimEnd();
-  let lastNonSemiIdx = trimmed.length;
-  for (let i = lastNonSemiIdx; i > 0; i--) {
-    if (trimmed[i - 1] !== ";") {
-      lastNonSemiIdx = i;
-      break;
-    }
-  }
-  return lastNonSemiIdx !== trimmed.length
-    ? trimmed.slice(0, lastNonSemiIdx)
-    : trimmed;
 }
 
 function normalizeClickHouseCSVLine(line) {
@@ -426,13 +413,10 @@ async function executeNativeClickHouseCsv(
 }
 
 async function executeNativeClickHouseArrow(res, query, values, driver, signal) {
-  const result = await driver.client.exec({
-    query: `${removeTrailingSemicolon(sqlstring.format(query, values || []))}\nFORMAT ArrowStream`,
-    clickhouse_settings: {
-      ...driver.config?.clickhouseSettings,
-      output_format_arrow_compression_method: "none",
-    },
-    abort_signal: signal,
+  const result = await execClickHouseArrowStream({
+    driver,
+    sql: sqlstring.format(query, values || []),
+    signal
   });
 
   const stream = typeof result.stream === "function"
