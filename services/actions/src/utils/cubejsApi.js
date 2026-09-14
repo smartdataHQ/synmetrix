@@ -223,8 +223,9 @@ const cubejsApi = ({ dataSourceId, branchId, userId, authToken }) => {
       const normalizedQuery = normalizeQuery(playgroundState);
 
       const { query } = normalizedQuery;
-      const { renewQuery } = args;
-      query.renewQuery = renewQuery;
+      // Cube 1.7 removed renewQuery. must-revalidate is the old renewQuery:true.
+      query.cache = args.cache ?? "must-revalidate";
+      delete query.renewQuery;
 
       const options = {
         progressCallback: (obProgress) => {

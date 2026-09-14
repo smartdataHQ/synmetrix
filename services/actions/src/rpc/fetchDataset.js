@@ -19,7 +19,7 @@ export const fetchData = async (exploration, args, authToken) => {
 
   const {
     userId,
-    renewQuery = true,
+    cache = "must-revalidate",
     validateMeta = true,
     format = "json",
     limit,
@@ -54,7 +54,7 @@ export const fetchData = async (exploration, args, authToken) => {
   }
 
   const cubeData = await cubejs.query(updatedPlaygroundState, format, {
-    renewQuery,
+    cache
   });
 
   return {
