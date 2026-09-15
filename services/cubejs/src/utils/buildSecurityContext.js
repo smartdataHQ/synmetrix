@@ -50,7 +50,16 @@ const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) =>
 
   const files = dataModels.map((schema) => schema.id);
 
-  const schemaVersion = createMd5Hex(files);
+  const fileRevisions = dataModels
+    .map((schema) => [
+      schema.id,
+      schema.checksum ||
+        (typeof schema.code === "string"
+          ? createMd5Hex(`${schema.name || ""}-${schema.code}`)
+          : null),
+    ])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  const schemaVersion = createMd5Hex(fileRevisions);
   const preAggregationSchema = createMd5Hex(data.dataSourceId);
 
   return {
@@ -58,10 +67,50 @@ const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) =>
     dataSourceVersion,
     preAggregationSchema,
     schemaVersion,
+    schemaRevisionComplete: dataModels.every(
+      (schema) => Boolean(schema.checksum) || typeof schema.code === "string",
+    ),
     files,
+    fileChecksums: Object.fromEntries(fileRevisions),
     partition,
     internalTables,
   };
 };
 
 export default buildSecurityContext;
+
+export function buildAuthorityRevision(securityContext, rules) {
+  const { userId, userScope, tokenPayload } = securityContext || {};
+  const source = userScope?.dataSource;
+  if (
+    !userId ||
+    !source?.schemaRevisionComplete ||
+    !source.dataSourceId ||
+    !source.dataSourceVersion ||
+    !source.schemaVersion ||
+    !Array.isArray(rules)
+  )
+    return null;
+  return JSum.digest(
+    {
+      userId,
+      accountId: tokenPayload?.accountId || null,
+      partition: tokenPayload?.partition || null,
+      source: [
+        source.dataSourceId,
+        source.dataSourceVersion,
+        source.schemaVersion,
+      ],
+      role: userScope.role,
+      hasAccessList: userScope.hasAccessList,
+      access: userScope.dataSourceAccessList || null,
+      team: userScope.teamProperties,
+      member: userScope.memberProperties,
+      rules: rules
+        .slice()
+        .sort((left, right) => String(left.id).localeCompare(String(right.id))),
+    },
+    "SHA256",
+    "hex",
+  );
+}

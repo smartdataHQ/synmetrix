@@ -69,6 +69,30 @@ const hasAdminSecret = (req) => {
 };
 
 export default ({ basePath, cubejs }) => {
+  router.use(basePath, (req, res, next) => {
+    if (
+      !["/v1/load", "/v1/meta", "/v1/scope"].includes(
+        req.path.replace(/\/$/, ""),
+      )
+    ) {
+      return next();
+    }
+    const writeHead = res.writeHead;
+    res.writeHead = function (...args) {
+      const revision = req.securityContext?.authorityRevision;
+      const status = args[0] || this.statusCode;
+      if (revision && status >= 200 && status < 300) {
+        this.setHeader("x-synmetrix-authority-revision", revision);
+        this.setHeader("Cache-Control", "no-store");
+      }
+      return writeHead.apply(this, args);
+    };
+    next();
+  });
+  router.get(`${basePath}/v1/scope`, checkAuthMiddleware, (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ authorityRevision: req.securityContext.authorityRevision });
+  });
   router.get(`${basePath}/v1/load`, (req, res, next) =>
     maybeHandleLoadExport(req, res, next, cubejs)
   );
@@ -169,30 +193,24 @@ export default ({ basePath, cubejs }) => {
         }
 
         if (format === "arrow") {
-          // Load path buffers all rows in memory; apply safety limit to
-          // prevent OOM from the 4x memory amplification in Arrow serialization.
-          const ARROW_SAFETY_LIMIT = 100_000;
-          if (data.length > ARROW_SAFETY_LIMIT) {
-            console.warn(`Arrow /load response truncated: ${data.length} rows exceeded safety limit of ${ARROW_SAFETY_LIMIT}`);
-            data.length = ARROW_SAFETY_LIMIT;
-          }
           const columns = deriveExportColumnsFromLoad(
             getLoadRequestQuery(req),
             annotation,
             data
           );
+          const body = serializeRowsToArrow(data, { columns });
           res.set("Content-Type", "application/vnd.apache.arrow.stream");
           res.set("Content-Disposition", 'attachment; filename="query-result.arrow"');
-          originalSend(serializeRowsToArrow(data, { columns }));
+          originalSend(body);
           return;
         }
       } catch (err) {
         console.error("Format transform error:", err);
         if (res.headersSent) {
-          if (!res.writableEnded) res.end();
+          if (!res.writableEnded) res.destroy();
           return;
         }
-        res.status(500);
+        res.status(err.status || 500);
         sendJson({ error: "Failed to transform response to " + format });
       }
     };

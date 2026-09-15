@@ -92,6 +92,12 @@ export function rowsToArrowColumns(rows, options = {}) {
 
 export function serializeRowsToArrow(rows, options = {}) {
   const safeRows = rows ?? [];
+  if (safeRows.length > 100_000) {
+    throw Object.assign(
+      new RangeError("Buffered Arrow export exceeds 100000 rows. Use streaming or reduce the query."),
+      { status: 413 }
+    );
+  }
   const columns = options.columns
     ?? (safeRows.length > 0 ? Object.keys(safeRows[0]) : []);
   const table = tableFromArrays(rowsToArrowColumns(safeRows, { columns }));

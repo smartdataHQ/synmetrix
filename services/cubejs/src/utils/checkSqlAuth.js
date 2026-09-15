@@ -90,7 +90,7 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
       const payload = await verifyWorkOSToken(password);
       const userId = await provisionUserFromWorkOS(payload);
 
-      const userData = await findUser({ userId });
+      const userData = await findUser({ userId, includeModelCode: false });
 
       if (!userData.dataSources?.length || !userData.members?.length) {
         const error = new Error(`404: user "${userId}" not found`);
@@ -148,7 +148,7 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
       const payload = await verifyFraiOSToken(password);
       const userId = await provisionUserFromFraiOS(payload);
 
-      const userData = await findUser({ userId });
+      const userData = await findUser({ userId, includeModelCode: false });
 
       if (!userData.dataSources?.length || !userData.members?.length) {
         const error = new Error(`404: user "${userId}" not found`);

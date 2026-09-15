@@ -8,6 +8,7 @@ import { serializeProfile } from "../utils/smart-generation/profileSerializer.js
 import { ColumnType } from "../utils/smart-generation/typeParser.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 import { loadRules } from "../utils/queryRewrite.js";
+import { profileRuleFilters } from "../utils/profileRuleFilters.js";
 import { emitQueryEvent } from "../utils/eventEmitter.js";
 import { assertNoDirectLegacyEnrichmentObject } from "../utils/legacyEnrichmentGuard.js";
 import tenantDriverFactory from "../utils/tenantDriverFactory.js";
@@ -133,6 +134,17 @@ export default async (req, res, cubejs) => {
     });
   }
 
+  if (
+    (rawFilters !== undefined && !Array.isArray(rawFilters)) ||
+    (rawNestedFilters !== undefined && !Array.isArray(rawNestedFilters))
+  ) {
+    return res.status(400).json({
+      code: "profile_table_invalid_filters",
+      message:
+        "Profile filters must be arrays; invalid scope cannot be ignored.",
+    });
+  }
+
   let driver;
 
   try {
@@ -146,39 +158,11 @@ export default async (req, res, cubejs) => {
     // Apply query rewrite rules as additional filters.
     // Rules are defined by source table name and add mandatory row-level filters
     // (e.g. partition scoping) based on team/member properties.
-    const ruleFilters = [];
-    try {
-      const rules = await loadRules();
-      const { teamProperties, memberProperties } =
-        securityContext.userScope || {};
-      for (const rule of rules) {
-        if (rule.cube_name !== table) continue;
-        const source =
-          rule.property_source === "team" ? teamProperties : memberProperties;
-        const value = source?.[rule.property_key];
-        if (value === undefined || value === null) continue;
-        // Translate Cube.js operator to SQL — rules use 'equals', 'notEquals', 'contains', etc.
-        const sqlOp =
-          rule.operator === "equals"
-            ? "="
-            : rule.operator === "notEquals"
-              ? "!="
-              : rule.operator === "contains"
-                ? "LIKE"
-                : "=";
-        const sqlVal = sqlOp === "LIKE" ? `%${String(value)}%` : String(value);
-        ruleFilters.push({
-          column: rule.dimension,
-          operator: sqlOp,
-          value: sqlVal,
-        });
-      }
-    } catch (err) {
-      console.warn(
-        "[profileTable] Failed to load query rewrite rules (non-fatal):",
-        err.message,
-      );
-    }
+    const ruleFilters = profileRuleFilters(
+      await loadRules(),
+      table,
+      securityContext.userScope,
+    );
 
     // Merge rule filters with user-specified filters
     const allFilters = [...filters, ...ruleFilters];

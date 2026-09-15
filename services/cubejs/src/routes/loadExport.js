@@ -137,7 +137,7 @@ function getGatewayErrorStatus(err) {
 
 function sendGatewayError(res, err, statusOverride) {
   if (res.headersSent) {
-    if (!res.writableEnded) res.end();
+    if (!res.writableEnded) res.destroy();
     return;
   }
 
@@ -430,7 +430,10 @@ async function executeNativeClickHouseCsv(
   const resultSet = await driver.client.query({
     query: sqlstring.format(query, values || []),
     format: "CSVWithNames",
-    clickhouse_settings: driver.config?.clickhouseSettings,
+    clickhouse_settings: {
+      ...driver.config?.clickhouseSettings,
+      result_overflow_mode: "throw",
+    },
     abort_signal: signal,
   });
 
@@ -472,6 +475,7 @@ async function executeNativeClickHouseArrow(
     clickhouse_settings: {
       ...driver.config?.clickhouseSettings,
       output_format_arrow_compression_method: "none",
+      result_overflow_mode: "throw",
     },
     abort_signal: signal,
   });
@@ -679,7 +683,7 @@ export async function maybeHandleLoadExport(req, res, next, cubejs) {
     console.error("Semantic load export failed:", err);
 
     if (res.headersSent) {
-      if (!res.writableEnded) res.end();
+      if (!res.writableEnded) res.destroy();
       return;
     }
 
