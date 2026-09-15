@@ -842,9 +842,10 @@ export async function provisionUserFromWorkOS(workosPayload) {
   let inflight = inflightProvisions.get(sub);
   if (inflight) return inflight;
 
-  const provision = _provisionUserFromWorkOS(sub, partition);
+  const provision = _provisionUserFromWorkOS(sub, partition).finally(() =>
+    inflightProvisions.delete(sub),
+  );
   inflightProvisions.set(sub, provision);
-  provision.finally(() => inflightProvisions.delete(sub));
   return provision;
 }
 
@@ -1001,9 +1002,10 @@ export async function provisionUserFromFraiOS(fraiosPayload) {
   let inflight = inflightProvisions.get(externalId);
   if (inflight) return inflight;
 
-  const provision = _provisionUserFromFraiOS(externalId, email, partition, teamRole);
+  const provision = _provisionUserFromFraiOS(externalId, email, partition, teamRole).finally(() =>
+    inflightProvisions.delete(externalId),
+  );
   inflightProvisions.set(externalId, provision);
-  provision.finally(() => inflightProvisions.delete(externalId));
   return provision;
 }
 
