@@ -6,12 +6,37 @@ mock.module("../graphql.js", {
   namedExports: { fetchGraphQL: fetchGraphQLMock },
 });
 
-const { commitVersionFiles, rollbackVersion } = await import(
-  "../dataSourceHelpers.js"
-);
+const {
+  authorizeModelWrite,
+  commitVersionFiles,
+  invalidateUserCache,
+  rollbackVersion,
+} = await import("../dataSourceHelpers.js");
 
+const TEAM = "team-1";
 const DS = "ds-1";
 const BRANCH = "branch-1";
+
+function userQueryResult(teamRole) {
+  return {
+    data: {
+      members: [
+        {
+          id: "m-1",
+          team_id: TEAM,
+          team: {
+            name: "t",
+            settings: {},
+            datasources: [
+              { id: DS, team_id: TEAM, branches: [{ id: BRANCH, versions: [] }] },
+            ],
+          },
+          member_roles: [{ id: "r-1", team_role: teamRole }],
+        },
+      ],
+    },
+  };
+}
 
 describe("commitVersionFiles / rollbackVersion", () => {
   beforeEach(() => fetchGraphQLMock.mock.resetCalls());
@@ -77,5 +102,49 @@ describe("commitVersionFiles / rollbackVersion", () => {
     const insert = fetchGraphQLMock.mock.calls[1].arguments[1].object;
     assert.equal(insert.origin, "rollback");
     assert.equal(insert.source_version_id, "v-old");
+  });
+});
+
+describe("authorizeModelWrite", () => {
+  beforeEach(() => {
+    fetchGraphQLMock.mock.resetCalls();
+    invalidateUserCache(null);
+  });
+
+  const as = (role) =>
+    fetchGraphQLMock.mock.mockImplementation(async () => userQueryResult(role));
+
+  it("refuses a branch that is not on the request's datasource", async () => {
+    as("owner");
+    const res = await authorizeModelWrite({
+      userId: "u-1",
+      dataSourceId: DS,
+      branchId: "someone-elses-branch",
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it("refuses a plain member's write but allows the member's dry run", async () => {
+    as("member");
+    const write = await authorizeModelWrite({ userId: "u-1", dataSourceId: DS, branchId: BRANCH });
+    assert.equal(write.status, 403);
+    const dry = await authorizeModelWrite({
+      userId: "u-1",
+      dataSourceId: DS,
+      branchId: BRANCH,
+      dryRun: true,
+    });
+    assert.equal(dry, null);
+  });
+
+  it("allows owners and admins (the row-type pipeline identity is admin)", async () => {
+    for (const role of ["owner", "admin"]) {
+      invalidateUserCache(null);
+      as(role);
+      assert.equal(
+        await authorizeModelWrite({ userId: "u-1", dataSourceId: DS, branchId: BRANCH }),
+        null
+      );
+    }
   });
 });

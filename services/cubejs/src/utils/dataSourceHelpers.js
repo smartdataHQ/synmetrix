@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { fetchGraphQL } from "./graphql.js";
 import { fetchWorkOSUserProfile } from "./workosAuth.js";
 import { emitModelEvent } from "./eventEmitter.js";
+import { requireOwnerOrAdmin } from "./requireOwnerOrAdmin.js";
 
 // --- User scope cache: keyed by userId, 30s TTL ---
 const userCache = new Map();
@@ -284,6 +285,65 @@ export const findUser = async ({ userId }) => {
   const result = { dataSources, members };
   setUserCacheEntry(userId, result);
   return result;
+};
+
+/**
+ * Authorise a datasource-scoped model write (generate-models, smart-generate)
+ * onto the request body's `branchId`. Those routes write with the admin
+ * secret, so this is the only gate: the branch must belong to the request's
+ * datasource, and — unless `dryRun` — the caller must be owner/admin of the
+ * datasource's team (the row-type pipeline identity is provisioned as admin).
+ *
+ * Never throws.
+ *
+ * @returns {Promise<null | {status:number, code:string, message:string}>}
+ */
+export const authorizeModelWrite = async ({
+  userId,
+  dataSourceId,
+  branchId,
+  dryRun = false,
+}) => {
+  const lookup = (user) =>
+    user?.dataSources?.find(
+      (ds) =>
+        ds.id === dataSourceId &&
+        (ds.branches || []).some((b) => b.id === branchId)
+    );
+
+  let user;
+  let dataSource;
+  try {
+    user = await findUser({ userId });
+    dataSource = lookup(user);
+    if (!dataSource) {
+      // A branch created moments ago may not be in the cached scope yet.
+      invalidateUserCache(userId);
+      user = await findUser({ userId });
+      dataSource = lookup(user);
+    }
+  } catch (err) {
+    return {
+      status: 503,
+      code: "hasura_unavailable",
+      message: err?.message || "Hasura unavailable",
+    };
+  }
+  if (!dataSource) {
+    return {
+      status: 404,
+      code: "branch_not_found",
+      message: `Branch "${branchId}" not found on this datasource`,
+    };
+  }
+  if (!dryRun && !requireOwnerOrAdmin(user, dataSource.team_id)) {
+    return {
+      status: 403,
+      code: "owner_or_admin_required",
+      message: "Owner or admin role required to write models",
+    };
+  }
+  return null;
 };
 
 export const findSqlCredentials = async (username) => {
