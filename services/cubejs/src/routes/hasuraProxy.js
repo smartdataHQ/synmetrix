@@ -3,8 +3,7 @@ import { createProxyMiddleware } from "http-proxy-middleware";
 
 import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "../utils/workosAuth.js";
 import { provisionUserFromWorkOS, provisionUserFromFraiOS } from "../utils/dataSourceHelpers.js";
-import { mintHasuraToken } from "../utils/mintHasuraToken.js";
-import { mintedTokenCache } from "../utils/mintedTokenCache.js";
+import { hasuraTokenForUser } from "../utils/mintHasuraToken.js";
 
 // Shared auth path with checkAuth.js — no code duplication.
 // provisionUserFromWorkOS() manages workosSubCache + inflightProvisions internally.
@@ -85,17 +84,7 @@ export default function createHasuraProxy(config = {}) {
           userId = await provisionUserFromFraiOS(payload);
         }
 
-        // Check minted token cache
-        let hasuraToken = mintedTokenCache.get(userId);
-        if (!hasuraToken) {
-          hasuraToken = await mintHasuraToken(userId);
-          // Decode exp for cache storage
-          const parts = hasuraToken.split(".");
-          const decoded = JSON.parse(
-            Buffer.from(parts[1], "base64url").toString()
-          );
-          mintedTokenCache.set(userId, hasuraToken, decoded.exp);
-        }
+        const hasuraToken = await hasuraTokenForUser(userId);
 
         // Swap the Authorization header for Hasura
         req.headers.authorization = `Bearer ${hasuraToken}`;

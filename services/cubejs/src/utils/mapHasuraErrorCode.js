@@ -11,7 +11,7 @@ import { ErrorCode } from "./errorCodes.js";
  * "propagate as 503 hasura_unavailable" per R11.
  *
  * @param {Array<{extensions?:{code?:string}, message?:string}>|null|undefined} errors
- * @param {{action?: 'delete'|'rollback'|'validate'|'meta'|'diff'|'refresh'}} [ctx]
+ * @param {{action?: 'delete'|'update'|'rollback'|'validate'|'meta'|'diff'|'refresh'}} [ctx]
  * @returns {string|null}
  */
 export function mapHasuraErrorCode(errors, ctx = {}) {
@@ -24,6 +24,7 @@ export function mapHasuraErrorCode(errors, ctx = {}) {
 
   if (code === "permission-error" || code === "access-denied") {
     if (action === "delete") return ErrorCode.DELETE_BLOCKED_AUTHORIZATION;
+    if (action === "update") return ErrorCode.UPDATE_BLOCKED_AUTHORIZATION;
     if (action === "rollback") return ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION;
     return null;
   }

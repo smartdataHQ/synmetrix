@@ -1,6 +1,7 @@
 import { ScaffoldingTemplate } from "@cubejs-backend/schema-compiler";
 import yaml from "js-yaml";
 import {
+  authorizeBranchAccess,
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
@@ -106,17 +107,25 @@ export default async (req, res, cubejs) => {
     userId,
   };
 
+  const {
+    tables = [],
+    overwrite = false,
+    branchId,
+    format = "yaml",
+  } = req.body || {};
+
+  const denied = await authorizeBranchAccess({ userId, dataSourceId, branchId });
+  if (denied) {
+    return res
+      .status(denied.status)
+      .json({ code: denied.code, message: denied.message });
+  }
+
   let driver;
 
   try {
     driver = await tenantDriverFactory(cubejs)({ securityContext });
     let schema = removeLegacyEnrichmentSchema(await driver.tablesSchema());
-    const {
-      tables = [],
-      overwrite = false,
-      branchId,
-      format = "yaml",
-    } = req.body || {};
 
     const { tables: normalizedTables, schema: normalizedSchema } =
       normalizeTables(schema, tables);

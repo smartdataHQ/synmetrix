@@ -73,6 +73,8 @@ components:
         - rollback_blocked_authorization
         - rollback_invalid_request
         - rollback_source_columns_missing
+        - update_blocked_historical_version
+        - update_blocked_authorization
     ErrorResponse:
       type: object
       required: [code, message]
@@ -100,6 +102,7 @@ components:
             properties:
               cubeName: { type: string }
               file: { type: string }
+              kind: { type: string, enum: [cube, view] }
         removedCubes:
           type: array
           items:
@@ -108,6 +111,16 @@ components:
             properties:
               cubeName: { type: string }
               file: { type: string }
+              kind: { type: string, enum: [cube, view] }
+        modifiedFiles:
+          type: array
+          description: Every file in both versions whose code differs; `cubeNames` is empty when no semantic change was found (formatting/comments) or the file does not parse.
+          items:
+            type: object
+            required: [file, cubeNames]
+            properties:
+              file: { type: string }
+              cubeNames: { type: array, items: { type: string } }
         modifiedCubes:
           type: array
           items:
@@ -116,6 +129,11 @@ components:
             properties:
               cubeName: { type: string }
               file: { type: string }
+              kind: { type: string, enum: [cube, view] }
+              changedAttributes:
+                type: array
+                description: Changed cube-level keys (`sql_table`, `refresh_key`, …) and member paths (`dimensions.<name>.<attr>`; `joins.<name>` when added/removed).
+                items: { type: string }
               changes:
                 type: array
                 items:

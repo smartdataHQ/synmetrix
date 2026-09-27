@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { fetchGraphQL } from "./graphql.js";
 import { fetchWorkOSUserProfile } from "./workosAuth.js";
 import { emitModelEvent } from "./eventEmitter.js";
+import { requireOwnerOrAdmin } from "./requireOwnerOrAdmin.js";
 
 // --- User scope cache: keyed by userId, 30s TTL ---
 const userCache = new Map();
@@ -176,12 +177,18 @@ const branchSchemasQuery = `
   }
 `;
 
-const upsertVersionMutation = `
+// The one version insert: returns the new rows so callers can report the
+// ids of the files they just wrote.
+const insertVersionMutation = `
   mutation ($object: versions_insert_input!) {
-    insert_versions_one(
-      object: $object
-    ) {
+    insert_versions_one(object: $object) {
       id
+      dataschemas {
+        id
+        name
+        checksum
+        version_id
+      }
     }
   }
 `;
@@ -270,6 +277,66 @@ export const findUser = async ({ userId }) => {
   return result;
 };
 
+/**
+ * Authorise access to `branchId` on `dataSourceId`: the branch must belong to
+ * that datasource and the datasource must be visible to the caller (team
+ * membership, via findUser). Unless `readOnly`, the caller must also be
+ * owner/admin of the datasource's team (the row-type pipeline identity is
+ * provisioned as admin). Used by routes that read or write through the admin
+ * secret, where this is the only gate.
+ *
+ * Never throws.
+ *
+ * @returns {Promise<null | {status:number, code:string, message:string}>}
+ */
+export const authorizeBranchAccess = async ({
+  userId,
+  dataSourceId,
+  branchId,
+  readOnly = false,
+}) => {
+  const lookup = (user) =>
+    user?.dataSources?.find(
+      (ds) =>
+        ds.id === dataSourceId &&
+        (ds.branches || []).some((b) => b.id === branchId)
+    );
+
+  let user;
+  let dataSource;
+  try {
+    user = await findUser({ userId });
+    dataSource = lookup(user);
+    if (!dataSource) {
+      // A branch created moments ago may not be in the cached scope yet.
+      invalidateUserCache(userId);
+      user = await findUser({ userId });
+      dataSource = lookup(user);
+    }
+  } catch (err) {
+    return {
+      status: 503,
+      code: "hasura_unavailable",
+      message: err?.message || "Hasura unavailable",
+    };
+  }
+  if (!dataSource) {
+    return {
+      status: 404,
+      code: "branch_not_found",
+      message: `Branch "${branchId}" not found on this datasource`,
+    };
+  }
+  if (!readOnly && !requireOwnerOrAdmin(user, dataSource.team_id)) {
+    return {
+      status: 403,
+      code: "owner_or_admin_required",
+      message: "Owner or admin role required to write models",
+    };
+  }
+  return null;
+};
+
 export const findSqlCredentials = async (username) => {
   const res = await fetchGraphQL(sqlCredentialsQuery, { username });
   const sqlCredentials = res?.data?.sql_credentials?.[0];
@@ -284,38 +351,37 @@ export const getDataSources = async () => {
   return res;
 };
 
-export const createDataSchema = async (object) => {
-  // `emit` (optional) carries tenant attribution for the 099 T087 `Model Saved`
-  // lifecycle event — destructured OUT here alongside `authToken` so it never
-  // reaches the `versions_insert_input` mutation variable (unknown column).
-  const { authToken, emit, ...version } = object;
-
-  let res = await fetchGraphQL(
-    upsertVersionMutation,
-    { object: version },
-    authToken
-  );
-  res = res?.data?.insert_versions_one;
-
-  // 099 T087 (FR-091): this is THE server-side persistence chokepoint for a
-  // model version. Emit `Model Saved` (persistence fact) when a caller supplied
-  // tenant attribution and a version was actually created. Fire-and-forget;
-  // never throws / never blocks (FR-007). The pure editor save (raw GraphQL
-  // straight to Hasura) does not pass through here — it is covered by a Hasura
-  // event trigger (T087, tables.yaml), a separate mechanism.
-  if (emit && res?.id) {
-    emitModelEvent({
-      event: "Model Saved",
-      accountId: emit.accountId ?? null,
-      partition: emit.partition ?? null,
-      userId: emit.userId ?? null,
-      modelId: res.id,
-      status: "ok",
-      properties: { branch_id: version.branch_id ?? null, origin: version.origin ?? "save" },
-    });
+/**
+ * Legacy `versions_insert_input`-shaped entry point (generate-models,
+ * smart-generate, reconcile-team) over {@link commitVersionFiles}. Keeps its
+ * contract: throws (status 503) on Hasura errors, returns `{id}`.
+ */
+export const createDataSchema = async ({
+  authToken,
+  emit,
+  branch_id,
+  user_id,
+  checksum,
+  origin,
+  dataschemas,
+}) => {
+  const files = dataschemas?.data || [];
+  const res = await commitVersionFiles({
+    branchId: branch_id,
+    userId: user_id,
+    datasourceId: files[0]?.datasource_id,
+    files,
+    origin,
+    checksum,
+    authToken,
+    emit,
+  });
+  if (res.errors) {
+    const error = new Error(JSON.stringify(res.errors));
+    error.status = 503;
+    throw error;
   }
-
-  return res;
+  return { id: res.newVersionId };
 };
 
 export const findDataSchemas = async ({ branchId, authToken }) => {
@@ -363,29 +429,38 @@ export const findVersionBranch = async ({ versionId }) => {
 };
 
 /**
- * Insert a new version on `branchId` whose dataschemas are byte-identical
- * clones of `toVersionId`'s dataschemas. FR-013 / FR-013a:
- *  - only dataschemas are cloned (no explorations/alerts/alerts),
- *  - the new row uses `origin: 'rollback'`,
- *  - the caller's minted Hasura token is used so owner/admin permission
- *    policies are enforced at the database layer.
+ * THE server-side write of a model version: insert a new version on
+ * `branchId` holding exactly `files` (`[{name, code}]`). Every model change
+ * goes through a new version so the previous one stays restorable;
+ * `versions_flip_is_current_trg` makes the new row current.
  *
- * Returns `{newVersionId, clonedDataschemaCount}` on success,
- * `{errors}` on any Hasura permission/constraint failure so the caller can
- * map the extensions.code via mapHasuraErrorCode().
+ * `authToken` (a caller's minted Hasura token) makes the user-role
+ * permission policies apply at the database layer too; without it the admin
+ * secret is used. `origin` defaults to the column default ('user');
+ * `checksum` defaults to an md5 over the sorted files. On success the
+ * caller's cached user scope is dropped so its next request resolves the new
+ * version, and — when `emit` carries tenant attribution — `Model Saved` is
+ * emitted.
+ *
+ * Returns `{newVersionId, dataschemas}` on success, `{errors}` on any Hasura
+ * permission/constraint failure so the caller can map the extensions.code via
+ * mapHasuraErrorCode().
  */
-export const rollbackVersion = async ({
+export const commitVersionFiles = async ({
   branchId,
-  toVersionId,
   userId,
   datasourceId,
+  files,
+  origin,
+  checksum,
+  sourceVersionId = null,
   authToken,
+  emit,
 }) => {
-  const originals = await findVersionDataschemas({ versionId: toVersionId });
   // The `set_public_dataschemas_checksum` BEFORE-INSERT trigger computes
   // dataschema-level checksums; we do NOT set one here or Hasura's insert
   // permission rejects the extra column.
-  const clonedData = originals.map((row) => ({
+  const data = files.map((row) => ({
     name: row.name,
     code: row.code,
     user_id: userId,
@@ -394,24 +469,26 @@ export const rollbackVersion = async ({
 
   // Version-level checksum: md5 over the concatenated dataschema codes in
   // a stable order. Matches the `version.checksum` NOT NULL constraint.
-  const versionChecksum = md5OfCode(
-    originals
-      .map((r) => r.name)
-      .sort()
-      .map((n) => `${n}:${originals.find((x) => x.name === n)?.code || ""}`)
-      .join("\n")
-  );
+  const versionChecksum =
+    checksum ||
+    md5OfCode(
+      [...files]
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+        .map((r) => `${r.name}:${r.code || ""}`)
+        .join("\n")
+    );
 
   const object = {
     branch_id: branchId,
     user_id: userId,
-    origin: "rollback",
     checksum: versionChecksum,
-    dataschemas: { data: clonedData },
+    dataschemas: { data },
   };
+  if (origin) object.origin = origin;
+  if (sourceVersionId) object.source_version_id = sourceVersionId;
 
   const res = await fetchGraphQL(
-    upsertVersionMutation,
+    insertVersionMutation,
     { object },
     authToken,
     { preserveErrors: true }
@@ -421,8 +498,8 @@ export const rollbackVersion = async ({
     return { errors: res.errors };
   }
 
-  const newVersionId = res?.data?.insert_versions_one?.id;
-  if (!newVersionId) {
+  const row = res?.data?.insert_versions_one;
+  if (!row?.id) {
     return {
       errors: [
         { message: "insert_versions_one returned no id", extensions: {} },
@@ -430,7 +507,59 @@ export const rollbackVersion = async ({
     };
   }
 
-  return { newVersionId, clonedDataschemaCount: clonedData.length };
+  invalidateUserCache(userId);
+
+  // 099 T087 (FR-091): `Model Saved` persistence fact. Fire-and-forget;
+  // never throws / never blocks (FR-007). The pure editor save (raw GraphQL
+  // straight to Hasura) does not pass through here — it is covered by a Hasura
+  // event trigger (T087, tables.yaml), a separate mechanism.
+  if (emit) {
+    emitModelEvent({
+      event: "Model Saved",
+      accountId: emit.accountId ?? null,
+      partition: emit.partition ?? null,
+      userId: emit.userId ?? null,
+      modelId: row.id,
+      status: "ok",
+      properties: { branch_id: branchId ?? null, origin: origin ?? "save" },
+    });
+  }
+
+  return { newVersionId: row.id, dataschemas: row.dataschemas || [] };
+};
+
+/**
+ * Insert a new version on `branchId` whose dataschemas are byte-identical
+ * clones of `toVersionId`'s dataschemas. FR-013 / FR-013a:
+ *  - only dataschemas are cloned (no explorations/alerts/alerts),
+ *  - the new row uses `origin: 'rollback'` and records
+ *    `source_version_id = toVersionId`.
+ *
+ * Returns `{newVersionId, clonedDataschemaCount}` on success,
+ * `{errors}` on any Hasura permission/constraint failure.
+ */
+export const rollbackVersion = async ({
+  branchId,
+  toVersionId,
+  userId,
+  datasourceId,
+  authToken,
+}) => {
+  const originals = await findVersionDataschemas({ versionId: toVersionId });
+  const res = await commitVersionFiles({
+    branchId,
+    userId,
+    datasourceId,
+    files: originals,
+    origin: "rollback",
+    sourceVersionId: toVersionId,
+    authToken,
+  });
+  if (res.errors) return res;
+  return {
+    newVersionId: res.newVersionId,
+    clonedDataschemaCount: originals.length,
+  };
 };
 
 function md5OfCode(code) {

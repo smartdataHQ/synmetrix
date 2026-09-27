@@ -1,108 +1,131 @@
 import YAML from "yaml";
 
-import {
-  parseCubesFromJs,
-  diffModels,
-} from "./smart-generation/diffModels.js";
+import { parseCubesFromJs } from "./smart-generation/diffModels.js";
 
-function parseCubes(name, code) {
+/**
+ * Parse a dataschema file into its cubes and views:
+ * `[{kind: 'cube'|'view', name, def}]`, or `null` when unparseable.
+ */
+function parseModels(name, code) {
   if (!code) return [];
   const isYaml = name?.endsWith(".yml") || name?.endsWith(".yaml");
   try {
+    let cubes;
+    let views;
     if (isYaml) {
       const parsed = YAML.parse(code);
-      return Array.isArray(parsed?.cubes) ? parsed.cubes : [];
+      cubes = Array.isArray(parsed?.cubes) ? parsed.cubes : [];
+      views = Array.isArray(parsed?.views) ? parsed.views : [];
+    } else {
+      views = [];
+      cubes = parseCubesFromJs(code, views);
+      if (!cubes && !views.length) return null; // unparseable (or empty) JS
+      cubes = cubes || [];
     }
-    const cubes = parseCubesFromJs(code);
-    return Array.isArray(cubes) ? cubes : [];
+    return [
+      ...cubes.map((def) => ({ kind: "cube", name: def?.name, def })),
+      ...views.map((def) => ({ kind: "view", name: def?.name, def })),
+    ].filter((m) => typeof m.name === "string");
   } catch {
-    return [];
+    return null;
   }
 }
 
+// Order-insensitive for object keys (YAML key order is not semantic);
+// functions (JS models) compare by source.
+function canon(v) {
+  if (typeof v === "function") return v.toString();
+  if (Array.isArray(v)) return v.map(canon);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(
+      Object.keys(v)
+        .sort()
+        .map((k) => [k, canon(v[k])])
+    );
+  }
+  return v;
+}
+const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+
+const isNamedList = (v) =>
+  Array.isArray(v) &&
+  v.every((x) => x && typeof x === "object" && typeof x.name === "string");
+
+const byName = (list) => new Map((list || []).map((x) => [x.name, x]));
+
+// Member lists reported through the contract's `changes[]` entries.
+const CHANGE_FIELDS = new Set(["dimensions", "measures", "segments"]);
+
 /**
- * Group a flat `diffModels` result into per-cube `CubeChange` records.
+ * Compare two definitions of the same cube/view. Named lists (dimensions,
+ * measures, segments, joins, pre_aggregations, hierarchies, …) are diffed
+ * member by member; every other key (sql, sql_table, refresh_key, extends,
+ * title, description, meta, public, a view's `cubes`, …) is compared whole.
  *
- * `diffModels` returns `{fields_added, fields_updated, fields_removed}` arrays
- * where every entry carries the `cube` attribute identifying which cube it
- * belongs to. This helper re-indexes those flat arrays into the per-cube
- * shape required by contracts/version-diff.yaml (`CubeChange.changes[]`).
- *
- * @param {string} fileName
- * @param {string} fromCode
- * @param {string} toCode
- * @returns {Array<{cubeName:string, file:string, changes:Array<object>}>}
+ * @returns {{changes: Array<object>, changedAttributes: string[]}}
+ *   `changedAttributes` holds cube-level keys (`sql_table`) and member-level
+ *   paths (`dimensions.<name>.<attr>`; `measures.<name>` when added/removed).
  */
-function diffFilePair(fileName, fromCode, toCode) {
-  const flat = diffModels(fromCode || "", toCode || "", "replace");
-  const byCube = new Map();
+function diffDefinitions(from, to) {
+  const changes = [];
+  const changedAttributes = [];
+  const keys = [...new Set([...Object.keys(from), ...Object.keys(to)])];
 
-  const ensure = (cubeName) => {
-    if (!byCube.has(cubeName)) {
-      byCube.set(cubeName, new Map());
+  for (const key of keys) {
+    if (key === "name") continue;
+    const a = from[key];
+    const b = to[key];
+    const memberWise =
+      (a === undefined || isNamedList(a)) &&
+      (b === undefined || isNamedList(b));
+    if (!memberWise) {
+      if (!same(a, b)) changedAttributes.push(key);
+      continue;
     }
-    return byCube.get(cubeName);
-  };
 
-  const bucket = (cubeName, memberType) => {
-    const cube = ensure(cubeName);
-    if (!cube.has(memberType)) {
-      cube.set(memberType, { added: [], removed: [], modified: [] });
+    const fromMembers = byName(a);
+    const toMembers = byName(b);
+    const change = { field: key, added: [], removed: [], modified: [] };
+    for (const [member, def] of toMembers) {
+      const old = fromMembers.get(member);
+      if (!old) {
+        change.added.push(member);
+        changedAttributes.push(`${key}.${member}`);
+        continue;
+      }
+      const attrs = [...new Set([...Object.keys(old), ...Object.keys(def)])];
+      const changed = attrs.filter((x) => x !== "name" && !same(old[x], def[x]));
+      if (changed.length) change.modified.push(member);
+      for (const attr of changed) {
+        changedAttributes.push(`${key}.${member}.${attr}`);
+      }
     }
-    return cube.get(memberType);
-  };
+    for (const member of fromMembers.keys()) {
+      if (!toMembers.has(member)) {
+        change.removed.push(member);
+        changedAttributes.push(`${key}.${member}`);
+      }
+    }
+    const hasAny =
+      change.added.length || change.removed.length || change.modified.length;
+    if (hasAny && CHANGE_FIELDS.has(key)) changes.push(change);
+  }
 
-  for (const entry of flat.fields_added || []) {
-    if (!entry?.cube) continue;
-    const b = bucket(entry.cube, entry.member_type || "meta");
-    b.added.push(entry.name);
-  }
-  for (const entry of flat.fields_removed || []) {
-    if (!entry?.cube) continue;
-    const b = bucket(entry.cube, entry.member_type || "meta");
-    b.removed.push(entry.name);
-  }
-  for (const entry of flat.fields_updated || []) {
-    if (!entry?.cube) continue;
-    const b = bucket(entry.cube, entry.member_type || "meta");
-    b.modified.push(entry.name);
-  }
-
-  const cubes = [];
-  for (const [cubeName, members] of byCube) {
-    const changes = [];
-    for (const [memberType, diff] of members) {
-      const hasAny =
-        diff.added.length || diff.removed.length || diff.modified.length;
-      if (!hasAny) continue;
-      changes.push({
-        field: memberType === "measure"
-          ? "measures"
-          : memberType === "dimension"
-          ? "dimensions"
-          : memberType === "segment"
-          ? "segments"
-          : "meta",
-        added: diff.added,
-        removed: diff.removed,
-        modified: diff.modified,
-      });
-    }
-    if (changes.length > 0) {
-      cubes.push({ cubeName, file: fileName, changes });
-    }
-  }
-  return cubes;
+  return { changes, changedAttributes };
 }
 
 /**
  * Diff two versions (identified by their dataschema arrays) into the
  * `{addedCubes, removedCubes, modifiedCubes}` shape demanded by FR-011
- * and contracts/version-diff.yaml.
+ * and contracts/version-diff.yaml. Views are reported like cubes, with
+ * `kind: 'view'`.
  *
- * Matching is by dataschema `name` (the file name) — a cube is "added" when
- * its file is absent from `fromDataschemas` and "removed" when its file is
- * absent from `toDataschemas`. Byte-identical files are skipped.
+ * Files match by dataschema `name`; cubes/views match by name within a
+ * file. A cube is "added"/"removed" when it appears on one side only.
+ * `modifiedCubes[].changedAttributes` lists every changed cube-level key
+ * and member attribute. `modifiedFiles` lists EVERY file present in both
+ * versions whose code differs — `cubeNames` is empty when no semantic
+ * change was found (formatting/comments) or the file does not parse.
  *
  * @param {object} args
  * @param {Array<{id?:string, name:string, code:string, checksum?:string}>} args.fromDataschemas
@@ -121,11 +144,13 @@ export function diffVersions({ fromDataschemas, toDataschemas }) {
   const addedCubes = [];
   const removedCubes = [];
   const modifiedCubes = [];
+  const modifiedFiles = [];
+  const entry = (m, file) => ({ cubeName: m.name, file, kind: m.kind });
 
   for (const [file, toRow] of toByFile) {
     if (!fromByFile.has(file)) {
-      for (const cube of parseCubes(file, toRow.code)) {
-        addedCubes.push({ cubeName: cube.name, file });
+      for (const m of parseModels(file, toRow.code) || []) {
+        addedCubes.push(entry(m, file));
       }
       continue;
     }
@@ -139,17 +164,43 @@ export function diffVersions({ fromDataschemas, toDataschemas }) {
     }
     if (fromRow.code === toRow.code) continue;
 
-    const perCube = diffFilePair(file, fromRow.code, toRow.code);
-    for (const cube of perCube) modifiedCubes.push(cube);
+    const cubeNames = [];
+    const fromModels = parseModels(file, fromRow.code);
+    const toModels = parseModels(file, toRow.code);
+    if (fromModels && toModels) {
+      const key = (m) => `${m.kind}:${m.name}`;
+      const fromMap = new Map(fromModels.map((m) => [key(m), m]));
+      const toMap = new Map(toModels.map((m) => [key(m), m]));
+      for (const [k, m] of toMap) {
+        const old = fromMap.get(k);
+        if (!old) {
+          addedCubes.push(entry(m, file));
+          cubeNames.push(m.name);
+          continue;
+        }
+        const diff = diffDefinitions(old.def || {}, m.def || {});
+        if (diff.changedAttributes.length) {
+          modifiedCubes.push({ ...entry(m, file), ...diff });
+          cubeNames.push(m.name);
+        }
+      }
+      for (const [k, m] of fromMap) {
+        if (!toMap.has(k)) {
+          removedCubes.push(entry(m, file));
+          cubeNames.push(m.name);
+        }
+      }
+    }
+    modifiedFiles.push({ file, cubeNames });
   }
 
   for (const [file, fromRow] of fromByFile) {
     if (!toByFile.has(file)) {
-      for (const cube of parseCubes(file, fromRow.code)) {
-        removedCubes.push({ cubeName: cube.name, file });
+      for (const m of parseModels(file, fromRow.code) || []) {
+        removedCubes.push(entry(m, file));
       }
     }
   }
 
-  return { addedCubes, removedCubes, modifiedCubes };
+  return { addedCubes, removedCubes, modifiedCubes, modifiedFiles };
 }

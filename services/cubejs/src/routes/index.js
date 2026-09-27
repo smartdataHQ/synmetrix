@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import express from "express";
 
 // Model Management API (feature 011-model-mgmt-api) adds six routes registered
@@ -5,6 +6,7 @@ import express from "express";
 //   POST   /api/v1/validate-in-branch         (direct-verify, US1)
 //   POST   /api/v1/internal/refresh-compiler  (direct-verify, US2)
 //   DELETE /api/v1/dataschema/:dataschemaId   (direct-verify, US3)
+//   PUT    /api/v1/dataschema/:dataschemaId   (direct-verify, save one file)
 //   GET    /api/v1/meta/cube/:cubeName        (checkAuthMiddleware, US4)
 //   POST   /api/v1/version/diff               (direct-verify, US5)
 //   POST   /api/v1/version/rollback           (direct-verify, US5)
@@ -42,6 +44,7 @@ import discover from "./discover.js";
 import metaAll from "./metaAll.js";
 import testConnection from "./testConnection.js";
 import deleteDataschema from "./deleteDataschema.js";
+import updateDataschema from "./updateDataschema.js";
 import metaSingleCube from "./metaSingleCube.js";
 import refreshCompiler from "./refreshCompiler.js";
 import reconcileTeam from "./reconcileTeam.js";
@@ -53,6 +56,17 @@ import versionRollback from "./versionRollback.js";
 import version from "./version.js";
 
 const router = express.Router();
+
+// Service-to-service shared secret for /internal/invalidate-cache. Refuses
+// everything when HASURA_GRAPHQL_ADMIN_SECRET is unset.
+const hasAdminSecret = (req) => {
+  const expected = process.env.HASURA_GRAPHQL_ADMIN_SECRET;
+  const given = req.headers["x-hasura-admin-secret"];
+  if (!expected || typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 
 export default ({ basePath, cubejs }) => {
   router.get(`${basePath}/v1/load`, (req, res, next) =>
@@ -201,8 +215,12 @@ export default ({ basePath, cubejs }) => {
     next();
   });
 
-  // Internal cache invalidation endpoint (called by Actions service, no auth)
+  // Internal cache invalidation endpoint (called by the Actions service with
+  // the Hasura admin secret — the route is reachable through the ingress).
   router.post(`${basePath}/v1/internal/invalidate-cache`, (req, res) => {
+    if (!hasAdminSecret(req)) {
+      return res.status(401).json({ code: "unauthorized", message: "Unauthorized" });
+    }
     const { type, userId } = req.body || {};
 
     if (type === "user") {
@@ -331,6 +349,12 @@ export default ({ basePath, cubejs }) => {
   router.delete(
     `${basePath}/v1/dataschema/:dataschemaId`,
     async (req, res) => deleteDataschema(req, res)
+  );
+
+  // Save one dataschema's code as a new version. Owner/admin only.
+  router.put(
+    `${basePath}/v1/dataschema/:dataschemaId`,
+    async (req, res) => updateDataschema(req, res)
   );
 
   // Model Management API: single-cube metadata (US4).

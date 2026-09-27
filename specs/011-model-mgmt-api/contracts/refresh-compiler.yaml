@@ -79,6 +79,8 @@ components:
         - rollback_blocked_authorization
         - rollback_invalid_request
         - rollback_source_columns_missing
+        - update_blocked_historical_version
+        - update_blocked_authorization
     ErrorResponse:
       type: object
       required: [code, message]

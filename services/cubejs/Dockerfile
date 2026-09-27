@@ -2,6 +2,16 @@ FROM node:22.14.0-bullseye@sha256:1a956cf7ae435192dcdd18b8aba7349d649f0947795eac
 
 ARG DATABRICKS_JDBC_URL=https://databricks-bi-artifacts.s3.us-east-2.amazonaws.com/simbaspark-drivers/jdbc/2.6.32/DatabricksJDBC42-2.6.32.1054.zip
 
+# Debian 11 (bullseye) LTS ended 2026-08-31. deb.debian.org has since purged
+# the bullseye-security pool but still serves its index, so any install that
+# resolves to a security update (libssl1.1 1.1.1w-0+deb11u8, ...) 404s. Read
+# that suite from snapshot.debian.org's frozen copy of its final state (index
+# dated 2026-08-31 21:13 UTC); its Valid-Until has passed, hence the flag.
+# ponytail: stop-gap on an EOL base with no further security updates; move to
+# a bookworm base (OpenSSL 3) to get updates again.
+RUN sed -i 's#^deb http://deb.debian.org/debian-security bullseye-security main$#deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260903T000000Z bullseye-security main#' /etc/apt/sources.list \
+    && grep -q '^deb \[check-valid-until=no\] http://snapshot.debian.org/archive/debian-security/' /etc/apt/sources.list
+
 RUN DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
     && apt-get install -y --no-install-recommends rxvt-unicode libssl1.1 \

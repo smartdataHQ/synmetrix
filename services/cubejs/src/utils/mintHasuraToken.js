@@ -1,5 +1,7 @@
 import { SignJWT } from "jose";
 
+import { mintedTokenCache } from "./mintedTokenCache.js";
+
 const { JWT_EXPIRES_IN, JWT_ALGORITHM, JWT_CLAIMS_NAMESPACE, JWT_KEY } =
   process.env;
 
@@ -27,4 +29,22 @@ export async function mintHasuraToken(userId) {
     .setExpirationTime(`${JWT_EXPIRES_IN}m`)
     .setSubject(userId)
     .sign(secret);
+}
+
+/**
+ * Cached Hasura token for `userId`: reuse a cached, unexpired mint or mint
+ * and cache a new one.
+ *
+ * @param {string} userId
+ * @returns {Promise<string>}
+ */
+export async function hasuraTokenForUser(userId) {
+  const cached = mintedTokenCache.get(userId);
+  if (cached) return cached;
+  const token = await mintHasuraToken(userId);
+  const { exp } = JSON.parse(
+    Buffer.from(token.split(".")[1], "base64url").toString()
+  );
+  mintedTokenCache.set(userId, token, exp);
+  return token;
 }

@@ -1,4 +1,5 @@
 import {
+  authorizeBranchAccess,
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
@@ -213,6 +214,19 @@ export default async (req, res, cubejs) => {
       code: "smart_generate_missing_params",
       message: "The table, schema, and branchId parameters are required.",
     });
+  }
+
+  // Dry runs (previews) stay open to members; saves need owner/admin.
+  const denied = await authorizeBranchAccess({
+    userId: securityContext.userId,
+    dataSourceId: securityContext.userScope?.dataSource?.dataSourceId,
+    branchId,
+    readOnly: dryRun,
+  });
+  if (denied) {
+    return res
+      .status(denied.status)
+      .json({ code: denied.code, message: denied.message });
   }
 
   let driver;

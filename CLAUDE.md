@@ -113,7 +113,7 @@ Docker Compose files per environment: `docker-compose.dev.yml`, `docker-compose.
 - `services/cubejs/src/routes/` — 13 REST API endpoints, now including:
   - `validateInBranch.js` (POST /api/v1/validate-in-branch, US1)
   - `refreshCompiler.js` (POST /api/v1/internal/refresh-compiler, US2)
-  - `deleteDataschema.js` (DELETE /api/v1/dataschema/:id, US3)
+  - `deleteDataschema.js` (DELETE /api/v1/dataschema/:id, US3) + `updateDataschema.js` (PUT, same path) — share guards in `utils/modelWriteGuards.js`; every server-side version write (these, rollback, createDataSchema) goes through `commitVersionFiles` in dataSourceHelpers
   - `metaSingleCube.js` (GET /api/v1/meta/cube/:cubeName, US4)
   - `versionDiff.js` + `versionRollback.js` (POST /api/v1/version/{diff,rollback}, US5)
 - `services/cubejs/src/routes/reconcileTeam.js` — POST /api/v1/internal/reconcile-team: per-team default-models worker (013 — probe→generate→merge→validate→publish, system-user only)

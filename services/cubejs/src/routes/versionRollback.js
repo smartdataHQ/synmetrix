@@ -5,28 +5,11 @@ import {
   findVersionBranch,
   rollbackVersion as rollbackHelper,
 } from "../utils/dataSourceHelpers.js";
-import { requireOwnerOrAdmin } from "../utils/requireOwnerOrAdmin.js";
-import { resolvePartitionTeamIds } from "./discover.js";
+import { authorizeTeamWrite } from "../utils/modelWriteGuards.js";
 import { writeAuditLog } from "../utils/auditWriter.js";
 import { mapHasuraErrorCode } from "../utils/mapHasuraErrorCode.js";
-import { mintHasuraToken } from "../utils/mintHasuraToken.js";
-import { mintedTokenCache } from "../utils/mintedTokenCache.js";
-import { ErrorCode } from "../utils/errorCodes.js";
-
-async function ensureHasuraTokenForUser(userId) {
-  let tok = mintedTokenCache.get(userId);
-  if (tok) return tok;
-  tok = await mintHasuraToken(userId);
-  const decoded = JSON.parse(
-    Buffer.from(tok.split(".")[1], "base64url").toString()
-  );
-  mintedTokenCache.set(userId, tok, decoded.exp);
-  return tok;
-}
-
-function respondError(res, status, code, message, extra = {}) {
-  return res.status(status).json({ code, message, ...extra });
-}
+import { hasuraTokenForUser } from "../utils/mintHasuraToken.js";
+import { ErrorCode, respondError } from "../utils/errorCodes.js";
 
 /**
  * POST /api/v1/version/rollback
@@ -96,50 +79,28 @@ export default async function versionRollback(req, res, cubejs) {
   }
 
   const user = await findUser({ userId });
-  const partitionTeamIds = resolvePartitionTeamIds(
-    user.members,
-    payload.partition
-  );
-  if (partitionTeamIds && !partitionTeamIds.has(meta.teamId)) {
-    await writeAuditLog({
-      action: "version_rollback",
-      userId,
-      datasourceId: meta.datasourceId,
-      branchId,
-      targetId: toVersionId,
-      outcome: "failure",
-      errorCode: ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION,
-      payload: { reason: "partition_mismatch" },
-    });
-    return respondError(
-      res,
-      403,
-      ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION,
-      "Caller's partition does not match the branch's team"
-    );
-  }
-  if (!requireOwnerOrAdmin(user, meta.teamId)) {
-    await writeAuditLog({
-      action: "version_rollback",
-      userId,
-      datasourceId: meta.datasourceId,
-      branchId,
-      targetId: toVersionId,
-      outcome: "failure",
-      errorCode: ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION,
-      payload: { reason: "insufficient_role" },
-    });
-    return respondError(
-      res,
-      403,
-      ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION,
-      "Owner or admin role required"
-    );
-  }
+  const allowed = await authorizeTeamWrite(res, {
+    user,
+    partition: payload.partition,
+    teamId: meta.teamId,
+    code: ErrorCode.ROLLBACK_BLOCKED_AUTHORIZATION,
+    audit: (outcome, errorCode, auditPayload) =>
+      writeAuditLog({
+        action: "version_rollback",
+        userId,
+        datasourceId: meta.datasourceId,
+        branchId,
+        targetId: toVersionId,
+        outcome,
+        errorCode,
+        payload: auditPayload,
+      }),
+  });
+  if (!allowed) return;
 
   let hasuraToken;
   try {
-    hasuraToken = await ensureHasuraTokenForUser(userId);
+    hasuraToken = await hasuraTokenForUser(userId);
   } catch {
     return respondError(
       res,
