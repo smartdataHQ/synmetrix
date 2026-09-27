@@ -22,16 +22,47 @@ const PATCHED = `        else if (typeof obj === 'string') {
             let code = obj;
             if (!CubeValidator_1.nonStringFields.has(propertyPath[propertyPath.length - 1])) {`;
 
+const CLICKHOUSE_ORIGINAL = `        templates.types.timestamp = 'DATETIME';
+        delete templates.types.time;`;
+
+const CLICKHOUSE_PATCHED = `        templates.types.timestamp = 'DATETIME';
+        // ClickHouse type names are case-sensitive. The base 'STRING' type is
+        // what Tesseract CASTs multi-column primary keys to for count measures
+        // without sql, and ClickHouse rejects it ("Unknown data type
+        // family: STRING").
+        templates.types.string = 'String';
+        delete templates.types.time;`;
+
 const occurrences = (source, value) => source.split(value).length - 1;
 
-export function patchCompilerSource(source) {
-  if (source.includes(PATCHED)) return { source, changed: false };
-  if (occurrences(source, ORIGINAL) !== 1) {
+function applyPatch(source, original, patched, label) {
+  if (source.includes(patched)) return { source, changed: false };
+  if (occurrences(source, original) !== 1) {
     throw new Error(
-      "Refusing to patch Cube YAML compiler: expected source anchor was not found exactly once",
+      `Refusing to patch Cube ${label}: expected source anchor was not found exactly once`,
     );
   }
-  return { source: source.replace(ORIGINAL, PATCHED), changed: true };
+  return { source: source.replace(original, patched), changed: true };
+}
+
+export function patchCompilerSource(source) {
+  return applyPatch(source, ORIGINAL, PATCHED, "YAML compiler");
+}
+
+export function patchClickHouseQuerySource(source) {
+  return applyPatch(
+    source,
+    CLICKHOUSE_ORIGINAL,
+    CLICKHOUSE_PATCHED,
+    "ClickHouse query adapter",
+  );
+}
+
+async function patchFile(path, patch) {
+  const current = await readFile(path, "utf8");
+  const result = patch(current);
+  if (result.changed) await writeFile(path, result.source, "utf8");
+  return result.changed;
 }
 
 export async function patchInstalledCompiler() {
@@ -43,14 +74,19 @@ export async function patchInstalledCompiler() {
     );
   }
 
-  const compilerPath = resolve(
-    dirname(packageJsonPath),
-    "dist/src/compiler/YamlCompiler.js",
+  const root = dirname(packageJsonPath);
+  const compilerPath = resolve(root, "dist/src/compiler/YamlCompiler.js");
+  const clickHousePath = resolve(root, "dist/src/adapter/ClickHouseQuery.js");
+  const yamlChanged = await patchFile(compilerPath, patchCompilerSource);
+  const clickHouseChanged = await patchFile(
+    clickHousePath,
+    patchClickHouseQuerySource,
   );
-  const current = await readFile(compilerPath, "utf8");
-  const result = patchCompilerSource(current);
-  if (result.changed) await writeFile(compilerPath, result.source, "utf8");
-  return { compilerPath, changed: result.changed };
+  return {
+    compilerPath,
+    clickHousePath,
+    changed: yamlChanged || clickHouseChanged,
+  };
 }
 
 if (
@@ -60,7 +96,7 @@ if (
   const result = await patchInstalledCompiler();
   console.log(
     result.changed
-      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling`
-      : `Cube ${SUPPORTED_VERSION} YAML metadata patch already applied`,
+      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + ClickHouse string type`
+      : `Cube ${SUPPORTED_VERSION} YAML metadata + ClickHouse string type patches already applied`,
   );
 }

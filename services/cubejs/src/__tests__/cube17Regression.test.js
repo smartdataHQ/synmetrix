@@ -6,7 +6,10 @@ import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { escapeCSVField } from "../utils/csvSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
-import { patchCompilerSource } from "../../scripts/patchCubeYamlCompiler.mjs";
+import {
+  patchClickHouseQuerySource,
+  patchCompilerSource,
+} from "../../scripts/patchCubeYamlCompiler.mjs";
 
 const require = createRequire(import.meta.url);
 const runtimeVersion = require("@cubejs-backend/server-core/package.json").version;
@@ -100,6 +103,59 @@ after`;
       () => patchCompilerSource("unexpected compiler source"),
       /expected source anchor was not found exactly once/,
     );
+  });
+
+  it("guards the ClickHouse string-type patch against upstream source drift", () => {
+    const source = `before
+        templates.types.timestamp = 'DATETIME';
+        delete templates.types.time;
+after`;
+    const first = patchClickHouseQuerySource(source);
+    assert.equal(first.changed, true);
+    assert.match(first.source, /templates\.types\.string = 'String';/);
+    assert.deepEqual(patchClickHouseQuerySource(first.source), {
+      source: first.source,
+      changed: false,
+    });
+    assert.throws(
+      () => patchClickHouseQuerySource("unexpected adapter source"),
+      /expected source anchor was not found exactly once/,
+    );
+  });
+
+  it("casts composite-key count measures to ClickHouse String (Tesseract)", async () => {
+    const { ClickHouseQuery } = require(
+      "@cubejs-backend/schema-compiler/dist/src/adapter/ClickHouseQuery.js",
+    );
+    const content = `cubes:
+  - name: points
+    sql_table: points
+    dimensions:
+      - name: series_gid
+        sql: series_gid
+        type: string
+        primary_key: true
+      - name: ts
+        sql: ts
+        type: time
+        primary_key: true
+    measures:
+      - name: count
+        type: count
+`;
+    const compilers = prepareCompiler(
+      { dataSchemaFiles: async () => [{ fileName: "points.yml", content }] },
+      { adapter: "clickhouse" },
+    );
+    await compilers.compiler.compile();
+    const [sql] = new ClickHouseQuery(compilers, {
+      measures: ["points.count"],
+      timezone: "UTC",
+      useNativeSqlPlanner: true,
+    }).buildSqlAndParams();
+
+    assert.match(sql, / AS String\)/);
+    assert.doesNotMatch(sql, / AS STRING\)/);
   });
 
   it("does not embed a comparison result in the test source", async () => {
