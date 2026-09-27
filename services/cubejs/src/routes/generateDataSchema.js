@@ -1,7 +1,7 @@
 import { ScaffoldingTemplate } from "@cubejs-backend/schema-compiler";
 import yaml from "js-yaml";
 import {
-  authorizeModelWrite,
+  authorizeBranchAccess,
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
@@ -114,7 +114,7 @@ export default async (req, res, cubejs) => {
     format = "yaml",
   } = req.body || {};
 
-  const denied = await authorizeModelWrite({ userId, dataSourceId, branchId });
+  const denied = await authorizeBranchAccess({ userId, dataSourceId, branchId });
   if (denied) {
     return res
       .status(denied.status)

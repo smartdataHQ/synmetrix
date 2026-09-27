@@ -1,5 +1,5 @@
 import {
-  authorizeModelWrite,
+  authorizeBranchAccess,
   createDataSchema,
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
@@ -217,11 +217,11 @@ export default async (req, res, cubejs) => {
   }
 
   // Dry runs (previews) stay open to members; saves need owner/admin.
-  const denied = await authorizeModelWrite({
+  const denied = await authorizeBranchAccess({
     userId: securityContext.userId,
     dataSourceId: securityContext.userScope?.dataSource?.dataSourceId,
     branchId,
-    dryRun,
+    readOnly: dryRun,
   });
   if (denied) {
     return res

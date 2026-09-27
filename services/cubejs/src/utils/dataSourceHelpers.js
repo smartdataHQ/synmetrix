@@ -278,21 +278,22 @@ export const findUser = async ({ userId }) => {
 };
 
 /**
- * Authorise a datasource-scoped model write (generate-models, smart-generate)
- * onto the request body's `branchId`. Those routes write with the admin
- * secret, so this is the only gate: the branch must belong to the request's
- * datasource, and — unless `dryRun` — the caller must be owner/admin of the
- * datasource's team (the row-type pipeline identity is provisioned as admin).
+ * Authorise access to `branchId` on `dataSourceId`: the branch must belong to
+ * that datasource and the datasource must be visible to the caller (team
+ * membership, via findUser). Unless `readOnly`, the caller must also be
+ * owner/admin of the datasource's team (the row-type pipeline identity is
+ * provisioned as admin). Used by routes that read or write through the admin
+ * secret, where this is the only gate.
  *
  * Never throws.
  *
  * @returns {Promise<null | {status:number, code:string, message:string}>}
  */
-export const authorizeModelWrite = async ({
+export const authorizeBranchAccess = async ({
   userId,
   dataSourceId,
   branchId,
-  dryRun = false,
+  readOnly = false,
 }) => {
   const lookup = (user) =>
     user?.dataSources?.find(
@@ -326,7 +327,7 @@ export const authorizeModelWrite = async ({
       message: `Branch "${branchId}" not found on this datasource`,
     };
   }
-  if (!dryRun && !requireOwnerOrAdmin(user, dataSource.team_id)) {
+  if (!readOnly && !requireOwnerOrAdmin(user, dataSource.team_id)) {
     return {
       status: 403,
       code: "owner_or_admin_required",

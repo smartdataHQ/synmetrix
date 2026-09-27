@@ -1,5 +1,6 @@
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
 import {
+  authorizeBranchAccess,
   findUser,
   findVersionBranch,
   findVersionDataschemas,
@@ -90,6 +91,20 @@ export default async function versionDiff(req, res) {
       ErrorCode.DIFF_INVALID_REQUEST,
       "Caller's partition does not match the branch's team"
     );
+  }
+
+  // Team membership: versions are read with the admin secret, so without a
+  // partition claim this is the only thing keeping other teams out.
+  const denied = await authorizeBranchAccess({
+    userId,
+    dataSourceId: toMeta.datasourceId,
+    branchId: toMeta.branchId,
+    readOnly: true,
+  });
+  if (denied) {
+    return denied.status === 404
+      ? respondError(res, 404, ErrorCode.DIFF_INVALID_REQUEST, "One or both versions not found")
+      : respondError(res, denied.status, denied.code, denied.message);
   }
 
   let fromRows;

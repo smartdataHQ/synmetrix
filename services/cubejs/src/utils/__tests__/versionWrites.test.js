@@ -7,7 +7,7 @@ mock.module("../graphql.js", {
 });
 
 const {
-  authorizeModelWrite,
+  authorizeBranchAccess,
   commitVersionFiles,
   createDataSchema,
   invalidateUserCache,
@@ -137,7 +137,7 @@ describe("commitVersionFiles / rollbackVersion", () => {
   });
 });
 
-describe("authorizeModelWrite", () => {
+describe("authorizeBranchAccess", () => {
   beforeEach(() => {
     fetchGraphQLMock.mock.resetCalls();
     invalidateUserCache(null);
@@ -148,23 +148,31 @@ describe("authorizeModelWrite", () => {
 
   it("refuses a branch that is not on the request's datasource", async () => {
     as("owner");
-    const res = await authorizeModelWrite({
+    const res = await authorizeBranchAccess({
       userId: "u-1",
       dataSourceId: DS,
       branchId: "someone-elses-branch",
     });
     assert.equal(res.status, 404);
+    // reads (version diff) are refused the same way
+    const read = await authorizeBranchAccess({
+      userId: "u-1",
+      dataSourceId: DS,
+      branchId: "someone-elses-branch",
+      readOnly: true,
+    });
+    assert.equal(read.status, 404);
   });
 
-  it("refuses a plain member's write but allows the member's dry run", async () => {
+  it("refuses a plain member's write but allows the member's read", async () => {
     as("member");
-    const write = await authorizeModelWrite({ userId: "u-1", dataSourceId: DS, branchId: BRANCH });
+    const write = await authorizeBranchAccess({ userId: "u-1", dataSourceId: DS, branchId: BRANCH });
     assert.equal(write.status, 403);
-    const dry = await authorizeModelWrite({
+    const dry = await authorizeBranchAccess({
       userId: "u-1",
       dataSourceId: DS,
       branchId: BRANCH,
-      dryRun: true,
+      readOnly: true,
     });
     assert.equal(dry, null);
   });
@@ -174,7 +182,7 @@ describe("authorizeModelWrite", () => {
       invalidateUserCache(null);
       as(role);
       assert.equal(
-        await authorizeModelWrite({ userId: "u-1", dataSourceId: DS, branchId: BRANCH }),
+        await authorizeBranchAccess({ userId: "u-1", dataSourceId: DS, branchId: BRANCH }),
         null
       );
     }
