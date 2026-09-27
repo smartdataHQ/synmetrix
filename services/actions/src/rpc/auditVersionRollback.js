@@ -76,7 +76,11 @@ export default async (session, input) => {
       target_id: row.id,
       outcome: "success",
       error_code: null,
-      payload: { origin: row.origin, checksum: row.checksum },
+      payload: {
+        origin: row.origin,
+        checksum: row.checksum,
+        source_version_id: row.source_version_id ?? null,
+      },
     });
     const id = res?.data?.insert_audit_logs_one?.id;
     return { ok: true, auditLogId: id };

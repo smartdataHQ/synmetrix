@@ -186,6 +186,22 @@ const upsertVersionMutation = `
   }
 `;
 
+// Same insert as upsertVersionMutation, returning the new rows so a caller
+// can report the ids of the files it just wrote.
+const insertVersionReturningMutation = `
+  mutation ($object: versions_insert_input!) {
+    insert_versions_one(object: $object) {
+      id
+      dataschemas {
+        id
+        name
+        checksum
+        version_id
+      }
+    }
+  }
+`;
+
 const sqlCredentialsQuery = `
   query ($username: String!) {
     sql_credentials(where: {username: {_eq: $username}}) {
@@ -363,29 +379,31 @@ export const findVersionBranch = async ({ versionId }) => {
 };
 
 /**
- * Insert a new version on `branchId` whose dataschemas are byte-identical
- * clones of `toVersionId`'s dataschemas. FR-013 / FR-013a:
- *  - only dataschemas are cloned (no explorations/alerts/alerts),
- *  - the new row uses `origin: 'rollback'`,
- *  - the caller's minted Hasura token is used so owner/admin permission
- *    policies are enforced at the database layer.
+ * Insert a new version on `branchId` holding exactly `files` (`[{name, code}]`).
+ * Every model change goes through a new version so the previous one stays
+ * restorable; `versions_flip_is_current_trg` makes the new row current.
  *
- * Returns `{newVersionId, clonedDataschemaCount}` on success,
- * `{errors}` on any Hasura permission/constraint failure so the caller can
- * map the extensions.code via mapHasuraErrorCode().
+ * The caller's minted Hasura token is used so owner/admin permission policies
+ * are enforced at the database layer too. On success the caller's cached
+ * user scope is dropped so its next request resolves the new version.
+ *
+ * Returns `{newVersionId, dataschemas}` on success, `{errors}` on any Hasura
+ * permission/constraint failure so the caller can map the extensions.code via
+ * mapHasuraErrorCode().
  */
-export const rollbackVersion = async ({
+export const commitVersionFiles = async ({
   branchId,
-  toVersionId,
   userId,
   datasourceId,
+  files,
+  origin = "user",
+  sourceVersionId = null,
   authToken,
 }) => {
-  const originals = await findVersionDataschemas({ versionId: toVersionId });
   // The `set_public_dataschemas_checksum` BEFORE-INSERT trigger computes
   // dataschema-level checksums; we do NOT set one here or Hasura's insert
   // permission rejects the extra column.
-  const clonedData = originals.map((row) => ({
+  const data = files.map((row) => ({
     name: row.name,
     code: row.code,
     user_id: userId,
@@ -395,23 +413,23 @@ export const rollbackVersion = async ({
   // Version-level checksum: md5 over the concatenated dataschema codes in
   // a stable order. Matches the `version.checksum` NOT NULL constraint.
   const versionChecksum = md5OfCode(
-    originals
-      .map((r) => r.name)
-      .sort()
-      .map((n) => `${n}:${originals.find((x) => x.name === n)?.code || ""}`)
+    [...files]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((r) => `${r.name}:${r.code || ""}`)
       .join("\n")
   );
 
   const object = {
     branch_id: branchId,
     user_id: userId,
-    origin: "rollback",
+    origin,
     checksum: versionChecksum,
-    dataschemas: { data: clonedData },
+    dataschemas: { data },
   };
+  if (sourceVersionId) object.source_version_id = sourceVersionId;
 
   const res = await fetchGraphQL(
-    upsertVersionMutation,
+    insertVersionReturningMutation,
     { object },
     authToken,
     { preserveErrors: true }
@@ -421,8 +439,8 @@ export const rollbackVersion = async ({
     return { errors: res.errors };
   }
 
-  const newVersionId = res?.data?.insert_versions_one?.id;
-  if (!newVersionId) {
+  const row = res?.data?.insert_versions_one;
+  if (!row?.id) {
     return {
       errors: [
         { message: "insert_versions_one returned no id", extensions: {} },
@@ -430,7 +448,42 @@ export const rollbackVersion = async ({
     };
   }
 
-  return { newVersionId, clonedDataschemaCount: clonedData.length };
+  invalidateUserCache(userId);
+  return { newVersionId: row.id, dataschemas: row.dataschemas || [] };
+};
+
+/**
+ * Insert a new version on `branchId` whose dataschemas are byte-identical
+ * clones of `toVersionId`'s dataschemas. FR-013 / FR-013a:
+ *  - only dataschemas are cloned (no explorations/alerts/alerts),
+ *  - the new row uses `origin: 'rollback'` and records
+ *    `source_version_id = toVersionId`.
+ *
+ * Returns `{newVersionId, clonedDataschemaCount}` on success,
+ * `{errors}` on any Hasura permission/constraint failure.
+ */
+export const rollbackVersion = async ({
+  branchId,
+  toVersionId,
+  userId,
+  datasourceId,
+  authToken,
+}) => {
+  const originals = await findVersionDataschemas({ versionId: toVersionId });
+  const res = await commitVersionFiles({
+    branchId,
+    userId,
+    datasourceId,
+    files: originals,
+    origin: "rollback",
+    sourceVersionId: toVersionId,
+    authToken,
+  });
+  if (res.errors) return res;
+  return {
+    newVersionId: res.newVersionId,
+    clonedDataschemaCount: originals.length,
+  };
 };
 
 function md5OfCode(code) {
