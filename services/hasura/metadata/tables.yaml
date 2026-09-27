@@ -552,17 +552,21 @@
     - role: user
       permission:
         check:
-          datasource:
-            team:
-              members:
-                _and:
-                  - member_roles:
-                      team_role:
-                        _in:
-                          - owner
-                          - admin
-                  - user_id:
-                      _eq: X-Hasura-User-Id
+          _and:
+            - datasource:
+                team:
+                  members:
+                    _and:
+                      - member_roles:
+                          team_role:
+                            _in:
+                              - owner
+                              - admin
+                      - user_id:
+                          _eq: X-Hasura-User-Id
+            - version:
+                is_current:
+                  _eq: true
         columns:
           - code
           - datasource_id
@@ -602,17 +606,21 @@
           - code
           - name
         filter:
-          datasource:
-            team:
-              members:
-                _and:
-                  - member_roles:
-                      team_role:
-                        _in:
-                          - owner
-                          - admin
-                  - user_id:
-                      _eq: X-Hasura-User-Id
+          _and:
+            - datasource:
+                team:
+                  members:
+                    _and:
+                      - member_roles:
+                          team_role:
+                            _in:
+                              - owner
+                              - admin
+                      - user_id:
+                          _eq: X-Hasura-User-Id
+            - version:
+                is_current:
+                  _eq: true
         check:
           datasource:
             team:
@@ -1707,21 +1715,23 @@
     - role: user
       permission:
         check:
-          _or:
-            - branch:
-                datasource:
-                  user_id:
-                    _eq: X-Hasura-User-Id
-            - branch:
-                datasource:
-                  team:
-                    members:
-                      user_id:
+          branch:
+            datasource:
+              team:
+                members:
+                  _and:
+                    - member_roles:
+                        team_role:
+                          _in:
+                            - owner
+                            - admin
+                    - user_id:
                         _eq: X-Hasura-User-Id
         columns:
           - branch_id
           - checksum
           - origin
+          - source_version_id
           - user_id
   select_permissions:
     - role: user
@@ -1734,6 +1744,7 @@
           - is_current
           - markdown_doc
           - origin
+          - source_version_id
           - updated_at
           - user_id
         filter:
