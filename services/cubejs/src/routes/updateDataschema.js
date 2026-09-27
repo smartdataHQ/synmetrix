@@ -1,15 +1,11 @@
-import { emitModelEvent } from "../utils/eventEmitter.js";
 import {
   commitVersionFiles,
   findVersionDataschemas,
 } from "../utils/dataSourceHelpers.js";
-import {
-  ensureHasuraTokenForUser,
-  resolveMutableDataschema,
-  respondError,
-} from "../utils/mutableDataschema.js";
+import { resolveMutableDataschema } from "../utils/modelWriteGuards.js";
+import { hasuraTokenForUser } from "../utils/mintHasuraToken.js";
 import { mapHasuraErrorCode } from "../utils/mapHasuraErrorCode.js";
-import { ErrorCode } from "../utils/errorCodes.js";
+import { ErrorCode, respondError } from "../utils/errorCodes.js";
 
 const dataschemaShape = (row) => ({
   id: row.id,
@@ -86,7 +82,7 @@ export default async function updateDataschema(req, res) {
 
   let hasuraToken;
   try {
-    hasuraToken = await ensureHasuraTokenForUser(userId);
+    hasuraToken = await hasuraTokenForUser(userId);
   } catch {
     return respondError(
       res,
@@ -104,6 +100,12 @@ export default async function updateDataschema(req, res) {
       datasourceId,
       files,
       authToken: hasuraToken,
+      // `Model Saved`, emitted by commitVersionFiles like every other save.
+      emit: {
+        accountId: payload?.accountId ?? null,
+        partition: payload?.partition ?? null,
+        userId,
+      },
     });
   } catch (err) {
     return respondError(
@@ -144,19 +146,6 @@ export default async function updateDataschema(req, res) {
     new_version_id: result.newVersionId,
     new_dataschema_id: saved?.id ?? null,
     checksum: saved?.checksum ?? null,
-  });
-
-  // 099 T087 (FR-091): same `Model Saved` persistence fact createDataSchema
-  // emits for every other server-side version write. Fire-and-forget.
-  emitModelEvent({
-    event: "Model Saved",
-    accountId: payload?.accountId ?? null,
-    partition: payload?.partition ?? null,
-    userId,
-    modelId: result.newVersionId,
-    modelLabel: target.name || null,
-    status: "ok",
-    properties: { branch_id: branchId, origin: "user" },
   });
 
   return res.json({

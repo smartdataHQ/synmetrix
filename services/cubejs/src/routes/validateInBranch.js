@@ -7,8 +7,7 @@ import {
   findDataSchemas,
 } from "../utils/dataSourceHelpers.js";
 import { fetchGraphQL } from "../utils/graphql.js";
-import { mintHasuraToken } from "../utils/mintHasuraToken.js";
-import { mintedTokenCache } from "../utils/mintedTokenCache.js";
+import { hasuraTokenForUser } from "../utils/mintHasuraToken.js";
 import { requireOwnerOrAdmin } from "../utils/requireOwnerOrAdmin.js";
 import { scanCrossCubeReferences } from "../utils/referenceScanner.js";
 import { resolvePartitionTeamIds } from "./discover.js";
@@ -75,18 +74,6 @@ function badRequest(res, code, message) {
 
 function respondJson(res, status, body) {
   return res.status(status).json(body);
-}
-
-async function ensureHasuraTokenForUser(userId) {
-  let hasuraToken = mintedTokenCache.get(userId);
-  if (hasuraToken) return hasuraToken;
-  hasuraToken = await mintHasuraToken(userId);
-  const parts = hasuraToken.split(".");
-  const payload = JSON.parse(
-    Buffer.from(parts[1], "base64url").toString()
-  );
-  mintedTokenCache.set(userId, hasuraToken, payload.exp);
-  return hasuraToken;
 }
 
 /**
@@ -231,7 +218,7 @@ export default async function validateInBranch(req, res) {
   // the user-role select permission).
   let existing;
   try {
-    const hasuraToken = await ensureHasuraTokenForUser(userId);
+    const hasuraToken = await hasuraTokenForUser(userId);
     existing = await findDataSchemas({ branchId, authToken: hasuraToken });
   } catch (err) {
     return respondJson(res, 503, {

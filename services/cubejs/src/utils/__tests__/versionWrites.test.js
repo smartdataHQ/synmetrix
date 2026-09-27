@@ -9,6 +9,7 @@ mock.module("../graphql.js", {
 const {
   authorizeModelWrite,
   commitVersionFiles,
+  createDataSchema,
   invalidateUserCache,
   rollbackVersion,
 } = await import("../dataSourceHelpers.js");
@@ -64,7 +65,8 @@ describe("commitVersionFiles / rollbackVersion", () => {
     const [, vars, token, opts] = fetchGraphQLMock.mock.calls[0].arguments;
     assert.equal(token, "tok");
     assert.deepEqual(opts, { preserveErrors: true });
-    assert.equal(vars.object.origin, "user");
+    // origin left to the column default ('user')
+    assert.equal("origin" in vars.object, false);
     assert.equal("source_version_id" in vars.object, false);
     // Only insertable columns — never the source row's id/checksum.
     assert.deepEqual(vars.object.dataschemas.data, [
@@ -83,6 +85,36 @@ describe("commitVersionFiles / rollbackVersion", () => {
       authToken: "tok",
     });
     assert.deepEqual(res, { errors });
+  });
+
+  it("createDataSchema keeps its contract on top of the shared insert", async () => {
+    fetchGraphQLMock.mock.mockImplementation(async () => ({
+      data: { insert_versions_one: { id: "v-new", dataschemas: [] } },
+    }));
+    const out = await createDataSchema({
+      branch_id: BRANCH,
+      user_id: "u-1",
+      checksum: "caller-checksum",
+      dataschemas: {
+        data: [{ name: "a.yml", code: "x", user_id: "u-1", datasource_id: DS }],
+      },
+    });
+    assert.deepEqual(out, { id: "v-new" });
+    const [, vars, token] = fetchGraphQLMock.mock.calls[0].arguments;
+    assert.equal(token, undefined); // admin secret, as before
+    assert.equal(vars.object.checksum, "caller-checksum");
+    assert.deepEqual(vars.object.dataschemas.data, [
+      { name: "a.yml", code: "x", user_id: "u-1", datasource_id: DS },
+    ]);
+
+    fetchGraphQLMock.mock.mockImplementation(async () => ({
+      data: null,
+      errors: [{ message: "boom" }],
+    }));
+    await assert.rejects(
+      createDataSchema({ branch_id: BRANCH, user_id: "u-1", checksum: "c", dataschemas: { data: [] } }),
+      (err) => err.status === 503 && /boom/.test(err.message)
+    );
   });
 
   it("rollback records origin=rollback and the restored version as source", async () => {

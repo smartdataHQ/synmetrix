@@ -5,11 +5,7 @@ import { resolvePartitionTeamIds } from "./discover.js";
 import { requireOwnerOrAdmin } from "../utils/requireOwnerOrAdmin.js";
 import defineUserScope from "../utils/defineUserScope.js";
 import { invalidateCompilerForBranch } from "../utils/compilerCacheInvalidator.js";
-import { ErrorCode } from "../utils/errorCodes.js";
-
-function respondError(res, status, code, message) {
-  return res.status(status).json({ code, message });
-}
+import { ErrorCode, respondError } from "../utils/errorCodes.js";
 
 /**
  * POST /api/v1/internal/refresh-compiler

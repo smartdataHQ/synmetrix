@@ -5,14 +5,11 @@ import {
   commitVersionFiles,
   findVersionDataschemas,
 } from "../utils/dataSourceHelpers.js";
-import {
-  ensureHasuraTokenForUser,
-  resolveMutableDataschema,
-  respondError,
-} from "../utils/mutableDataschema.js";
+import { resolveMutableDataschema } from "../utils/modelWriteGuards.js";
+import { hasuraTokenForUser } from "../utils/mintHasuraToken.js";
 import { scanCrossCubeReferences } from "../utils/referenceScanner.js";
 import { mapHasuraErrorCode } from "../utils/mapHasuraErrorCode.js";
-import { ErrorCode } from "../utils/errorCodes.js";
+import { ErrorCode, respondError } from "../utils/errorCodes.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 
 function parseCubes(name, code) {
@@ -117,7 +114,7 @@ export default async function deleteDataschema(req, res) {
   // defence per research R4).
   let hasuraToken;
   try {
-    hasuraToken = await ensureHasuraTokenForUser(userId);
+    hasuraToken = await hasuraTokenForUser(userId);
   } catch {
     return respondError(
       res,

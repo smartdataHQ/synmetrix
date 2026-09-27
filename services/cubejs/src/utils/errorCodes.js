@@ -28,6 +28,11 @@ export const ErrorCode = Object.freeze({
 
 export const ErrorCodeSet = Object.freeze(new Set(Object.values(ErrorCode)));
 
+/** Send a Model-Management error body `{code, message, ...extra}`. */
+export function respondError(res, status, code, message, extra = {}) {
+  return res.status(status).json({ code, message, ...extra });
+}
+
 export function isKnownErrorCode(code) {
   return ErrorCodeSet.has(code);
 }

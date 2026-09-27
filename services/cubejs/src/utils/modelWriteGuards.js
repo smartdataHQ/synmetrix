@@ -1,12 +1,10 @@
 import { verifyAndProvision } from "./directVerifyAuth.js";
 import { findUser } from "./dataSourceHelpers.js";
 import { fetchGraphQL } from "./graphql.js";
-import { mintHasuraToken } from "./mintHasuraToken.js";
-import { mintedTokenCache } from "./mintedTokenCache.js";
 import { requireOwnerOrAdmin } from "./requireOwnerOrAdmin.js";
 import { resolvePartitionTeamIds } from "../routes/discover.js";
 import { writeAuditLog } from "./auditWriter.js";
-import { ErrorCode } from "./errorCodes.js";
+import { ErrorCode, respondError } from "./errorCodes.js";
 
 const RESOLVE_TARGET_QUERY = `
   query ResolveTargetDataschema($id: uuid!) {
@@ -32,19 +30,29 @@ const RESOLVE_TARGET_QUERY = `
   }
 `;
 
-export function respondError(res, status, code, message, extra = {}) {
-  return res.status(status).json({ code, message, ...extra });
-}
-
-export async function ensureHasuraTokenForUser(userId) {
-  let tok = mintedTokenCache.get(userId);
-  if (tok) return tok;
-  tok = await mintHasuraToken(userId);
-  const decoded = JSON.parse(
-    Buffer.from(tok.split(".")[1], "base64url").toString()
-  );
-  mintedTokenCache.set(userId, tok, decoded.exp);
-  return tok;
+/**
+ * Partition gate + owner/admin gate shared by the Model-Management write
+ * routes (FR-015). On refusal writes a failure audit row via `audit`,
+ * responds 403 with `code`, and returns false.
+ *
+ * @param {import('express').Response} res
+ * @param {{user: object, partition: string|null, teamId: string, code: string,
+ *          audit: (outcome:string, errorCode:string, payload:object) => Promise<unknown>}} args
+ * @returns {Promise<boolean>}
+ */
+export async function authorizeTeamWrite(res, { user, partition, teamId, code, audit }) {
+  const partitionTeamIds = resolvePartitionTeamIds(user.members, partition);
+  if (partitionTeamIds && !partitionTeamIds.has(teamId)) {
+    await audit("failure", code, { reason: "partition_mismatch" });
+    respondError(res, 403, code, "Caller's partition does not match the datasource's team");
+    return false;
+  }
+  if (!requireOwnerOrAdmin(user, teamId)) {
+    await audit("failure", code, { reason: "insufficient_role" });
+    respondError(res, 403, code, "Owner or admin role required");
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -131,31 +139,14 @@ export async function resolveMutableDataschema(req, res, { action, codes }) {
     });
 
   const user = await findUser({ userId });
-
-  const partitionTeamIds = resolvePartitionTeamIds(
-    user.members,
-    payload.partition
-  );
-  if (partitionTeamIds && !partitionTeamIds.has(teamId)) {
-    await audit("failure", codes.authorization, {
-      reason: "partition_mismatch",
-    });
-    respondError(
-      res,
-      403,
-      codes.authorization,
-      "Caller's partition does not match the datasource's team"
-    );
-    return null;
-  }
-
-  if (!requireOwnerOrAdmin(user, teamId)) {
-    await audit("failure", codes.authorization, {
-      reason: "insufficient_role",
-    });
-    respondError(res, 403, codes.authorization, "Owner or admin role required");
-    return null;
-  }
+  const allowed = await authorizeTeamWrite(res, {
+    user,
+    partition: payload.partition,
+    teamId,
+    code: codes.authorization,
+    audit,
+  });
+  if (!allowed) return null;
 
   // Version-level immutability (FR-007): only the current version of the
   // active branch may be changed (by writing a new version on top of it).

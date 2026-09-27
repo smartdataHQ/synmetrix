@@ -6,11 +6,7 @@ import {
 } from "../utils/dataSourceHelpers.js";
 import { resolvePartitionTeamIds } from "./discover.js";
 import { diffVersions } from "../utils/versionDiff.js";
-import { ErrorCode } from "../utils/errorCodes.js";
-
-function respondError(res, status, code, message) {
-  return res.status(status).json({ code, message });
-}
+import { ErrorCode, respondError } from "../utils/errorCodes.js";
 
 /**
  * POST /api/v1/version/diff
