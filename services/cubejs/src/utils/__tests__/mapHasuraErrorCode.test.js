@@ -23,6 +23,14 @@ describe("mapHasuraErrorCode", () => {
     assert.equal(code, ErrorCode.DELETE_BLOCKED_AUTHORIZATION);
   });
 
+  it("permission-error maps to update_blocked_authorization for update action", () => {
+    const code = mapHasuraErrorCode(
+      [{ extensions: { code: "permission-error" } }],
+      { action: "update" }
+    );
+    assert.equal(code, ErrorCode.UPDATE_BLOCKED_AUTHORIZATION);
+  });
+
   it("permission-error maps to rollback_blocked_authorization for rollback action", () => {
     const code = mapHasuraErrorCode(
       [{ extensions: { code: "permission-error" } }],

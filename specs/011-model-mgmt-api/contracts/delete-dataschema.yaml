@@ -8,7 +8,9 @@ paths:
       operationId: deleteDataschema
       summary: Delete a dataschema from the latest version of the active branch.
       description: |
-        Removes the dataschema row via Hasura (`delete_dataschemas_by_pk`). Blocked if:
+        Writes a NEW version on the branch holding every other file of the current
+        version; the version the file was removed from stays intact, so the delete
+        can be undone with a rollback. Blocked if:
         - The caller lacks owner/admin role on the datasource team (FR-006) → 403.
         - The dataschema belongs to a version that is NOT the latest version of the
           active branch (FR-007) → 409.
@@ -30,7 +32,7 @@ paths:
             format: uuid
       responses:
         "200":
-          description: Dataschema deleted.
+          description: Dataschema removed; `versionId` is the new current version.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeleteDataschemaResponse' }
@@ -55,6 +57,59 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeleteBlockedResponse' }
+    put:
+      operationId: updateDataschema
+      summary: Save one dataschema's code as a new version of its branch.
+      description: |
+        Copies every file of the dataschema's version into a NEW version and
+        replaces this file's code; the previous version stays restorable.
+        Identical code is a no-op (200, `unchanged: true`, no new version).
+        Same guards as DELETE: owner/admin → else 403 `update_blocked_authorization`;
+        the dataschema must be on the current version of the active branch →
+        else 409 `update_blocked_historical_version`.
+
+        AUTH: direct-verify, as DELETE.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: dataschemaId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Saved (or unchanged).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UpdateDataschemaResponse' }
+        "400":
+          description: "Body is not `{code: string}` (`update_invalid_request`)."
+        "403":
+          description: "`update_blocked_authorization` (partition or role)."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "404":
+          description: Dataschema not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        "409":
+          description: "`update_blocked_historical_version`."
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
 components:
   securitySchemes:
@@ -84,6 +139,8 @@ components:
         - rollback_blocked_authorization
         - rollback_invalid_request
         - rollback_source_columns_missing
+        - update_blocked_historical_version
+        - update_blocked_authorization
     ErrorResponse:
       type: object
       required: [code, message]
@@ -96,6 +153,28 @@ components:
       properties:
         deleted: { type: boolean }
         dataschemaId: { type: string, format: uuid }
+        versionId:
+          type: string
+          format: uuid
+          description: The new current version (without the deleted file).
+        branchId: { type: string, format: uuid }
+    UpdateDataschemaResponse:
+      type: object
+      required: [versionId, branchId, dataschema]
+      properties:
+        versionId: { type: string, format: uuid }
+        branchId: { type: string, format: uuid }
+        unchanged:
+          type: boolean
+          description: Present (true) when the code was identical and nothing was written.
+        dataschema:
+          type: object
+          required: [id, name, checksum, version_id]
+          properties:
+            id: { type: string, format: uuid, description: The NEW row's id. }
+            name: { type: string }
+            checksum: { type: string }
+            version_id: { type: string, format: uuid }
     DeleteBlockedResponse:
       type: object
       required: [code, message]

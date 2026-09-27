@@ -47,7 +47,7 @@ function sleep(ms) {
  * permission policies on `audit_logs` (admin-only) do not reject the write.
  *
  * @param {object} args
- * @param {'dataschema_delete'|'version_rollback'} args.action
+ * @param {'dataschema_delete'|'dataschema_update'|'version_rollback'} args.action
  * @param {string} args.userId
  * @param {string} args.targetId
  * @param {string} [args.datasourceId]

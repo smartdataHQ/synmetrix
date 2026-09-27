@@ -5,6 +5,7 @@ import express from "express";
 //   POST   /api/v1/validate-in-branch         (direct-verify, US1)
 //   POST   /api/v1/internal/refresh-compiler  (direct-verify, US2)
 //   DELETE /api/v1/dataschema/:dataschemaId   (direct-verify, US3)
+//   PUT    /api/v1/dataschema/:dataschemaId   (direct-verify, save one file)
 //   GET    /api/v1/meta/cube/:cubeName        (checkAuthMiddleware, US4)
 //   POST   /api/v1/version/diff               (direct-verify, US5)
 //   POST   /api/v1/version/rollback           (direct-verify, US5)
@@ -42,6 +43,7 @@ import discover from "./discover.js";
 import metaAll from "./metaAll.js";
 import testConnection from "./testConnection.js";
 import deleteDataschema from "./deleteDataschema.js";
+import updateDataschema from "./updateDataschema.js";
 import metaSingleCube from "./metaSingleCube.js";
 import refreshCompiler from "./refreshCompiler.js";
 import reconcileTeam from "./reconcileTeam.js";
@@ -331,6 +333,12 @@ export default ({ basePath, cubejs }) => {
   router.delete(
     `${basePath}/v1/dataschema/:dataschemaId`,
     async (req, res) => deleteDataschema(req, res)
+  );
+
+  // Save one dataschema's code as a new version. Owner/admin only.
+  router.put(
+    `${basePath}/v1/dataschema/:dataschemaId`,
+    async (req, res) => updateDataschema(req, res)
   );
 
   // Model Management API: single-cube metadata (US4).

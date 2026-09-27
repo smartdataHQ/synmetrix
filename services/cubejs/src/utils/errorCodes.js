@@ -22,6 +22,8 @@ export const ErrorCode = Object.freeze({
   ROLLBACK_BLOCKED_AUTHORIZATION: "rollback_blocked_authorization",
   ROLLBACK_INVALID_REQUEST: "rollback_invalid_request",
   ROLLBACK_SOURCE_COLUMNS_MISSING: "rollback_source_columns_missing",
+  UPDATE_BLOCKED_HISTORICAL_VERSION: "update_blocked_historical_version",
+  UPDATE_BLOCKED_AUTHORIZATION: "update_blocked_authorization",
 });
 
 export const ErrorCodeSet = Object.freeze(new Set(Object.values(ErrorCode)));
