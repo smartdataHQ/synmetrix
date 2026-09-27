@@ -1,5 +1,11 @@
 const CUBEJS_URL = process.env.CUBEJS_URL || "http://cubejs:4000";
 
+// cubejs rejects /internal/invalidate-cache without the shared admin secret.
+const headers = {
+  "Content-Type": "application/json",
+  "x-hasura-admin-secret": process.env.HASURA_GRAPHQL_ADMIN_SECRET || "",
+};
+
 /**
  * Invalidate CubeJS caches after admin mutations.
  * Fire-and-forget — never blocks the caller.
@@ -7,7 +13,7 @@ const CUBEJS_URL = process.env.CUBEJS_URL || "http://cubejs:4000";
 export function invalidateUserCache(userId) {
   fetch(`${CUBEJS_URL}/api/v1/internal/invalidate-cache`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ type: "user", userId }),
   }).catch(() => {});
 }
@@ -15,7 +21,7 @@ export function invalidateUserCache(userId) {
 export function invalidateAllUserCaches() {
   fetch(`${CUBEJS_URL}/api/v1/internal/invalidate-cache`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ type: "user" }),
   }).catch(() => {});
 }
@@ -23,7 +29,7 @@ export function invalidateAllUserCaches() {
 export function invalidateRulesCache() {
   fetch(`${CUBEJS_URL}/api/v1/internal/invalidate-cache`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ type: "rules" }),
   }).catch(() => {});
 }

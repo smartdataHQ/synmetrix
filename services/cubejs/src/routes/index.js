@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import express from "express";
 
 // Model Management API (feature 011-model-mgmt-api) adds six routes registered
@@ -55,6 +56,17 @@ import versionRollback from "./versionRollback.js";
 import version from "./version.js";
 
 const router = express.Router();
+
+// Service-to-service shared secret for /internal/invalidate-cache. Refuses
+// everything when HASURA_GRAPHQL_ADMIN_SECRET is unset.
+const hasAdminSecret = (req) => {
+  const expected = process.env.HASURA_GRAPHQL_ADMIN_SECRET;
+  const given = req.headers["x-hasura-admin-secret"];
+  if (!expected || typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
 
 export default ({ basePath, cubejs }) => {
   router.get(`${basePath}/v1/load`, (req, res, next) =>
@@ -203,8 +215,12 @@ export default ({ basePath, cubejs }) => {
     next();
   });
 
-  // Internal cache invalidation endpoint (called by Actions service, no auth)
+  // Internal cache invalidation endpoint (called by the Actions service with
+  // the Hasura admin secret — the route is reachable through the ingress).
   router.post(`${basePath}/v1/internal/invalidate-cache`, (req, res) => {
+    if (!hasAdminSecret(req)) {
+      return res.status(401).json({ code: "unauthorized", message: "Unauthorized" });
+    }
     const { type, userId } = req.body || {};
 
     if (type === "user") {
