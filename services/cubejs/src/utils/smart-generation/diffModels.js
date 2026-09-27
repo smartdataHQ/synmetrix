@@ -311,9 +311,11 @@ function objectFieldsToArray(fields) {
 
 /**
  * Parse cube definitions from a JS cube file string.
- * Evaluates in a VM sandbox with mock cube() function.
+ * Evaluates in a VM sandbox with mock cube() function. Pass a `views` array
+ * to also collect view() definitions into it (without one, a file calling
+ * view() stays unparseable, as before).
  */
-export function parseCubesFromJs(jsContent) {
+export function parseCubesFromJs(jsContent, views = null) {
   const cubes = [];
 
   const mockCube = (name, def) => {
@@ -331,6 +333,7 @@ export function parseCubesFromJs(jsContent) {
   try {
     const context = createContext({
       cube: mockCube,
+      ...(views && { view: (name, def) => views.push({ name, ...def }) }),
       CUBE: '{CUBE}',
       FILTER_PARAMS: createDeepProxy(),
       SQL_UTILS: createDeepProxy(),
