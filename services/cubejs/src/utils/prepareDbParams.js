@@ -58,8 +58,6 @@ const prepareDbParams = (dbParams, dbType) => {
       dbConfig = {
         ...dbConfig,
         credentials: { ...keyFile },
-        // rollups load straight into Cube Store; no staging tables in the customer's project
-        readOnly: true,
       };
       break;
     case "mssql":
