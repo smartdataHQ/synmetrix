@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { describe, it } from "node:test";
+import { PassThrough, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
 import { escapeCSVField } from "../utils/csvSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import {
+  patchBigQueryDriverSource,
   patchClickHouseQuerySource,
+  patchPreAggregationLoaderSource,
   patchCompilerSource,
 } from "../../scripts/patchCubeYamlCompiler.mjs";
 
@@ -121,6 +125,69 @@ after`;
       () => patchClickHouseQuerySource("unexpected adapter source"),
       /expected source anchor was not found exactly once/,
     );
+  });
+
+  it("guards the BigQuery stream-error patch against upstream source drift", () => {
+    const source = `before
+        const rowStream = new HydrationStream_1.HydrationStream();
+        stream.pipe(rowStream);
+after`;
+    const first = patchBigQueryDriverSource(source);
+    assert.equal(first.changed, true);
+    assert.match(first.source, /stream\.on\('error', \(err\) => rowStream\.destroy\(err\)\);/);
+    assert.deepEqual(patchBigQueryDriverSource(first.source), {
+      source: first.source,
+      changed: false,
+    });
+    assert.throws(
+      () => patchBigQueryDriverSource("unexpected driver source"),
+      /expected source anchor was not found exactly once/,
+    );
+  });
+
+  it("guards the loader stream-error patch against upstream source drift", () => {
+    const site = `
+                tableData.rowStream.pipe(stream);
+                tableData.rowStream = stream;`;
+    const first = patchPreAggregationLoaderSource(`before${site}\nmiddle${site}\nafter`);
+    assert.equal(first.changed, true);
+    assert.equal(first.source.split("stream.destroy(err)").length - 1, 2);
+    assert.deepEqual(patchPreAggregationLoaderSource(first.source), {
+      source: first.source,
+      changed: false,
+    });
+    assert.throws(
+      () => patchPreAggregationLoaderSource(`before${site}\nafter`),
+      /expected source anchor was not found exactly 2 times/,
+    );
+  });
+
+  it("fails a BigQuery pre-aggregation download instead of crashing on a query-stream error", async () => {
+    const { BigQueryDriver } = require("@cubejs-backend/bigquery-driver");
+    const { PreAggregationLoader } = require(
+      "@cubejs-backend/query-orchestrator/dist/src/orchestrator/PreAggregationLoader.js",
+    );
+    const driver = new BigQueryDriver({ projectId: "test", credentials: {} });
+    const source = new PassThrough({ objectMode: true });
+    driver.bigquery = {
+      createQueryStream: () => source,
+      dataset: () => ({ table: () => ({ getMetadata: async () => [{ schema: { fields: [] } }] }) }),
+    };
+    const loader = {
+      preAggregation: { preAggregationId: "cube.rollup" },
+      getUnloadOptions: () => ({}),
+      getStreamingOptions: () => ({}),
+      logger: () => {},
+    };
+
+    // the loader's own path: driver.stream(), then its LargeStreamWarning wrap
+    const { rowStream } = await PreAggregationLoader.prototype.getTableDataWithTempTable.call(
+      loader, driver, "pre_aggregations_x.t", (p) => p, {}, { csvImport: true, streamImport: true },
+    );
+    const loaded = pipeline(rowStream, new Writable({ objectMode: true, write: (_row, _enc, done) => done() }));
+    source.emit("error", new Error("Not found: Table p:pre_aggregations_x.t"));
+
+    await assert.rejects(loaded, /Not found: Table/);
   });
 
   it("casts composite-key count measures to ClickHouse String (Tesseract)", async () => {
