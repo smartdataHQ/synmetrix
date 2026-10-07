@@ -48,9 +48,11 @@ When the use case needs transformations, build SQL that delivers one row per gra
 
 - **Layered subquery architecture.** Build complex analytics in discrete layers, each adding one concern: base extraction → window functions → array accumulation → change-point detection → derived columns. Each layer is a `SELECT * FROM (...)` that adds columns without modifying previous ones.
 
-- **Work around cube.dev's parser, not against it.** Always wrap SQL in `SELECT * FROM (...)`. Never rely on HAVING, WITH/CTE, or Jinja functions in SQL blocks. Accept the parser's limitations and design SQL that reads naturally within those constraints. Note: the Cube style guide recommends CTEs over subqueries for readability — this applies to simpler SQL, but our complex analytical SQL requires nested subqueries due to parser limitations.
+- **Work around cube.dev's parser, not against it.** Cube already wraps the cube `sql` as `FROM (<sql>) AS <cube>`, so a single SELECT needs no `SELECT * FROM (...)` of its own — an extra wrapper only adds a layer. Wrap only SQL that uses constructs the parser rejects. Never rely on HAVING, WITH/CTE, or Jinja functions in SQL blocks. Accept the parser's limitations and design SQL that reads naturally within those constraints. Note: the Cube style guide recommends CTEs over subqueries for readability — this applies to simpler SQL, but our complex analytical SQL requires nested subqueries due to parser limitations.
 
 - **Use `sql_table` for simple cases.** When a cube maps directly to a table without transformations, use `sql_table` instead of `sql`. Reserve `sql` for when you need extraction, reshaping, or computation.
+
+- **ClickHouse Map columns: extract keys in the SELECT that reads the table.** `dimensions['x']` written directly against the table reads only that key. The same key taken in a member (`{CUBE}.dimensions['x']`) over a `SELECT * FROM table` subquery reads the whole map. Measured on `cst.semantic_events` (2026-10-07, one month, one measure by one dimension): 28 MiB read vs 293 MiB. So a cube over a shared events table is one SELECT that extracts every map key it uses as a named column, filtered to its partition/event, and members reference those columns.
 
 - **Cube-to-cube SQL composition.** When a higher-grain cube builds on a lower-grain cube, use `{other_cube.sql()}` to reference the base SQL. This avoids duplication and keeps the analytical lineage explicit.
 
@@ -163,7 +165,7 @@ Match rollups to actual dashboard query patterns. Don't create rollups that won'
 
 - **Include the measures dashboards actually query.** Don't dump all measures into every rollup. Match the measures to the queries that rollup is designed to accelerate.
 
-- **Standardized refresh: hourly, incremental, 7-day window.** Consistent across all cubes: `every: 1 hour`, `incremental: true`, `update_window: 7 days`. This is a system-level decision.
+- **Refresh on the data's own cadence: incremental, 7-day window.** `incremental: true` + `update_window: 7 days` with month partitions rebuilds only the partitions the window touches. Set `every` to how often new data can land: `every: 1 hour` for continuous arrival, `every: 1 day` (or a cron just after the load) for a daily load — hourly on a daily table rebuilds the current month 24 times a day for nothing. Cube 1.7 rejects `incremental`/`update_window` next to `refresh_key.sql`, so a cheap `max(timestamp)` check cannot gate an incremental rollup. Measure one partition's build (`system.query_log` CPU/read_rows) before choosing.
 
 - **Partition by month, index by primary filters.** `partition_granularity: month` everywhere. Index columns are the dimensions most commonly used in WHERE clauses. Keep partitions under 500-1,000 per pre-aggregation to avoid overhead.
 
@@ -180,6 +182,8 @@ Match rollups to actual dashboard query patterns. Don't create rollups that won'
 - **Understand how pre-aggregation matching works.** Cube tests pre-aggregations in definition order — rollups before `original_sql`. A rollup matches when it contains all query dimensions, all filter dimensions (which must also be included as dimensions in the rollup), and all leaf measures. Time dimension + granularity together act as a dimension, and the time zone must match. If no pre-aggregation matches, Cube falls back to the upstream data source.
 
 - **Use `original_sql` for expensive base SQL.** When a cube's SQL involves complex nested subqueries, window functions, or multiple joins, consider an `original_sql` pre-aggregation to materialize the base result. Other rollup pre-aggregations can then build from this materialized base using `use_original_sql_pre_aggregations: true`, avoiding re-execution of the expensive SQL for each rollup.
+
+- **Rollup columns need types Cube Store knows.** The ClickHouse driver passes `Nullable(Bool)` through unmapped and Cube Store rejects the build (`Custom type 'Nullable' is not supported`). Emit a nullable flag as `Nullable(String)` `'true'`/`'false'` (boolean filters bind `'true'`/`'false'` as strings), or as non-nullable `Bool`. After deploying, check the refresh worker's log that every rollup built.
 
 - **ClickHouse-specific: always define indexes.** ClickHouse requires index definitions in pre-aggregations — it will error without them. This is a ClickHouse driver constraint, not a general Cube requirement.
 
