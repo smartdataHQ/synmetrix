@@ -45,6 +45,39 @@ const BIGQUERY_PATCHED = `        const rowStream = new HydrationStream_1.Hydrat
         stream.on('error', (err) => rowStream.destroy(err));
         stream.pipe(rowStream);`;
 
+const BIGQUERY_DOWNLOAD_ORIGINAL = `    async loadTablesForDataset(dataset) {`;
+
+const BIGQUERY_DOWNLOAD_PATCHED = `    // Read-only rollups: column types from BigQuery's result schema, as
+    // tableColumnTypes gives the staging path. The base driver guesses them
+    // from the rows: a decimal after whole numbers fails the Cube Store load,
+    // and an empty partition cannot be typed at all.
+    async downloadQueryResults(query, values, options) {
+        const labels = this.buildQueryLabels(options);
+        const [job] = await this.bigquery.createQueryJob({
+            query,
+            params: values,
+            parameterMode: 'positional',
+            useLegacySql: false,
+            wrapIntegers: true,
+            ...(labels ? { labels } : {}),
+        });
+        const [rows] = await this.waitForJobResult(job, options, true);
+        const [, , response] = await job.getQueryResults({ maxResults: 0, autoPaginate: false });
+        return {
+            rows: rows.map(row => (0, HydrationStream_1.transformRow)(row)),
+            types: response.schema.fields.map((c) => {
+                if (c.type === 'NUMERIC' || c.type === 'DECIMAL') {
+                    return { name: c.name, type: this.toGenericType(c.type, 38, 9) };
+                }
+                if (c.type === 'BIGNUMERIC' || c.type === 'BIGDECIMAL') {
+                    return { name: c.name, type: this.toGenericType(c.type, 76, 38) };
+                }
+                return { name: c.name, type: this.toGenericType(c.type) };
+            }),
+        };
+    }
+    async loadTablesForDataset(dataset) {`;
+
 // Both stream-download paths wrap the driver's row stream the same way.
 const LOADER_ORIGINAL = `                tableData.rowStream.pipe(stream);
                 tableData.rowStream = stream;`;
@@ -83,6 +116,10 @@ export function patchBigQueryDriverSource(source) {
   return applyPatch(source, BIGQUERY_ORIGINAL, BIGQUERY_PATCHED, "BigQuery driver");
 }
 
+export function patchBigQueryDownloadSource(source) {
+  return applyPatch(source, BIGQUERY_DOWNLOAD_ORIGINAL, BIGQUERY_DOWNLOAD_PATCHED, "BigQuery read-only download");
+}
+
 export function patchPreAggregationLoaderSource(source) {
   return applyPatch(source, LOADER_ORIGINAL, LOADER_PATCHED, "pre-aggregation loader", 2);
 }
@@ -118,7 +155,11 @@ export async function patchInstalledCompiler() {
     await supportedPackageRoot(BIGQUERY_PACKAGE),
     "dist/src/BigQueryDriver.js",
   );
-  const bigQueryChanged = await patchFile(bigQueryPath, patchBigQueryDriverSource);
+  const bigQueryChanged = await patchFile(bigQueryPath, (source) => {
+    const stream = patchBigQueryDriverSource(source);
+    const download = patchBigQueryDownloadSource(stream.source);
+    return { source: download.source, changed: stream.changed || download.changed };
+  });
   const loaderPath = resolve(
     await supportedPackageRoot(ORCHESTRATOR_PACKAGE),
     "dist/src/orchestrator/PreAggregationLoader.js",
@@ -140,7 +181,7 @@ if (
   const result = await patchInstalledCompiler();
   console.log(
     result.changed
-      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + ClickHouse string type + stream error forwarding`
-      : `Cube ${SUPPORTED_VERSION} YAML metadata + ClickHouse string type + stream error forwarding patches already applied`,
+      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + ClickHouse string type + stream error forwarding + BigQuery read-only types`
+      : `Cube ${SUPPORTED_VERSION} YAML metadata + ClickHouse string type + stream error forwarding + BigQuery read-only type patches already applied`,
   );
 }

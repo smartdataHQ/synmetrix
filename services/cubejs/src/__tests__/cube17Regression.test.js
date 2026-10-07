@@ -9,6 +9,7 @@ import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 import { escapeCSVField } from "../utils/csvSerializer.js";
 import { validateFormat } from "../utils/formatValidator.js";
 import {
+  patchBigQueryDownloadSource,
   patchBigQueryDriverSource,
   patchClickHouseQuerySource,
   patchPreAggregationLoaderSource,
@@ -188,6 +189,64 @@ after`;
     source.emit("error", new Error("Not found: Table p:pre_aggregations_x.t"));
 
     await assert.rejects(loaded, /Not found: Table/);
+  });
+
+  it("guards the BigQuery read-only download patch against upstream source drift", () => {
+    const source = `before
+    async loadTablesForDataset(dataset) {
+after`;
+    const first = patchBigQueryDownloadSource(source);
+    assert.equal(first.changed, true);
+    assert.match(first.source, /async downloadQueryResults\(query, values, options\)/);
+    assert.deepEqual(patchBigQueryDownloadSource(first.source), { source: first.source, changed: false });
+    assert.throws(
+      () => patchBigQueryDownloadSource("unexpected driver source"),
+      /expected source anchor was not found exactly once/,
+    );
+  });
+
+  describe("BigQuery read-only download", () => {
+    const fields = [
+      { name: "club", type: "STRING" },
+      { name: "orders", type: "INTEGER" },
+      { name: "amount", type: "NUMERIC" },
+      { name: "fee", type: "FLOAT" },
+      { name: "day", type: "TIMESTAMP" },
+    ];
+    const fakeBigQuery = (rows) => ({
+      createQueryJob: async () => [{
+        getMetadata: async () => [{ status: { state: "DONE" }, statistics: {} }],
+        getQueryResults: async (opts) => (opts?.maxResults === 0 && opts?.autoPaginate === false
+          ? [[], null, { schema: { fields } }]
+          : [rows]),
+      }],
+      dataset: () => ({ table: () => ({ getMetadata: async () => [{ schema: { fields } }] }) }),
+    });
+    const download = async (rows) => {
+      const { BigQueryDriver } = require("@cubejs-backend/bigquery-driver");
+      const driver = new BigQueryDriver({ projectId: "test", credentials: {} });
+      driver.bigquery = fakeBigQuery(rows);
+      return { driver, result: await driver.downloadQueryResults("SELECT 1", [], {}) };
+    };
+
+    it("types columns from BigQuery's result schema, exactly as the staging path does", async () => {
+      // whole numbers first: guessing from rows would type amount and fee as integers
+      const rows = [
+        { club: "A", orders: 3, amount: "10", fee: 0, day: "2026-10-01" },
+        { club: "B", orders: 4, amount: "12.75", fee: 1.5, day: "2026-10-02" },
+      ];
+      const { driver, result } = await download(rows);
+
+      assert.deepEqual(result.types, await driver.tableColumnTypes("pre_aggregations_x.t"));
+      assert.equal(result.rows.length, 2);
+    });
+
+    it("types an empty partition instead of failing", async () => {
+      const { driver, result } = await download([]);
+
+      assert.deepEqual(result.rows, []);
+      assert.deepEqual(result.types, await driver.tableColumnTypes("pre_aggregations_x.t"));
+    });
   });
 
   it("casts composite-key count measures to ClickHouse String (Tesseract)", async () => {
