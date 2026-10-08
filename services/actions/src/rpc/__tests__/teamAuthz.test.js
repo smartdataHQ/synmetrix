@@ -99,3 +99,15 @@ describe("send_test_alert authorization", () => {
     assert.equal(res.error, true);
   });
 });
+
+describe("export_data_models authorization", () => {
+  it("refuses without a caller token (never reads with the admin secret)", async () => {
+    const { default: exportDataModels } = await import("../exportDataModels.js");
+    const res = await exportDataModels(
+      { "x-hasura-user-id": OUTSIDER },
+      { branch_id: "55555555-5555-4555-8555-555555555555" },
+      {}
+    );
+    assert.equal(res.error, true);
+  });
+});

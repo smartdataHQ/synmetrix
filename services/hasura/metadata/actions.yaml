@@ -38,6 +38,7 @@ actions:
     definition:
       kind: synchronous
       handler: '{{ACTIONS_URL}}/rpc/export_data_models'
+      forward_client_headers: true
       timeout: 60
     permissions:
       - role: user

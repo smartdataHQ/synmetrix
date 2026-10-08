@@ -24,15 +24,24 @@ const fetchSchemasQuery = `
   }
 `;
 
-export default async (session, input) => {
+export default async (session, input, headers) => {
   const { branch_id: branchId } = input;
 
   const userId = session?.["x-hasura-user-id"];
+  const authToken = headers?.authorization;
 
   try {
-    const schemasResp = await fetchGraphQL(fetchSchemasQuery, {
-      branch_id: branchId,
-    });
+    // Read as the caller: an admin-secret read exported any tenant's models.
+    // Without a caller token fetchGraphQL would fall back to the admin secret.
+    if (!authToken) {
+      throw new Error(`Branch ${branchId} not found!`);
+    }
+
+    const schemasResp = await fetchGraphQL(
+      fetchSchemasQuery,
+      { branch_id: branchId },
+      authToken
+    );
     const branch = schemasResp?.data?.branches_by_pk;
     const schemas = branch?.versions?.[0]?.dataschemas || [];
 
