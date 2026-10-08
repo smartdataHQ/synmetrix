@@ -730,8 +730,11 @@
       permission:
         check:
           _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
+            - _and:
+                - team_id:
+                    _is_null: true
+                - user_id:
+                    _eq: X-Hasura-User-Id
             - team:
                 members:
                   user_id:

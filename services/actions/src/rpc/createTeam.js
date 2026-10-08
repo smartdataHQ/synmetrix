@@ -2,6 +2,7 @@ import { createTeamMember, OWNER_ROLE } from "./inviteTeamMember.js";
 
 import apiError from "../utils/apiError.js";
 import { fetchGraphQL } from "../utils/graphql.js";
+import { isPortalAdmin } from "../utils/portalAdmin.js";
 import { provisionDefaultDatasources } from "../utils/provisionDefaultDatasources.js";
 import { fireTeamReconcileHook } from "../utils/defaultModels/shared.js";
 
@@ -38,6 +39,19 @@ const createTeam = async ({ userId, name }) => {
   return res?.data?.insert_teams_one;
 };
 
+/**
+ * The `create_team` action makes the caller OWNER of a team with the default
+ * datasources, so only portal admins may call it. The users-insert event
+ * trigger arrives without session variables and is unaffected.
+ */
+export const canCreateTeam = async (
+  session,
+  { portalAdmin = isPortalAdmin } = {}
+) => {
+  if (!session) return true;
+  return portalAdmin(session["x-hasura-user-id"]);
+};
+
 export default async (session, input) => {
   const { name = "Default team" } = input || {};
   const userId = session?.["x-hasura-user-id"] || input?.event?.data?.new?.id;
@@ -45,6 +59,10 @@ export default async (session, input) => {
   let newTeam;
 
   try {
+    if (!(await canCreateTeam(session))) {
+      throw new Error("Only portal admins can create teams");
+    }
+
     newTeam = await createTeam({ userId, name });
     const { id: teamId } = newTeam;
 

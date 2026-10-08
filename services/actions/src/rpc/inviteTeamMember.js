@@ -2,6 +2,7 @@ import fetch from "node-fetch";
 
 import apiError from "../utils/apiError.js";
 import { fetchGraphQL, parseResponse } from "../utils/graphql.js";
+import { isPortalAdmin } from "../utils/portalAdmin.js";
 
 const { HASURA_PLUS_ENDPOINT } = process.env;
 
@@ -100,20 +101,33 @@ const hasAccess = (members, userId) => {
   );
 };
 
-export default async (session, input, headers) => {
+/**
+ * Only an owner of the team, or a portal admin, may invite. The team is read
+ * with the admin secret: a caller-token read returns nothing for a
+ * non-member, which used to skip this check entirely.
+ */
+export const canInvite = async (
+  { team, userId },
+  { portalAdmin = isPortalAdmin } = {}
+) => {
+  if (!team || !userId) return false;
+  if (hasAccess(team.members || [], userId)) return true;
+  return portalAdmin(userId);
+};
+
+export default async (session, input) => {
   const { email, teamId, role = "member", magicLink = true } = input || {};
 
-  const { authorization: authToken } = headers || {};
   const userId = session?.["x-hasura-user-id"];
 
   let userAccount = {};
   let teamMember = {};
 
   try {
-    const team = await fetchGraphQL(teamQuery, { id: teamId }, authToken);
-    const members = team.data?.teams_by_pk?.members;
+    const res = await fetchGraphQL(teamQuery, { id: teamId });
+    const team = res?.data?.teams_by_pk;
 
-    if (members?.length && !hasAccess(members, userId)) {
+    if (!(await canInvite({ team, userId }))) {
       throw new Error("You have no permissions to invite users");
     }
 
