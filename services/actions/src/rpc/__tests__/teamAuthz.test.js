@@ -83,3 +83,19 @@ describe("create_team authorization", () => {
     assert.equal(await canCreateTeam(undefined, notAdmin), true);
   });
 });
+
+describe("send_test_alert authorization", () => {
+  it("refuses without a caller token (never reads with the admin secret)", async () => {
+    const { default: sendTestAlert } = await import("../sendTestAlert.js");
+    const res = await sendTestAlert(
+      { "x-hasura-user-id": OUTSIDER },
+      {
+        explorationId: "44444444-4444-4444-8444-444444444444",
+        deliveryType: "WEBHOOK",
+        deliveryConfig: { url: "https://attacker.example/hook" },
+      },
+      {}
+    );
+    assert.equal(res.error, true);
+  });
+});
