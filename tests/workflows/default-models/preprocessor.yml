@@ -189,7 +189,7 @@ tests:
           method: POST
           headers:
             Content-Type: application/json
-            Authorization: Bearer ${{captures.tokenA}}
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
             x-hasura-user-id: ${{captures.userA}}
           graphql:
             query: |
@@ -294,7 +294,7 @@ tests:
           method: POST
           headers:
             Content-Type: application/json
-            Authorization: Bearer ${{captures.tokenB}}
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
             x-hasura-user-id: ${{captures.userB}}
           graphql:
             query: |

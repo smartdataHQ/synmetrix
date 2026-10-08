@@ -59,6 +59,26 @@ describe("create_team authorization", () => {
     assert.equal(await canCreateTeam({ "x-hasura-user-id": OWNER }, admin), true);
   });
 
+  it("allows an admin-secret caller (role admin)", async () => {
+    assert.equal(
+      await canCreateTeam(
+        { "x-hasura-role": "admin", "x-hasura-user-id": OUTSIDER },
+        notAdmin
+      ),
+      true
+    );
+  });
+
+  it("does not trust a user-role caller that is not a portal admin", async () => {
+    assert.equal(
+      await canCreateTeam(
+        { "x-hasura-role": "user", "x-hasura-user-id": OUTSIDER },
+        notAdmin
+      ),
+      false
+    );
+  });
+
   it("allows the users-insert event trigger (no session)", async () => {
     assert.equal(await canCreateTeam(undefined, notAdmin), true);
   });
