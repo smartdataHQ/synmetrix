@@ -14,12 +14,22 @@ const explorationQuery = `
   }
 `;
 
-export default async (_, input) => {
+export default async (_, input, headers) => {
   const { explorationId, name, deliveryConfig, deliveryType } = input || {};
+  const authToken = headers?.authorization;
 
-  const queryResult = await fetchGraphQL(explorationQuery, {
-    id: explorationId,
-  });
+  // Read the exploration as the caller: the runner executes it as its owner,
+  // so an admin-secret read would deliver any tenant's results. Without a
+  // caller token fetchGraphQL would fall back to the admin secret.
+  if (!authToken) {
+    return apiError("Exploration not found");
+  }
+
+  const queryResult = await fetchGraphQL(
+    explorationQuery,
+    { id: explorationId },
+    authToken
+  );
   const exploration = queryResult?.data?.explorations_by_pk;
 
   if (!exploration) {

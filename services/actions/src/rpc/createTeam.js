@@ -42,13 +42,15 @@ const createTeam = async ({ userId, name }) => {
 /**
  * The `create_team` action makes the caller OWNER of a team with the default
  * datasources, so only portal admins may call it. The users-insert event
- * trigger arrives without session variables and is unaffected.
+ * trigger arrives without session variables, and admin-secret callers
+ * (role `admin`) are already fully trusted; both are unaffected.
  */
 export const canCreateTeam = async (
   session,
   { portalAdmin = isPortalAdmin } = {}
 ) => {
   if (!session) return true;
+  if (session["x-hasura-role"] === "admin") return true;
   return portalAdmin(session["x-hasura-user-id"]);
 };
 

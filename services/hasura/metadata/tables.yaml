@@ -204,13 +204,27 @@
     - role: user
       permission:
         check:
-          _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
-            - team:
-                members:
-                  user_id:
-                    _eq: X-Hasura-User-Id
+          _and:
+            - exploration:
+                _or:
+                  - datasource:
+                      _and:
+                        - team_id:
+                            _is_null: true
+                        - user_id:
+                            _eq: X-Hasura-User-Id
+                  - datasource:
+                      team:
+                        members:
+                          user_id:
+                            _eq: X-Hasura-User-Id
+            - _or:
+                - team_id:
+                    _is_null: true
+                - team:
+                    members:
+                      user_id:
+                        _eq: X-Hasura-User-Id
         set:
           user_id: x-hasura-user-id
         columns:
@@ -266,13 +280,27 @@
                   user_id:
                     _eq: X-Hasura-User-Id
         check:
-          _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
-            - team:
-                members:
-                  user_id:
-                    _eq: X-Hasura-User-Id
+          _and:
+            - exploration:
+                _or:
+                  - datasource:
+                      _and:
+                        - team_id:
+                            _is_null: true
+                        - user_id:
+                            _eq: X-Hasura-User-Id
+                  - datasource:
+                      team:
+                        members:
+                          user_id:
+                            _eq: X-Hasura-User-Id
+            - _or:
+                - team_id:
+                    _is_null: true
+                - team:
+                    members:
+                      user_id:
+                        _eq: X-Hasura-User-Id
   delete_permissions:
     - role: user
       permission:
@@ -778,16 +806,22 @@
           - name
         filter:
           _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
+            - _and:
+                - team_id:
+                    _is_null: true
+                - user_id:
+                    _eq: X-Hasura-User-Id
             - team:
                 members:
                   user_id:
                     _eq: X-Hasura-User-Id
         check:
           _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
+            - _and:
+                - team_id:
+                    _is_null: true
+                - user_id:
+                    _eq: X-Hasura-User-Id
             - team:
                 members:
                   user_id:
@@ -797,8 +831,11 @@
       permission:
         filter:
           _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
+            - _and:
+                - team_id:
+                    _is_null: true
+                - user_id:
+                    _eq: X-Hasura-User-Id
             - team:
                 members:
                   user_id:
@@ -898,8 +935,11 @@
         filter:
           _or:
             - datasource:
-                user_id:
-                  _eq: X-Hasura-User-Id
+                _and:
+                  - team_id:
+                      _is_null: true
+                  - user_id:
+                      _eq: X-Hasura-User-Id
             - datasource:
                 team:
                   members:
@@ -1149,13 +1189,27 @@
     - role: user
       permission:
         check:
-          _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
-            - team:
-                members:
-                  user_id:
-                    _eq: X-Hasura-User-Id
+          _and:
+            - exploration:
+                _or:
+                  - datasource:
+                      _and:
+                        - team_id:
+                            _is_null: true
+                        - user_id:
+                            _eq: X-Hasura-User-Id
+                  - datasource:
+                      team:
+                        members:
+                          user_id:
+                            _eq: X-Hasura-User-Id
+            - _or:
+                - team_id:
+                    _is_null: true
+                - team:
+                    members:
+                      user_id:
+                        _eq: X-Hasura-User-Id
         set:
           user_id: x-hasura-user-id
         columns:
@@ -1208,13 +1262,27 @@
                   user_id:
                     _eq: X-Hasura-User-Id
         check:
-          _or:
-            - user_id:
-                _eq: X-Hasura-User-Id
-            - team:
-                members:
-                  user_id:
-                    _eq: X-Hasura-User-Id
+          _and:
+            - exploration:
+                _or:
+                  - datasource:
+                      _and:
+                        - team_id:
+                            _is_null: true
+                        - user_id:
+                            _eq: X-Hasura-User-Id
+                  - datasource:
+                      team:
+                        members:
+                          user_id:
+                            _eq: X-Hasura-User-Id
+            - _or:
+                - team_id:
+                    _is_null: true
+                - team:
+                    members:
+                      user_id:
+                        _eq: X-Hasura-User-Id
   delete_permissions:
     - role: user
       permission:

@@ -195,7 +195,7 @@ tests:
           method: POST
           headers:
             Content-Type: application/json
-            Authorization: Bearer ${{captures.accessToken}}
+            x-hasura-admin-secret: ${{env.HASURA_GRAPHQL_ADMIN_SECRET}}
             x-hasura-user-id: ${{captures.userId}}
           graphql:
             query: |

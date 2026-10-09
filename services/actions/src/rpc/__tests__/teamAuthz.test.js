@@ -59,7 +59,55 @@ describe("create_team authorization", () => {
     assert.equal(await canCreateTeam({ "x-hasura-user-id": OWNER }, admin), true);
   });
 
+  it("allows an admin-secret caller (role admin)", async () => {
+    assert.equal(
+      await canCreateTeam(
+        { "x-hasura-role": "admin", "x-hasura-user-id": OUTSIDER },
+        notAdmin
+      ),
+      true
+    );
+  });
+
+  it("does not trust a user-role caller that is not a portal admin", async () => {
+    assert.equal(
+      await canCreateTeam(
+        { "x-hasura-role": "user", "x-hasura-user-id": OUTSIDER },
+        notAdmin
+      ),
+      false
+    );
+  });
+
   it("allows the users-insert event trigger (no session)", async () => {
     assert.equal(await canCreateTeam(undefined, notAdmin), true);
+  });
+});
+
+describe("send_test_alert authorization", () => {
+  it("refuses without a caller token (never reads with the admin secret)", async () => {
+    const { default: sendTestAlert } = await import("../sendTestAlert.js");
+    const res = await sendTestAlert(
+      { "x-hasura-user-id": OUTSIDER },
+      {
+        explorationId: "44444444-4444-4444-8444-444444444444",
+        deliveryType: "WEBHOOK",
+        deliveryConfig: { url: "https://attacker.example/hook" },
+      },
+      {}
+    );
+    assert.equal(res.error, true);
+  });
+});
+
+describe("export_data_models authorization", () => {
+  it("refuses without a caller token (never reads with the admin secret)", async () => {
+    const { default: exportDataModels } = await import("../exportDataModels.js");
+    const res = await exportDataModels(
+      { "x-hasura-user-id": OUTSIDER },
+      { branch_id: "55555555-5555-4555-8555-555555555555" },
+      {}
+    );
+    assert.equal(res.error, true);
   });
 });
