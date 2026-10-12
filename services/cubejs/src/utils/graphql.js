@@ -1,5 +1,5 @@
-import fetch from "node-fetch";
-
+// Node's built-in fetch, not node-fetch 2: that one never settles when a gzip
+// response is cut off mid-body, which froze the refresh scheduler for days.
 const HASURA_ENDPOINT = process.env.HASURA_ENDPOINT;
 const HASURA_GRAPHQL_ADMIN_SECRET = process.env.HASURA_GRAPHQL_ADMIN_SECRET;
 
