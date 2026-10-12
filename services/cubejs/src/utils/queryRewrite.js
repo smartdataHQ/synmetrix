@@ -47,6 +47,18 @@ function loadPartitionPruningPolicy() {
 
 const PARTITION_PRUNING = loadPartitionPruningPolicy();
 
+// --- Row-rule exemption (owner rule, 2026-10-12) ---
+// Teams whose `settings.partition` is listed here skip the rule-based row
+// filters (Step 1) and see every partition: the platform owner (fftech.is).
+// Deployment config only — teams cannot write `settings` through Hasura.
+// Comma-separated: CUBEJS_ROW_RULES_EXEMPT_PARTITIONS=fftech.is
+const ROW_RULES_EXEMPT_PARTITIONS = new Set(
+  String(process.env.CUBEJS_ROW_RULES_EXEMPT_PARTITIONS || "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean),
+);
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function parseExplicitDate(value) {
@@ -308,6 +320,7 @@ function extractCubeNames(query) {
  * 1. Apply rule-based row filtering (all roles, including owner/admin)
  *    Rules are defined by source table name — they apply to ALL cubes
  *    backed by that table, not just cubes with a matching name.
+ *    Skipped for teams in CUBEJS_ROW_RULES_EXEMPT_PARTITIONS.
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
 const queryRewrite = async (query, { securityContext }) => {
@@ -352,8 +365,9 @@ const queryRewrite = async (query, { securityContext }) => {
 
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
   const rules = await loadRules();
+  const exempt = ROW_RULES_EXEMPT_PARTITIONS.has(teamProperties?.partition);
 
-  if (rules.length > 0) {
+  if (rules.length > 0 && !exempt) {
     const queryCubeNames = extractCubeNames(query);
 
     // Index rules by table name for fast lookup
