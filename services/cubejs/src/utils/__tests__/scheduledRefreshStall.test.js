@@ -6,7 +6,10 @@ describe("scheduled refresh stall detection", () => {
     mock.timers.enable({ apis: ["Date"], now: 0 });
     // The interval's datasource lookup hangs, as it did on dev.
     mock.module("../dataSourceHelpers.js", {
-      namedExports: { getDataSources: () => new Promise(() => {}) },
+      namedExports: {
+        getDataSources: () => new Promise(() => {}),
+        getVersionModelCode: async () => [],
+      },
     });
     const { default: scheduledRefreshContexts, scheduledRefreshStalledFor } =
       await import("../scheduledRefreshContexts.js");

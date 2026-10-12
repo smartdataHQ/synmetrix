@@ -162,11 +162,32 @@ const userQuery = `
   }
 `;
 
+// The scheduler runs this every interval for every datasource, so it carries
+// model ids only; model code is read once per version (versionModelCodeQuery).
 const sourcesQuery = `
   {
     datasources {
       ${sourceFragment}
-      ${activeBranchModelsFragment}
+      branches(where: {status: {_eq: active}}) {
+        ${branchesFragment}
+        versions (limit: 1, order_by: {created_at: desc}) {
+          id
+          dataschemas {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
+`;
+
+const versionModelCodeQuery = `
+  query ($versionId: uuid!) {
+    dataschemas(where: {version_id: {_eq: $versionId}}) {
+      id
+      name
+      code
     }
   }
 `;
@@ -349,6 +370,11 @@ export const getDataSources = async () => {
   res = res?.data?.datasources;
 
   return res;
+};
+
+export const getVersionModelCode = async (versionId) => {
+  const res = await fetchGraphQL(versionModelCodeQuery, { versionId });
+  return res?.data?.dataschemas || [];
 };
 
 /**
