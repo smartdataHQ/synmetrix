@@ -1,4 +1,4 @@
-import { getDataSources } from "./dataSourceHelpers.js";
+import { getDataSources, getVersionModelCode } from "./dataSourceHelpers.js";
 import buildSecurityContext from "./buildSecurityContext.js";
 import YAML from "yaml";
 
@@ -35,8 +35,12 @@ export const hasUnsafeScheduledRefreshPartitionFilter = (schema) => {
   }
 };
 
-const activeSchemas = (dataSource) =>
-  dataSource?.branches?.[0]?.versions?.[0]?.dataschemas || [];
+const activeVersion = (dataSource) => dataSource?.branches?.[0]?.versions?.[0];
+
+const activeSchemas = (dataSource) => activeVersion(dataSource)?.dataschemas || [];
+
+const countUnsafeSchemas = (schemas) =>
+  schemas.filter(hasUnsafeScheduledRefreshPartitionFilter).length;
 
 /**
  * Build refresh contexts while quarantining only the legacy model pattern
@@ -48,6 +52,7 @@ export const buildScheduledRefreshContexts = (
   {
     buildContext = buildSecurityContext,
     disabledDbTypes = new Set(),
+    unsafeSchemaCount = (dataSource) => countUnsafeSchemas(activeSchemas(dataSource)),
     warn = (summary) =>
       console.warn("Scheduled refresh context quarantined", summary),
   } = {},
@@ -64,9 +69,7 @@ export const buildScheduledRefreshContexts = (
       continue;
     }
 
-    const affected = activeSchemas(dataSource).filter(
-      hasUnsafeScheduledRefreshPartitionFilter,
-    ).length;
+    const affected = unsafeSchemaCount(dataSource);
 
     if (affected > 0) {
       excludedDataSources += 1;
@@ -118,13 +121,35 @@ export const scheduledRefreshStalledFor = (now = Date.now()) => {
  *
  * @returns {Promise<Array>} - A promise that resolves to an array of objects, where each object contains the security context for a data source.
  */
+// Versions are immutable, so a version's quarantine verdict never changes:
+// its model code is read once, not on every interval for every datasource.
+const unsafeSchemasByVersion = new Map();
+
 const scheduledRefreshContexts = async () => {
   lastIntervalStartedAt = Date.now();
-  const dataSources = await getDataSources();
+  const dataSources = (await getDataSources()) || [];
+
+  const activeVersionIds = new Set(
+    dataSources.map((dataSource) => activeVersion(dataSource)?.id).filter(Boolean),
+  );
+  for (const versionId of unsafeSchemasByVersion.keys()) {
+    if (!activeVersionIds.has(versionId)) unsafeSchemasByVersion.delete(versionId);
+  }
+  for (const versionId of activeVersionIds) {
+    if (!unsafeSchemasByVersion.has(versionId)) {
+      unsafeSchemasByVersion.set(
+        versionId,
+        countUnsafeSchemas(await getVersionModelCode(versionId)),
+      );
+    }
+  }
+
   return buildScheduledRefreshContexts(dataSources, {
     disabledDbTypes: parseDisabledScheduledRefreshDbTypes(
       process.env.CUBEJS_SCHEDULED_REFRESH_DISABLED_DB_TYPES,
     ),
+    unsafeSchemaCount: (dataSource) =>
+      unsafeSchemasByVersion.get(activeVersion(dataSource)?.id) ?? 0,
   });
 };
 
