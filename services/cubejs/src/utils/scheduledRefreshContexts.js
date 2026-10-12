@@ -101,12 +101,25 @@ export const buildScheduledRefreshContexts = (
   return contexts;
 };
 
+// Cube calls scheduledRefreshContexts at the start of every interval and skips
+// a tick while the previous interval is still running, so a hung interval
+// stops these calls. Normal intervals take minutes; 30 is a stall.
+const STALL_AFTER_MS = 30 * 60 * 1000;
+let lastIntervalStartedAt = Date.now();
+
+/** Milliseconds since the last interval started, or 0 while not stalled. */
+export const scheduledRefreshStalledFor = (now = Date.now()) => {
+  const idle = now - lastIntervalStartedAt;
+  return idle > STALL_AFTER_MS ? idle : 0;
+};
+
 /**
  * Asynchronous function to get the security contexts for all data sources to refresh cache.
  *
  * @returns {Promise<Array>} - A promise that resolves to an array of objects, where each object contains the security context for a data source.
  */
 const scheduledRefreshContexts = async () => {
+  lastIntervalStartedAt = Date.now();
   const dataSources = await getDataSources();
   return buildScheduledRefreshContexts(dataSources, {
     disabledDbTypes: parseDisabledScheduledRefreshDbTypes(

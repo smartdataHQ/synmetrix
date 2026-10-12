@@ -17,7 +17,9 @@ import { installProcessGuards } from "./src/utils/processGuards.js";
 import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
-import scheduledRefreshContexts from "./src/utils/scheduledRefreshContexts.js";
+import scheduledRefreshContexts, {
+  scheduledRefreshStalledFor,
+} from "./src/utils/scheduledRefreshContexts.js";
 
 // Installed before anything else so failures during startup are covered too.
 // A pre-aggregation whose build query fails rejects past Cube's orchestrator;
@@ -100,6 +102,20 @@ const cubejs = new ServerCore(options);
 // Custom raw-SQL routes require driver instances; Cube's server-level factory
 // must remain config-only so 1.7 can derive the dialect per tenant context.
 cubejs.tenantDriverFactory = driverFactory;
+
+// Refresh-worker liveness. A hung scheduler logs nothing and never restarts on
+// its own (dev, 2026-10-08: 4.5 days without a pre-aggregation refresh).
+if (options.scheduledRefreshTimer) {
+  app.get("/scheduler-health", (req, res) => {
+    const stalledFor = scheduledRefreshStalledFor();
+    if (stalledFor) {
+      console.error(
+        `Refresh scheduler stalled: no interval started for ${Math.round(stalledFor / 60000)}m`,
+      );
+    }
+    res.sendStatus(stalledFor ? 503 : 200);
+  });
+}
 
 const file = fs.readFileSync("./src/swagger.yaml", "utf8");
 const swaggerDocument = YAML.parse(file);
