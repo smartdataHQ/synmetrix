@@ -1,4 +1,5 @@
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
+import { preAggregationWarnings } from "../utils/preAggregationWarnings.js";
 
 import { verifyAndProvision } from "../utils/directVerifyAuth.js";
 import { emitModelEvent } from "../utils/eventEmitter.js";
@@ -283,7 +284,7 @@ export default async function validateInBranch(req, res) {
   // Compile.
   try {
     const repo = new InMemorySchemaFileRepository(files);
-    const { compiler } = prepareCompiler(repo, {
+    const { compiler, cubeEvaluator } = prepareCompiler(repo, {
       allowNodeRequire: false,
       standalone: true,
     });
@@ -322,6 +323,9 @@ export default async function validateInBranch(req, res) {
     }
 
     const warnings = rawWarnings.map(mapSyntaxWarning);
+    if (rawErrors.length === 0 && !compileError) {
+      warnings.push(...preAggregationWarnings(cubeEvaluator, files));
+    }
     const result = {
       valid: errors.length === 0,
       errors,

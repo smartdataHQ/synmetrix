@@ -1,5 +1,7 @@
 import { prepareCompiler } from "@cubejs-backend/schema-compiler";
 
+import { preAggregationWarnings } from "../utils/preAggregationWarnings.js";
+
 /**
  * In-memory schema file repository that satisfies the SchemaFileRepository
  * interface from @cubejs-backend/shared. Each file has { fileName, content }.
@@ -68,7 +70,7 @@ export default async (req, res) => {
 
   try {
     const repo = new InMemorySchemaFileRepository(files);
-    const { compiler } = prepareCompiler(repo, {
+    const { compiler, cubeEvaluator } = prepareCompiler(repo, {
       allowNodeRequire: false,
       standalone: true,
     });
@@ -109,6 +111,9 @@ export default async (req, res) => {
 
     const errors = rawErrors.map(mapCompilerError);
     const warnings = rawWarnings.map(mapSyntaxWarning);
+    if (rawErrors.length === 0 && !compileError) {
+      warnings.push(...preAggregationWarnings(cubeEvaluator, files));
+    }
 
     return res.json({
       valid: errors.length === 0,
