@@ -358,6 +358,55 @@ describe("maybeHandleLoadExport", () => {
     ]);
   });
 
+  it("falls through to the buffered path when the plan runs against Cube Store", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"],
+        measures: ["Orders.count"],
+      },
+    });
+    const res = new MockResponse();
+    let nextCalls = 0;
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      sqlQuery: {
+        sql: ["SELECT city, count FROM stb_pre_agg.orders_rollup", []],
+        // Rollups served from Cube Store compile with external: true; Cube's
+        // queue cannot stream those.
+        external: true,
+        preAggregations: [
+          {
+            tableName: "stb_pre_agg.orders_rollup",
+            dataSource: "default",
+            external: true,
+          },
+        ],
+        aliasNameToMember: {
+          "Orders.city": "Orders.city",
+          "Orders.count": "Orders.count",
+        },
+      },
+      metaConfig: createMetaConfig({
+        measures: [{ name: "Orders.count", type: "count" }],
+        dimensions: [{ name: "Orders.city", type: "string" }],
+      }),
+      streamRows: [{ "Orders.city": "Reykjavik", "Orders.count": 3 }],
+      driver: createClickHouseDriver({
+        arrowChunks: [Buffer.from("should-not-be-used")],
+      }),
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      nextCalls++;
+    }, cubejs);
+
+    assert.equal(nextCalls, 1);
+    assert.equal(res.headersSent, false);
+  });
+
   it("falls through to the buffered path when semantic streaming is unavailable", async () => {
     const req = createRequest({
       format: "csv",

@@ -486,6 +486,12 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
   if (!plan || plan.handled) return true;
   if (plan.unsupported) return false;
 
+  // Cube's query queue refuses to stream a query that runs against Cube Store
+  // ("Streaming queries to Cube Store aren't supported"). When the compiled
+  // plan targets the external store, neither the native ClickHouse path nor
+  // semantic streaming can serve it, so let the buffered /load pipeline do.
+  if (plan.streamingQuery?.external) return false;
+
   const abortController = createAbortController(res);
 
   // 099 T089 (FR-091): `Dataset Exported` audit. Tenant rides tokenPayload
