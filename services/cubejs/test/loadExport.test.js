@@ -358,6 +358,49 @@ describe("maybeHandleLoadExport", () => {
     ]);
   });
 
+  it("compiles without Cube Store pre-aggregations so the export can stream", async () => {
+    const req = createRequest({
+      format: "arrow",
+      query: {
+        dimensions: ["Orders.city"],
+        measures: ["Orders.count"],
+      },
+    });
+    const res = new MockResponse();
+    const compiledQueries = [];
+
+    const cubejs = createMockCube({
+      dbType: "clickhouse",
+      normalizedQuery: req.body.query,
+      compiledQueries,
+      sqlQuery: {
+        sql: ["SELECT city, count(*) FROM orders GROUP BY 1", []],
+        aliasNameToMember: {
+          "Orders.city": "Orders.city",
+          "Orders.count": "Orders.count",
+        },
+      },
+      metaConfig: createMetaConfig({
+        measures: [{ name: "Orders.count", type: "count" }],
+        dimensions: [{ name: "Orders.city", type: "string" }],
+      }),
+      streamRows: [{ "Orders.city": "Reykjavik", "Orders.count": 3 }],
+    });
+
+    await maybeHandleLoadExport(req, res, () => {
+      throw new Error("next should not be called — the export streams");
+    }, cubejs);
+
+    // Cube's queue refuses to stream a query compiled against Cube Store
+    // ("Streaming queries to Cube Store aren't supported").
+    assert.equal(compiledQueries.length, 1);
+    assert.equal(compiledQueries[0].disableExternalPreAggregations, true);
+    const parsed = tableFromIPC(res.binaryOutput);
+    assert.deepEqual(parsed.toArray().map((row) => row.toJSON()), [
+      { "Orders.city": "Reykjavik", "Orders.count": 3 },
+    ]);
+  });
+
   it("falls through to the buffered path when semantic streaming is unavailable", async () => {
     const req = createRequest({
       format: "csv",
@@ -470,6 +513,7 @@ function createMockCube(options) {
     streamRows = [],
     nativePreAggs = null,
     driver = null,
+    compiledQueries = null,
   } = options;
 
   return {
@@ -506,7 +550,10 @@ function createMockCube(options) {
           metaConfig: async () => metaConfig,
         }),
         filterVisibleItemsInMeta: (context, cubes) => cubes,
-        getSqlQueriesInternal: async () => [sqlQuery],
+        getSqlQueriesInternal: async (context, queries) => {
+          compiledQueries?.push(...queries);
+          return [sqlQuery];
+        },
         getAdapterApi: async () => ({
           streamQuery: async () => createRowStream(streamRows),
           getQueryOrchestrator: nativePreAggs
