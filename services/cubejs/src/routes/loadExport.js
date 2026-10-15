@@ -323,8 +323,18 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
     metaConfig = apiGateway.filterVisibleItemsInMeta(context, metaConfig);
 
     const annotation = prepareAnnotation(metaConfig, normalizedQuery);
+    // Compile against the source database, not Cube Store: Cube's queue
+    // refuses to stream an external query ("Streaming queries to Cube Store
+    // aren't supported"). Cube's own SQL API streams the same way
+    // (gateway.js sqlApiLoad). Rollups in the source database still apply.
     const sqlQuery = (
-      await apiGateway.getSqlQueriesInternal(context, normalizedQueries)
+      await apiGateway.getSqlQueriesInternal(
+        context,
+        normalizedQueries.map((q) => ({
+          ...q,
+          disableExternalPreAggregations: true,
+        })),
+      )
     )[0];
     const streamingQuery = {
       ...sqlQuery,
@@ -338,10 +348,9 @@ async function buildLoadExportPlan(req, res, cubejs, query) {
     };
 
     // The compiled sqlQuery carries a preAggregations array when the query
-    // plan routes through pre-aggregation tables (typically in CubeStore).
-    // Neither the native ClickHouse path nor semantic streaming can reach
-    // CubeStore tables, so flag it so tryHandleLoadExport can bail out early
-    // and let the standard Cube.js load pipeline handle it.
+    // plan routes through pre-aggregation tables in the source database. The
+    // native ClickHouse passthrough cannot resolve those, so flag it and let
+    // semantic streaming (which loads them) serve the query.
     const usesPreAggregations =
       Array.isArray(sqlQuery.preAggregations) &&
       sqlQuery.preAggregations.length > 0;
@@ -485,12 +494,6 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
   const plan = await buildLoadExportPlan(req, res, cubejs, query);
   if (!plan || plan.handled) return true;
   if (plan.unsupported) return false;
-
-  // Cube's query queue refuses to stream a query that runs against Cube Store
-  // ("Streaming queries to Cube Store aren't supported"). When the compiled
-  // plan targets the external store, neither the native ClickHouse path nor
-  // semantic streaming can serve it, so let the buffered /load pipeline do.
-  if (plan.streamingQuery?.external) return false;
 
   const abortController = createAbortController(res);
 

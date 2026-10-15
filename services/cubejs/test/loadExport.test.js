@@ -358,7 +358,7 @@ describe("maybeHandleLoadExport", () => {
     ]);
   });
 
-  it("falls through to the buffered path when the plan runs against Cube Store", async () => {
+  it("compiles without Cube Store pre-aggregations so the export can stream", async () => {
     const req = createRequest({
       format: "arrow",
       query: {
@@ -367,23 +367,14 @@ describe("maybeHandleLoadExport", () => {
       },
     });
     const res = new MockResponse();
-    let nextCalls = 0;
+    const compiledQueries = [];
 
     const cubejs = createMockCube({
       dbType: "clickhouse",
       normalizedQuery: req.body.query,
+      compiledQueries,
       sqlQuery: {
-        sql: ["SELECT city, count FROM stb_pre_agg.orders_rollup", []],
-        // Rollups served from Cube Store compile with external: true; Cube's
-        // queue cannot stream those.
-        external: true,
-        preAggregations: [
-          {
-            tableName: "stb_pre_agg.orders_rollup",
-            dataSource: "default",
-            external: true,
-          },
-        ],
+        sql: ["SELECT city, count(*) FROM orders GROUP BY 1", []],
         aliasNameToMember: {
           "Orders.city": "Orders.city",
           "Orders.count": "Orders.count",
@@ -394,17 +385,20 @@ describe("maybeHandleLoadExport", () => {
         dimensions: [{ name: "Orders.city", type: "string" }],
       }),
       streamRows: [{ "Orders.city": "Reykjavik", "Orders.count": 3 }],
-      driver: createClickHouseDriver({
-        arrowChunks: [Buffer.from("should-not-be-used")],
-      }),
     });
 
     await maybeHandleLoadExport(req, res, () => {
-      nextCalls++;
+      throw new Error("next should not be called — the export streams");
     }, cubejs);
 
-    assert.equal(nextCalls, 1);
-    assert.equal(res.headersSent, false);
+    // Cube's queue refuses to stream a query compiled against Cube Store
+    // ("Streaming queries to Cube Store aren't supported").
+    assert.equal(compiledQueries.length, 1);
+    assert.equal(compiledQueries[0].disableExternalPreAggregations, true);
+    const parsed = tableFromIPC(res.binaryOutput);
+    assert.deepEqual(parsed.toArray().map((row) => row.toJSON()), [
+      { "Orders.city": "Reykjavik", "Orders.count": 3 },
+    ]);
   });
 
   it("falls through to the buffered path when semantic streaming is unavailable", async () => {
@@ -519,6 +513,7 @@ function createMockCube(options) {
     streamRows = [],
     nativePreAggs = null,
     driver = null,
+    compiledQueries = null,
   } = options;
 
   return {
@@ -555,7 +550,10 @@ function createMockCube(options) {
           metaConfig: async () => metaConfig,
         }),
         filterVisibleItemsInMeta: (context, cubes) => cubes,
-        getSqlQueriesInternal: async () => [sqlQuery],
+        getSqlQueriesInternal: async (context, queries) => {
+          compiledQueries?.push(...queries);
+          return [sqlQuery];
+        },
         getAdapterApi: async () => ({
           streamQuery: async () => createRowStream(streamRows),
           getQueryOrchestrator: nativePreAggs
