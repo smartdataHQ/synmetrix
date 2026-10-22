@@ -76,6 +76,8 @@ services:
       CUBE_PRINCIPLES_PATH: /app/shared/principles/cube-principles.md
       CUBEJS_SCHEDULED_REFRESH: false
       CUBEJS_DB_QUERY_LIMIT: 1000000
+      # CubeStore's 64 MiB transport limit: a bigger message fails alone instead of wedging the connection
+      CUBEJS_CUBESTORE_MAX_MESSAGE_SIZE: 67108864
       WORKOS_API_KEY: ${WORKOS_API_KEY}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
       WORKOS_ISSUER: ${WORKOS_ISSUER:-}
@@ -103,6 +105,8 @@ services:
       CUBEJS_REFRESH_TIMER: 60
       CUBEJS_SCHEDULED_REFRESH: true
       CUBEJS_SQL_API: false
+      # CubeStore's 64 MiB transport limit: a bigger message fails alone instead of wedging the connection
+      CUBEJS_CUBESTORE_MAX_MESSAGE_SIZE: 67108864
     networks:
       - synmetrix_default
 
