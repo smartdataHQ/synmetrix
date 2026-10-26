@@ -138,7 +138,7 @@ export async function resolveMutableDataschema(req, res, { action, codes }) {
       payload: auditPayload,
     });
 
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
   const allowed = await authorizeTeamWrite(res, {
     user,
     partition: payload.partition,

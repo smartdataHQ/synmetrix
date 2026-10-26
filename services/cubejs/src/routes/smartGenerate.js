@@ -270,7 +270,7 @@ export default async (req, res, cubejs) => {
 
     let profiledTable;
     let primaryKeys;
-    const rewriteRules = await loadRules();
+    const rewriteRules = req.securityContext?.queryRules || (await loadRules());
     const ruleFilters = profileRuleFilters(
       rewriteRules,
       table,

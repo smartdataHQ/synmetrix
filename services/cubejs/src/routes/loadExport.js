@@ -20,6 +20,7 @@ import {
   writeTextChunk,
 } from "../utils/csvSerializer.js";
 import {
+  BUFFERED_ARROW_ROW_LIMIT,
   writeBinaryChunk,
   writeRowStreamAsArrow,
 } from "../utils/arrowSerializer.js";
@@ -478,11 +479,13 @@ async function executeNativeClickHouseArrow(
   values,
   driver,
   signal,
+  settings = {},
 ) {
   const result = await driver.client.exec({
     query: `${removeTrailingSemicolon(sqlstring.format(query, values || []))}\nFORMAT ArrowStream`,
     clickhouse_settings: nativeExportSettings(driver, {
       output_format_arrow_compression_method: "none",
+      ...settings,
     }),
     abort_signal: signal,
   });
@@ -597,6 +600,11 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
           nativeQuery.values,
           driver,
           abortController.signal,
+          // A bounded load (a dashboard's) waits for ClickHouse to finish, so a
+          // failure arrives as an error status before any row, never mid-stream.
+          query.limit > 0 && query.limit <= BUFFERED_ARROW_ROW_LIMIT
+            ? { wait_end_of_query: 1 }
+            : {},
         );
       } finally {
         // A driver per export: release its sockets whatever the outcome.

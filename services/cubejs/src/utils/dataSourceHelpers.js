@@ -253,6 +253,20 @@ const versionBranchQuery = `
   }
 `;
 
+// Listing routes (meta-all, discover) read every model's code. They decide no
+// authority, so one read serves a user for 30 s; authority paths call findUser.
+const MODEL_CODE_TTL_MS = 30_000;
+const modelCodeReads = new Map();
+export const findUserWithModelCode = (userId) => {
+  const hit = modelCodeReads.get(userId);
+  if (hit && Date.now() - hit.at < MODEL_CODE_TTL_MS) return hit.read;
+  const read = findUser({ userId, includeModelCode: true });
+  modelCodeReads.set(userId, { at: Date.now(), read });
+  read.catch(() => modelCodeReads.delete(userId));
+  if (modelCodeReads.size > 500) modelCodeReads.delete(modelCodeReads.keys().next().value);
+  return read;
+};
+
 export const findUser = async ({ userId, includeModelCode = true }) => {
   const res = await fetchGraphQL(userQuery, { userId, includeModelCode });
   const members = res?.data?.members;

@@ -1,7 +1,7 @@
 import YAML from "yaml";
 
 import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "../utils/workosAuth.js";
-import { findUser, provisionUserFromWorkOS, provisionUserFromFraiOS } from "../utils/dataSourceHelpers.js";
+import { findUserWithModelCode, provisionUserFromWorkOS, provisionUserFromFraiOS } from "../utils/dataSourceHelpers.js";
 import { parseCubesFromJs } from "../utils/smart-generation/diffModels.js";
 
 /**
@@ -125,7 +125,7 @@ export default async function discover(req, res) {
     }
 
     // --- Fetch user's datasources across all team memberships ---
-    const user = await findUser({ userId });
+    const user = await findUserWithModelCode(userId);
 
     if (!user.dataSources?.length) {
       return res.json({ datasources: [] });

@@ -216,7 +216,7 @@ export default async (req, res, cubejs) => {
     const signed = isSignedSql(sql, req.body.sql_signature);
     auditSigned = signed;
     if (!signed) {
-      const rules = await loadRules();
+      const rules = req.securityContext?.queryRules || (await loadRules());
       if (rules.length > 0) {
         res.status(403).json({
           code: "sql_api_blocked",

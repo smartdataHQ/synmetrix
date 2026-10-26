@@ -50,15 +50,7 @@ const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) =>
 
   const files = dataModels.map((schema) => schema.id);
 
-  const fileRevisions = dataModels
-    .map((schema) => [
-      schema.id,
-      schema.checksum ||
-        (typeof schema.code === "string"
-          ? createMd5Hex(`${schema.name || ""}-${schema.code}`)
-          : null),
-    ])
-    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  const fileRevisions = modelFileRevisions(dataModels);
   const schemaVersion = createMd5Hex(fileRevisions);
   const preAggregationSchema = createMd5Hex(data.dataSourceId);
 
@@ -78,6 +70,25 @@ const buildSecurityContext = (dataSource, branch, version, teamSettings = {}) =>
 };
 
 export default buildSecurityContext;
+
+// Each model file's id with its content checksum (the md5 of name and code a
+// trigger stores on every write), sorted: what a schemaVersion is made of.
+function modelFileRevisions(dataModels) {
+  return dataModels
+    .map((schema) => [
+      schema.id,
+      schema.checksum ||
+        (typeof schema.code === "string"
+          ? createMd5Hex(`${schema.name || ""}-${schema.code}`)
+          : null),
+    ])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+}
+
+/** The schemaVersion of a set of model files, as buildSecurityContext computes it. */
+export function schemaVersionOf(dataModels) {
+  return createMd5Hex(modelFileRevisions(dataModels || []));
+}
 
 export function buildAuthorityRevision(securityContext, rules) {
   const { userId, userScope, tokenPayload } = securityContext || {};

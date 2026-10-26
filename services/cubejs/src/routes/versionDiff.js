@@ -79,7 +79,7 @@ export default async function versionDiff(req, res) {
     );
   }
 
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
   const partitionTeamIds = resolvePartitionTeamIds(
     user.members,
     payload.partition

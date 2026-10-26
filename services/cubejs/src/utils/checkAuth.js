@@ -82,14 +82,15 @@ const checkAuth = async (req) => {
   }
 
   if (!dataSourceId) {
-    const error = new Error(
-      "400: No x-hasura-datasource-id provided, headers: " +
-        JSON.stringify(req.headers)
-    );
+    // Never echo the request headers: they carry the bearer token.
+    const error = new Error("400: No x-hasura-datasource-id provided");
     error.status = 400;
     throw error;
   }
 
+  // The scope and the rules are independent reads: fetch them together.
+  const rulesRead = loadRules();
+  rulesRead.catch(() => {});
   let user = await findUser({ userId, includeModelCode: false });
 
   if (!user.dataSources?.length || !user.members?.length) {
@@ -127,7 +128,7 @@ const checkAuth = async (req) => {
     userId,
     userScope,
     tokenPayload,
-    queryRules: await loadRules(),
+    queryRules: await rulesRead,
   };
   req.securityContext.authorityRevision = buildAuthorityRevision(
     req.securityContext,

@@ -84,8 +84,9 @@ export default ({ basePath, cubejs }) => {
       if (revision && status >= 200 && status < 300) {
         this.setHeader("x-synmetrix-authority-revision", revision);
         // Exports fail closed: an overflow or a failure after the headers
-        // errors the response instead of ending it, so rows under the
-        // request's limit are the whole result.
+        // errors the response instead of ending it, so rows under the limit a
+        // request names are the whole result. A request that names none gets
+        // CUBEJS_DB_QUERY_LIMIT, which it cannot see: name the limit to rely on it.
         this.setHeader("x-synmetrix-capabilities", "fail-closed-exports");
         this.setHeader("Cache-Control", "no-store");
       }

@@ -319,9 +319,14 @@ describe("physical profile mandatory scope", () => {
     );
     assert.equal(cache.size, 0);
     failure = false;
+    // An unreadable file is recorded, not fatal: queries on cubes the map lacks
+    // are refused while row rules apply (queryRewrite step 1).
     invalidYaml = true;
-    await assert.rejects(build("version", ["first", "second"]), /invalid YAML/);
-    assert.equal(cache.size, 0);
+    const partial = await build("version", ["first", "second"]);
+    assert.deepEqual([...partial.unreadable], ["second.yml"]);
+    assert.equal(partial.has("valid"), true);
+    assert.equal(partial.has("second"), false);
+    cache.clear();
     invalidYaml = false;
     const recovered = await build("version", ["first", "second"]);
     assert.equal(recovered.size, 2);
@@ -518,6 +523,7 @@ describe("physical profile mandatory scope", () => {
       "(async function () {" + sqlRoute.slice(start, end) + "})",
       {
         signed: false,
+        req: {},
         loadRules: async () => {
           throw Error("authority unavailable");
         },
@@ -529,7 +535,7 @@ describe("physical profile mandatory scope", () => {
       "utf8",
     );
     const authorityRead = generation.indexOf(
-      "const rewriteRules = await loadRules();",
+      "const rewriteRules = req.securityContext?.queryRules || (await loadRules());",
     );
     const driverCreation = generation.indexOf(
       "driver = await tenantDriverFactory",

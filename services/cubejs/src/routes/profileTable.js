@@ -159,7 +159,7 @@ export default async (req, res, cubejs) => {
     // Rules are defined by source table name and add mandatory row-level filters
     // (e.g. partition scoping) based on team/member properties.
     const ruleFilters = profileRuleFilters(
-      await loadRules(),
+      securityContext.queryRules || (await loadRules()),
       table,
       securityContext.userScope,
     );

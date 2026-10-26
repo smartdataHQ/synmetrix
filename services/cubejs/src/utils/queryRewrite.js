@@ -245,6 +245,9 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
 
   // Maps cubeName → { sourceTable, dimensions: Set<string> }
   const mapping = new Map();
+  // Model files whose cubes could not be read: a query on a cube the map lacks
+  // is refused while row rules apply, since it may be one of theirs.
+  mapping.unreadable = [];
 
   try {
     const schemas = await findDataSchemasByIds({ ids: fileIds, expectedChecksums });
@@ -257,8 +260,13 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
       let cubes;
 
       if (isYaml) {
-        const parsed = YAML.parse(code);
-        cubes = parsed?.cubes;
+        try {
+          // Cube reads models with js-yaml, which allows a repeated key.
+          cubes = YAML.parse(code, { uniqueKeys: false })?.cubes;
+        } catch {
+          mapping.unreadable.push(name);
+          continue;
+        }
       } else {
         cubes = parseCubesFromJs(code);
       }
@@ -391,6 +399,10 @@ const queryRewrite = async (query, { securityContext }) => {
       // Fall back to the cube name itself for cubes without meta.source_table
       // (e.g. hand-written schemas where cube name matches table name).
       const cubeInfo = cubeToTable.get(cubeName);
+      if (!cubeInfo && cubeToTable.unreadable?.length) {
+        blocked = true;
+        break;
+      }
       const sourceTable = cubeInfo?.sourceTable || cubeName;
       const cubeDimensions = cubeInfo?.dimensions;
       const tableRules = rulesByTable.get(sourceTable);

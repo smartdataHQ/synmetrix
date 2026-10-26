@@ -78,7 +78,7 @@ export default async function versionRollback(req, res, cubejs) {
     );
   }
 
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
   const allowed = await authorizeTeamWrite(res, {
     user,
     partition: payload.partition,
