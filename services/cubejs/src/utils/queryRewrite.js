@@ -11,6 +11,25 @@ const getColumnsArray = (cube) => [
   ...(cube?.segments || []),
 ];
 
+// Every member a query reads, wherever it names it: a query whose cube appears
+// only in its timeDimensions or filters must meet the same row rules and
+// partition pruning as one that selects it.
+const filterMembers = (filters) =>
+  (filters || []).flatMap((filter) => [
+    ...(typeof filter?.member === "string" ? [filter.member] : []),
+    ...(typeof filter?.dimension === "string" ? [filter.dimension] : []),
+    ...filterMembers(filter?.and),
+    ...filterMembers(filter?.or),
+  ]);
+
+const queryMembers = (query) => [
+  ...getColumnsArray(query),
+  ...(query?.timeDimensions || [])
+    .map((td) => td?.dimension)
+    .filter((member) => typeof member === "string"),
+  ...filterMembers(query?.filters),
+];
+
 // --- Partition pruning policy (owner rule, 2026-09-03) ---
 // A cube over a partitioned event table must never reach the warehouse
 // without a predicate on the partition time column. `cst.semantic_events`
@@ -300,12 +319,12 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
 }
 
 /**
- * Extract cube names from query dimensions and measures.
+ * Extract cube names from every member the query reads.
  * Cube.js query members are formatted as "CubeName.memberName".
  */
 function extractCubeNames(query) {
   const names = new Set();
-  const allMembers = getColumnsArray(query);
+  const allMembers = queryMembers(query);
   for (const member of allMembers) {
     const dotIndex = member.indexOf(".");
     if (dotIndex > 0) {
