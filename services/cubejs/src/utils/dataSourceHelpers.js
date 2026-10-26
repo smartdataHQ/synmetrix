@@ -142,7 +142,9 @@ const userQuery = `
 `;
 
 // The scheduler runs this every interval for every datasource, so it carries
-// model ids only; model code is read once per version (versionModelCodeQuery).
+// model ids and checksums only; model code is read once per version
+// (versionModelCodeQuery). The checksum (set by a trigger on every insert and
+// update) gives the scheduler the same schemaVersion as the API pods.
 const sourcesQuery = `
   {
     datasources {
@@ -154,6 +156,7 @@ const sourcesQuery = `
           dataschemas {
             id
             name
+            checksum
           }
         }
       }

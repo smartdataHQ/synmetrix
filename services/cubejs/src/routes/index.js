@@ -83,6 +83,10 @@ export default ({ basePath, cubejs }) => {
       const status = args[0] || this.statusCode;
       if (revision && status >= 200 && status < 300) {
         this.setHeader("x-synmetrix-authority-revision", revision);
+        // Exports fail closed: an overflow or a failure after the headers
+        // errors the response instead of ending it, so rows under the
+        // request's limit are the whole result.
+        this.setHeader("x-synmetrix-capabilities", "fail-closed-exports");
         this.setHeader("Cache-Control", "no-store");
       }
       return writeHead.apply(this, args);
