@@ -38,6 +38,7 @@ import {
   parseCubeContent,
 } from "../utils/smart-generation/diffModels.js";
 import { loadRules } from "../utils/queryRewrite.js";
+import { profileRuleFilters } from "../utils/profileRuleFilters.js";
 import {
   validateModelSyntax,
   smokeTestQuery,
@@ -126,6 +127,7 @@ export default async (req, res, cubejs) => {
     profileData: rawProfileData,
     dryRun: rawDryRun,
     filters: rawFilters,
+    nestedFilters: rawNestedFilters,
     file_name: rawFileName,
     cube_name: rawCubeName,
     selected_ai_metrics: rawSelectedAIMetrics,
@@ -161,10 +163,18 @@ export default async (req, res, cubejs) => {
       ? req.body.cube_meta
       : null;
   const skipLlm = req.body.skip_llm === true || templateName !== null;
+  if (
+    (rawFilters !== undefined && !Array.isArray(rawFilters)) ||
+    (rawNestedFilters !== undefined && !Array.isArray(rawNestedFilters))
+  ) {
+    return res.status(400).json({
+      code: "smart_generate_invalid_filters",
+      message:
+        "Profile filters must be arrays; invalid scope cannot be ignored.",
+    });
+  }
   const filters = Array.isArray(rawFilters) ? rawFilters : [];
-  const nestedFilters = Array.isArray(req.body.nestedFilters)
-    ? req.body.nestedFilters
-    : [];
+  const nestedFilters = Array.isArray(rawNestedFilters) ? rawNestedFilters : [];
   const fileNameOverride =
     typeof rawFileName === "string" && rawFileName.trim()
       ? rawFileName.trim()
@@ -260,7 +270,17 @@ export default async (req, res, cubejs) => {
 
     let profiledTable;
     let primaryKeys;
-    const rewriteRuleDimensions = new Set(); // Track which dimensions are required by rewrite rules
+    const rewriteRules = req.securityContext?.queryRules || (await loadRules());
+    const ruleFilters = profileRuleFilters(
+      rewriteRules,
+      table,
+      securityContext.userScope,
+    );
+    const rewriteRuleDimensions = new Set(
+      rewriteRules
+        .filter((rule) => rule.cube_name === table)
+        .map((rule) => rule.dimension),
+    );
 
     if (profileData) {
       // Use cached profile data from the profile_table step — no ClickHouse queries
@@ -279,56 +299,9 @@ export default async (req, res, cubejs) => {
         schema,
         table,
       );
-
-      // Load rewrite rules even on cached path — needed for required_fields
-      try {
-        const rules = await loadRules();
-        for (const rule of rules) {
-          if (rule.cube_name === table)
-            rewriteRuleDimensions.add(rule.dimension);
-        }
-      } catch {
-        /* non-fatal */
-      }
     } else {
       // Legacy path: profile from scratch (two ClickHouse round-trips)
       driver = await tenantDriverFactory(cubejs)({ securityContext });
-
-      // Apply query rewrite rules as mandatory filters
-      const ruleFilters = [];
-      try {
-        const rules = await loadRules();
-        const { teamProperties, memberProperties } =
-          securityContext.userScope || {};
-        for (const rule of rules) {
-          if (rule.cube_name !== table) continue;
-          rewriteRuleDimensions.add(rule.dimension);
-          const source =
-            rule.property_source === "team" ? teamProperties : memberProperties;
-          const value = source?.[rule.property_key];
-          if (value === undefined || value === null) continue;
-          const sqlOp =
-            rule.operator === "equals"
-              ? "="
-              : rule.operator === "notEquals"
-                ? "!="
-                : rule.operator === "contains"
-                  ? "LIKE"
-                  : "=";
-          const sqlVal =
-            sqlOp === "LIKE" ? `%${String(value)}%` : String(value);
-          ruleFilters.push({
-            column: rule.dimension,
-            operator: sqlOp,
-            value: sqlVal,
-          });
-        }
-      } catch (err) {
-        console.warn(
-          "[smartGenerate] Failed to load query rewrite rules (non-fatal):",
-          err.message,
-        );
-      }
 
       emitter.emit("profile", "Profiling table...", 0.05);
       profiledTable = await profileTable(driver, schema, table, {

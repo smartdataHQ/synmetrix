@@ -20,6 +20,7 @@ import {
   writeTextChunk,
 } from "../utils/csvSerializer.js";
 import {
+  BUFFERED_ARROW_ROW_LIMIT,
   writeBinaryChunk,
   writeRowStreamAsArrow,
 } from "../utils/arrowSerializer.js";
@@ -137,7 +138,7 @@ function getGatewayErrorStatus(err) {
 
 function sendGatewayError(res, err, statusOverride) {
   if (res.headersSent) {
-    if (!res.writableEnded) res.end();
+    if (!res.writableEnded) res.destroy();
     return;
   }
 
@@ -419,6 +420,18 @@ async function prepareNativeClickHouseExport(plan) {
   };
 }
 
+// One set of ClickHouse settings for every native export: a result past the
+// query's own limits errors rather than truncates, and a client that goes
+// away (a superseded dashboard load) cancels the read in ClickHouse.
+function nativeExportSettings(driver, extra = {}) {
+  return {
+    ...driver.config?.clickhouseSettings,
+    result_overflow_mode: "throw",
+    cancel_http_readonly_queries_on_client_close: 1,
+    ...extra,
+  };
+}
+
 async function executeNativeClickHouseCsv(
   res,
   query,
@@ -430,7 +443,7 @@ async function executeNativeClickHouseCsv(
   const resultSet = await driver.client.query({
     query: sqlstring.format(query, values || []),
     format: "CSVWithNames",
-    clickhouse_settings: driver.config?.clickhouseSettings,
+    clickhouse_settings: nativeExportSettings(driver),
     abort_signal: signal,
   });
 
@@ -466,13 +479,14 @@ async function executeNativeClickHouseArrow(
   values,
   driver,
   signal,
+  settings = {},
 ) {
   const result = await driver.client.exec({
     query: `${removeTrailingSemicolon(sqlstring.format(query, values || []))}\nFORMAT ArrowStream`,
-    clickhouse_settings: {
-      ...driver.config?.clickhouseSettings,
+    clickhouse_settings: nativeExportSettings(driver, {
       output_format_arrow_compression_method: "none",
-    },
+      ...settings,
+    }),
     abort_signal: signal,
   });
 
@@ -553,14 +567,19 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
         securityContext: plan.context.securityContext,
       });
       res.set(CSV_HEADERS);
-      await executeNativeClickHouseCsv(
-        res,
-        nativeQuery.query,
-        nativeQuery.values,
-        driver,
-        abortController.signal,
-        getAliasNameToMember(plan),
-      );
+      try {
+        await executeNativeClickHouseCsv(
+          res,
+          nativeQuery.query,
+          nativeQuery.values,
+          driver,
+          abortController.signal,
+          getAliasNameToMember(plan),
+        );
+      } finally {
+        // A driver per export: release its sockets whatever the outcome.
+        await Promise.resolve(driver.release?.()).catch(() => {});
+      }
       exported = true;
       exportPath = "native-clickhouse";
       res.end();
@@ -574,13 +593,23 @@ async function tryHandleLoadExport(req, res, cubejs, query, format) {
       });
       res.set(ARROW_HEADERS);
       setNativeArrowFieldMappingHeaders(res, plan);
-      await executeNativeClickHouseArrow(
-        res,
-        nativeQuery.query,
-        nativeQuery.values,
-        driver,
-        abortController.signal,
-      );
+      try {
+        await executeNativeClickHouseArrow(
+          res,
+          nativeQuery.query,
+          nativeQuery.values,
+          driver,
+          abortController.signal,
+          // A bounded load (a dashboard's) waits for ClickHouse to finish, so a
+          // failure arrives as an error status before any row, never mid-stream.
+          query.limit > 0 && query.limit <= BUFFERED_ARROW_ROW_LIMIT
+            ? { wait_end_of_query: 1 }
+            : {},
+        );
+      } finally {
+        // A driver per export: release its sockets whatever the outcome.
+        await Promise.resolve(driver.release?.()).catch(() => {});
+      }
       exported = true;
       exportPath = "native-clickhouse";
       res.end();
@@ -679,7 +708,7 @@ export async function maybeHandleLoadExport(req, res, next, cubejs) {
     console.error("Semantic load export failed:", err);
 
     if (res.headersSent) {
-      if (!res.writableEnded) res.end();
+      if (!res.writableEnded) res.destroy();
       return;
     }
 

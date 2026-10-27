@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { tableFromIPC } from "apache-arrow";
+import { EventEmitter, once } from "node:events";
+import { tableFromArrays, tableFromIPC, tableToIPC } from "apache-arrow";
+import express from "express";
 
 import { maybeHandleLoadExport } from "../src/routes/loadExport.js";
 
@@ -10,6 +11,72 @@ function decodeArrowFieldMappingHeader(value) {
 }
 
 describe("maybeHandleLoadExport", () => {
+  for (const path of ["native", "semantic"]) {
+    it(`aborts HTTP after a partial ${path} Arrow stream fails`, { timeout: 10000 }, async () => {
+      const query = { dimensions: ["Orders.city"], measures: ["Orders.count"] };
+      const bytes = tableToIPC(tableFromArrays({ city: ["A", "B"], count: [1, 2] }), "stream");
+      const partial = bytes.slice(0, -8);
+      assert.equal(tableFromIPC(partial).numRows, 2);
+      let release;
+      const consumed = new Promise((resolve) => { release = resolve; });
+      const driver = createClickHouseDriver({});
+      driver.client.exec = async () => ({
+        async *stream() {
+          yield partial;
+          await consumed;
+          throw new Error("upstream stream failed");
+        },
+      });
+      const cubejs = createMockCube({
+        dbType: "clickhouse",
+        normalizedQuery: query,
+        sqlQuery: {
+          sql: ["SELECT city, count FROM orders", []],
+          aliasNameToMember: { city: "Orders.city", count: "Orders.count" },
+        },
+        metaConfig: createMetaConfig({
+          dimensions: [{ name: "Orders.city", type: "string" }],
+          measures: [{ name: "Orders.count", type: "count" }],
+        }),
+        nativePreAggs: path === "native" ? { preAggregationsTablesToTempTables: [], values: [] } : null,
+        driver,
+        stream: (async function* () {
+          for (let index = 0; index < 4096; index++) {
+            yield { "Orders.city": "A", "Orders.count": 1 };
+          }
+          await consumed;
+          throw new Error("upstream stream failed");
+        })(),
+      });
+      const app = express();
+      app.use(express.json());
+      app.post("/load", (req, res, next) => maybeHandleLoadExport(req, res, next, cubejs));
+      const server = app.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      try {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/load`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, format: "arrow" }),
+          signal: AbortSignal.timeout(8000),
+        });
+        assert.equal(response.status, 200);
+        const reader = response.body.getReader();
+        const first = await reader.read();
+        assert.equal(first.done, false);
+        assert.ok(first.value.byteLength > 0);
+        release();
+        await assert.rejects(async () => {
+          while (!(await reader.read()).done) {}
+        }, /terminated|aborted|socket/i);
+      } finally {
+        release();
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  }
+
   it("streams CSV through the semantic export path when native passthrough is unavailable", async () => {
     const req = createRequest({
       format: "csv",
@@ -555,7 +622,7 @@ function createMockCube(options) {
           return [sqlQuery];
         },
         getAdapterApi: async () => ({
-          streamQuery: async () => createRowStream(streamRows),
+          streamQuery: async () => options.stream || createRowStream(streamRows),
           getQueryOrchestrator: nativePreAggs
             ? () => ({
                 getPreAggregations: () => ({
@@ -573,23 +640,32 @@ function createMockCube(options) {
 function createClickHouseDriver({ csvLines = [], arrowChunks = [] }) {
   return {
     config: {
-      clickhouseSettings: {},
+      clickhouseSettings: Object.freeze({ max_result_rows: 100, result_overflow_mode: "break" }),
     },
     client: {
-      query: async () => ({
-        async *stream() {
-          for (const line of csvLines) {
-            yield [{ text: line }];
-          }
-        },
-      }),
-      exec: async () => ({
-        async *stream() {
-          for (const chunk of arrowChunks) {
-            yield chunk;
-          }
-        },
-      }),
+      query: async (options) => {
+        assert.equal(options.clickhouse_settings.result_overflow_mode, "throw");
+        assert.equal(options.clickhouse_settings.max_result_rows, 100);
+        return {
+          async *stream() {
+            for (const line of csvLines) {
+              yield [{ text: line }];
+            }
+          },
+        };
+      },
+      exec: async (options) => {
+        assert.equal(options.clickhouse_settings.result_overflow_mode, "throw");
+        assert.equal(options.clickhouse_settings.max_result_rows, 100);
+        assert.equal(options.clickhouse_settings.output_format_arrow_compression_method, "none");
+        return {
+          async *stream() {
+            for (const chunk of arrowChunks) {
+              yield chunk;
+            }
+          },
+        };
+      },
     },
   };
 }

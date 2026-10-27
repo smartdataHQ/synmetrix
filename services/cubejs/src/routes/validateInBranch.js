@@ -193,7 +193,7 @@ export default async function validateInBranch(req, res) {
   }
 
   const teamId = branchRow.datasource?.team_id;
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
 
   // Partition gate (FR-015).
   const partitionTeamIds = resolvePartitionTeamIds(

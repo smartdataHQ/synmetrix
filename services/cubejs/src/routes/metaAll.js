@@ -6,7 +6,7 @@ import {
   verifyFraiOSToken,
 } from "../utils/workosAuth.js";
 import {
-  findUser,
+  findUserWithModelCode,
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "../utils/dataSourceHelpers.js";
@@ -187,7 +187,7 @@ export default async function metaAll(req, res, cubejs) {
         .json({ error: "WorkOS or FraiOS token required" });
     }
 
-    const user = await findUser({ userId });
+    const user = await findUserWithModelCode(userId);
     if (!user.dataSources?.length) {
       return res.json({ datasources: [] });
     }

@@ -38,7 +38,7 @@ export default async function metaSingleCube(req, res, cubejs) {
   const datasourceId = userScope.dataSource.dataSourceId;
   const branchHeader = req.headers["x-hasura-branch-id"] || undefined;
 
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
   const dataSource = user.dataSources.find((ds) => ds.id === datasourceId);
   if (!dataSource) {
     return res.status(404).json({

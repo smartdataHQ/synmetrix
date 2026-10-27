@@ -169,11 +169,6 @@ export function applyPartitionPruning(
   return query;
 }
 
-// --- Rule cache with 60-second TTL ---
-let rulesCache = null;
-let rulesCacheTime = 0;
-const RULES_CACHE_TTL = 60_000;
-
 // --- Cube-to-table mapping cache, keyed by schemaVersion ---
 // Sized for fleet-wide default models (013 D15): every team gets its own
 // schemaVersion, so 50 would thrash once the scoping rule is active fleet-wide.
@@ -193,32 +188,18 @@ const rulesQuery = `
   }
 `;
 
-export function invalidateRulesCache() {
-  rulesCache = null;
-  rulesCacheTime = 0;
-}
+export function invalidateRulesCache() {}
 
 /**
- * Load query rewrite rules from the database, cached with 60s TTL.
+ * Load current query rewrite rules from the database.
  * Exported so runSql.js can reuse it for SQL API blocking.
  */
 export async function loadRules() {
-  const now = Date.now();
-  if (rulesCache && now - rulesCacheTime < RULES_CACHE_TTL) {
-    return rulesCache;
+  const res = await fetchGraphQL(rulesQuery);
+  if (res?.errors?.length || !Array.isArray(res?.data?.query_rewrite_rules)) {
+    throw new Error("Query rewrite rules could not be resolved");
   }
-
-  try {
-    const res = await fetchGraphQL(rulesQuery);
-    rulesCache = res?.data?.query_rewrite_rules || [];
-    rulesCacheTime = now;
-  } catch (err) {
-    console.error("[queryRewrite] Failed to load rules:", err.message);
-    // If cache exists, keep using stale data; otherwise empty
-    if (!rulesCache) rulesCache = [];
-  }
-
-  return rulesCache;
+  return res.data.query_rewrite_rules;
 }
 
 /**
@@ -257,16 +238,19 @@ function extractTableName(cube) {
  * cubes backed by a given table regardless of the cube name.
  * Cached by schemaVersion since the mapping only changes when models change.
  */
-async function buildCubeToTableMap(schemaVersion, fileIds) {
+async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
   if (cubeTableMapCache.has(schemaVersion)) {
     return cubeTableMapCache.get(schemaVersion);
   }
 
   // Maps cubeName → { sourceTable, dimensions: Set<string> }
   const mapping = new Map();
+  // Model files whose cubes could not be read: a query on a cube the map lacks
+  // is refused while row rules apply, since it may be one of theirs.
+  mapping.unreadable = [];
 
   try {
-    const schemas = await findDataSchemasByIds({ ids: fileIds });
+    const schemas = await findDataSchemasByIds({ ids: fileIds, expectedChecksums });
 
     for (const schema of schemas) {
       const { code, name } = schema;
@@ -277,9 +261,10 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
 
       if (isYaml) {
         try {
-          const parsed = YAML.parse(code);
-          cubes = parsed?.cubes;
+          // Cube reads models with js-yaml, which allows a repeated key.
+          cubes = YAML.parse(code, { uniqueKeys: false })?.cubes;
         } catch {
+          mapping.unreadable.push(name);
           continue;
         }
       } else {
@@ -306,6 +291,7 @@ async function buildCubeToTableMap(schemaVersion, fileIds) {
       "[queryRewrite] Failed to build cube-to-table map:",
       err.message,
     );
+    throw err;
   }
 
   // Evict oldest entry if cache is full
@@ -378,12 +364,12 @@ const queryRewrite = async (query, { securityContext }) => {
   }
 
   // --- Step 0b: Partition pruning (applies to ALL roles, before any rule) ---
-  const { schemaVersion, files } = userScope.dataSource;
-  const cubeToTable = await buildCubeToTableMap(schemaVersion, files);
+  const { schemaVersion, files, fileChecksums } = userScope.dataSource;
+  const cubeToTable = await buildCubeToTableMap(schemaVersion, files, fileChecksums);
   applyPartitionPruning(query, cubeToTable);
 
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
-  const rules = await loadRules();
+  const rules = securityContext.queryRules || (await loadRules());
   const exempt = ROW_RULES_EXEMPT_PARTITIONS.has(teamProperties?.partition);
 
   if (rules.length > 0 && !exempt) {
@@ -413,6 +399,10 @@ const queryRewrite = async (query, { securityContext }) => {
       // Fall back to the cube name itself for cubes without meta.source_table
       // (e.g. hand-written schemas where cube name matches table name).
       const cubeInfo = cubeToTable.get(cubeName);
+      if (!cubeInfo && cubeToTable.unreadable?.length) {
+        blocked = true;
+        break;
+      }
       const sourceTable = cubeInfo?.sourceTable || cubeName;
       const cubeDimensions = cubeInfo?.dimensions;
       const tableRules = rulesByTable.get(sourceTable);

@@ -9,6 +9,7 @@ import defineUserScope from "../utils/defineUserScope.js";
 import createMd5Hex from "../utils/md5Hex.js";
 import { diffVersions } from "../utils/versionDiff.js";
 import { invalidateCompilerForBranch } from "../utils/compilerCacheInvalidator.js";
+import { schemaVersionOf } from "../utils/buildSecurityContext.js";
 import { profileTable } from "../utils/smart-generation/profiler.js";
 import { buildCubesFromTemplate } from "../utils/smart-generation/cubeBuilder.js";
 import { generateYaml } from "../utils/smart-generation/yamlGenerator.js";
@@ -592,9 +593,7 @@ export default async function reconcileTeam(req, res, cubejs) {
   };
 
   const previousDataschemas = branch.versions?.[0]?.dataschemas || [];
-  const previousSchemaVersion = createMd5Hex(
-    previousDataschemas.map((s) => s.id)
-  );
+  const previousSchemaVersion = schemaVersionOf(previousDataschemas);
 
   // derived-model scoping must always bake the partition literal (FR-005):
   // internalTables for generation is the union of the team's configured

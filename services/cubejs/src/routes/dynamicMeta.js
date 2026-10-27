@@ -52,7 +52,8 @@ const resolveSourceTable = (cubeDef) => {
 
 export default async function dynamicMeta(req, res, cubejs, deps = {}) {
   const {
-    loadSchemas = (ids) => findDataSchemasByIds({ ids }),
+    loadSchemas = (ids, expectedChecksums) =>
+      findDataSchemasByIds({ ids, expectedChecksums }),
     getDriver = () =>
       tenantDriverFactory(cubejs)({ securityContext: req.securityContext }),
     ttlMs = DEFAULT_TTL_MS,
@@ -98,7 +99,10 @@ export default async function dynamicMeta(req, res, cubejs, deps = {}) {
     }
 
     // resolve the cube definition from the team's own model files
-    const schemas = await loadSchemas(dataSource.files || []);
+    const schemas = await loadSchemas(
+      dataSource.files || [],
+      dataSource.fileChecksums,
+    );
     let cubeDef = null;
     for (const schema of schemas || []) {
       cubeDef = parseCubesFromFile(schema.name, schema.code).find(

@@ -90,8 +90,18 @@ export function rowsToArrowColumns(rows, options = {}) {
   return data;
 }
 
+// The most rows an Arrow export holds in memory at once (buffered paths, and the
+// bound under which a native load waits for ClickHouse to finish).
+export const BUFFERED_ARROW_ROW_LIMIT = 100_000;
+
 export function serializeRowsToArrow(rows, options = {}) {
   const safeRows = rows ?? [];
+  if (safeRows.length > BUFFERED_ARROW_ROW_LIMIT) {
+    throw Object.assign(
+      new RangeError(`Buffered Arrow export exceeds ${BUFFERED_ARROW_ROW_LIMIT} rows. Use streaming or reduce the query.`),
+      { status: 413 }
+    );
+  }
   const columns = options.columns
     ?? (safeRows.length > 0 ? Object.keys(safeRows[0]) : []);
   const table = tableFromArrays(rowsToArrowColumns(safeRows, { columns }));

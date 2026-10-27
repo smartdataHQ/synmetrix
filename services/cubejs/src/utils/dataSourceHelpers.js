@@ -5,11 +5,6 @@ import { fetchWorkOSUserProfile } from "./workosAuth.js";
 import { emitModelEvent } from "./eventEmitter.js";
 import { requireOwnerOrAdmin } from "./requireOwnerOrAdmin.js";
 
-// --- User scope cache: keyed by userId, 30s TTL ---
-const userCache = new Map();
-const USER_CACHE_TTL = 30_000;
-const USER_CACHE_MAX_SIZE = 500;
-
 // --- WorkOS identity mapping cache: keyed by WorkOS sub, 5min TTL ---
 // Stores { userId, membershipVerified, time } to avoid re-reconciling membership on every cache miss
 const workosSubCache = new Map();
@@ -45,32 +40,7 @@ export function invalidateWorkosSubCache(sub) {
   }
 }
 
-function getUserCacheEntry(userId) {
-  const entry = userCache.get(userId);
-  if (!entry) return null;
-  if (Date.now() - entry.time > USER_CACHE_TTL) {
-    userCache.delete(userId);
-    return null;
-  }
-  return entry.data;
-}
-
-function setUserCacheEntry(userId, data) {
-  // Evict oldest entries if cache is full
-  if (userCache.size >= USER_CACHE_MAX_SIZE) {
-    const oldest = userCache.keys().next().value;
-    userCache.delete(oldest);
-  }
-  userCache.set(userId, { data, time: Date.now() });
-}
-
-export function invalidateUserCache(userId) {
-  if (userId) {
-    userCache.delete(userId);
-  } else {
-    userCache.clear();
-  }
-}
+export function invalidateUserCache() {}
 
 const sourceFragment = `
   id
@@ -84,6 +54,7 @@ const modelsFragment = `
   id
   name
   code
+  checksum
 `;
 
 const branchesFragment = `
@@ -135,7 +106,7 @@ const selectedBranchModelsFragment = `
 `;
 
 const userQuery = `
-  query ($userId: uuid!) {
+  query ($userId: uuid!, $includeModelCode: Boolean!) {
     members(where: {user_id: {_eq: $userId}}) {
       id
       team_id
@@ -147,7 +118,15 @@ const userQuery = `
           ${sourceFragment}
           branches {
             ${branchesFragment}
-            ${versionsFragment}
+            versions(limit: 1, order_by: {created_at: desc}) {
+              id
+              dataschemas {
+                id
+                name
+                checksum
+                code @include(if: $includeModelCode)
+              }
+            }
           }
         }
       }
@@ -163,7 +142,9 @@ const userQuery = `
 `;
 
 // The scheduler runs this every interval for every datasource, so it carries
-// model ids only; model code is read once per version (versionModelCodeQuery).
+// model ids and checksums only; model code is read once per version
+// (versionModelCodeQuery). The checksum (set by a trigger on every insert and
+// update) gives the scheduler the same schemaVersion as the API pods.
 const sourcesQuery = `
   {
     datasources {
@@ -175,6 +156,7 @@ const sourcesQuery = `
           dataschemas {
             id
             name
+            checksum
           }
         }
       }
@@ -271,13 +253,26 @@ const versionBranchQuery = `
   }
 `;
 
-export const findUser = async ({ userId }) => {
-  const cached = getUserCacheEntry(userId);
-  if (cached) return cached;
+// Listing routes (meta-all, discover) read every model's code. They decide no
+// authority, so one read serves a user for 30 s; authority paths call findUser.
+const MODEL_CODE_TTL_MS = 30_000;
+const modelCodeReads = new Map();
+export const findUserWithModelCode = (userId) => {
+  const hit = modelCodeReads.get(userId);
+  if (hit && Date.now() - hit.at < MODEL_CODE_TTL_MS) return hit.read;
+  const read = findUser({ userId, includeModelCode: true });
+  modelCodeReads.set(userId, { at: Date.now(), read });
+  read.catch(() => modelCodeReads.delete(userId));
+  if (modelCodeReads.size > 500) modelCodeReads.delete(modelCodeReads.keys().next().value);
+  return read;
+};
 
-  const res = await fetchGraphQL(userQuery, { userId });
-
-  const members = res?.data?.members || [];
+export const findUser = async ({ userId, includeModelCode = true }) => {
+  const res = await fetchGraphQL(userQuery, { userId, includeModelCode });
+  const members = res?.data?.members;
+  if (res?.errors?.length || !Array.isArray(members)) {
+    throw new Error("User scope could not be resolved completely");
+  }
 
   // Aggregate datasources from all team memberships
   const dataSourcesMap = new Map();
@@ -293,9 +288,7 @@ export const findUser = async ({ userId }) => {
 
   const dataSources = Array.from(dataSourcesMap.values());
 
-  const result = { dataSources, members };
-  setUserCacheEntry(userId, result);
-  return result;
+  return { dataSources, members };
 };
 
 /**
@@ -419,11 +412,33 @@ export const findDataSchemas = async ({ branchId, authToken }) => {
   return dataSchemas;
 };
 
-export const findDataSchemasByIds = async ({ ids }) => {
+export const findDataSchemasByIds = async ({ ids, expectedChecksums }) => {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id)) {
+    throw new Error("Model file IDs could not be resolved");
+  }
+  if (ids.length === 0) return [];
   const res = await fetchGraphQL(dataschemasQuery, { _in: ids });
-
-  const dataSchemas = res?.data?.dataschemas || [];
-
+  const dataSchemas = res?.data?.dataschemas;
+  if (
+    res?.errors?.length ||
+    !Array.isArray(dataSchemas) ||
+    ids.some((id) => !dataSchemas.some((schema) => schema?.id === id))
+  ) {
+    throw new Error("Model files could not be resolved completely");
+  }
+  if (
+    expectedChecksums &&
+    dataSchemas.some(
+      (schema) =>
+        expectedChecksums[schema.id] != null &&
+        (typeof schema.code !== "string" ||
+          createHash("md5")
+            .update(`${schema.name || ""}-${schema.code}`)
+            .digest("hex") !== expectedChecksums[schema.id]),
+    )
+  ) {
+    throw new Error("Model files changed during scope resolution");
+  }
   return dataSchemas;
 };
 
@@ -844,9 +859,10 @@ export async function provisionUserFromWorkOS(workosPayload) {
   let inflight = inflightProvisions.get(sub);
   if (inflight) return inflight;
 
-  const provision = _provisionUserFromWorkOS(sub, partition);
+  const provision = _provisionUserFromWorkOS(sub, partition).finally(() =>
+    inflightProvisions.delete(sub),
+  );
   inflightProvisions.set(sub, provision);
-  provision.finally(() => inflightProvisions.delete(sub));
   return provision;
 }
 
@@ -974,7 +990,6 @@ async function _provisionUserFromWorkOS(sub, partition) {
     throw error;
   }
 }
-
 /**
  * Provision a user from a FraiOS JWT payload.
  * Identity resolution chain (simplified vs WorkOS — email is in JWT):
@@ -1004,9 +1019,10 @@ export async function provisionUserFromFraiOS(fraiosPayload) {
   let inflight = inflightProvisions.get(externalId);
   if (inflight) return inflight;
 
-  const provision = _provisionUserFromFraiOS(externalId, email, partition, teamRole);
+  const provision = _provisionUserFromFraiOS(externalId, email, partition, teamRole).finally(() =>
+    inflightProvisions.delete(externalId),
+  );
   inflightProvisions.set(externalId, provision);
-  provision.finally(() => inflightProvisions.delete(externalId));
   return provision;
 }
 
@@ -1106,4 +1122,3 @@ async function _provisionUserFromFraiOS(externalId, email, partition, teamRole =
     throw error;
   }
 }
-

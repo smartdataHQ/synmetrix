@@ -46,7 +46,7 @@ export default async function refreshCompiler(req, res, cubejs) {
     );
   }
 
-  const user = await findUser({ userId });
+  const user = await findUser({ userId, includeModelCode: false });
   if (!user?.dataSources?.length) {
     return respondError(
       res,

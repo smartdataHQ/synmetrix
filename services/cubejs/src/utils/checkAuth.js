@@ -2,12 +2,13 @@ import jwt from "jsonwebtoken";
 
 import {
   findUser,
-  invalidateUserCache,
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
 import { detectTokenType, verifyWorkOSToken, verifyFraiOSToken } from "./workosAuth.js";
 import defineUserScope from "./defineUserScope.js";
+import { buildAuthorityRevision } from "./buildSecurityContext.js";
+import { loadRules } from "./queryRewrite.js";
 
 const { JWT_KEY, JWT_ALGORITHM } = process.env;
 
@@ -81,15 +82,16 @@ const checkAuth = async (req) => {
   }
 
   if (!dataSourceId) {
-    const error = new Error(
-      "400: No x-hasura-datasource-id provided, headers: " +
-        JSON.stringify(req.headers)
-    );
+    // Never echo the request headers: they carry the bearer token.
+    const error = new Error("400: No x-hasura-datasource-id provided");
     error.status = 400;
     throw error;
   }
 
-  let user = await findUser({ userId });
+  // The scope and the rules are independent reads: fetch them together.
+  const rulesRead = loadRules();
+  rulesRead.catch(() => {});
+  let user = await findUser({ userId, includeModelCode: false });
 
   if (!user.dataSources?.length || !user.members?.length) {
     const error = new Error(`404: user "${userId}" not found`);
@@ -107,13 +109,8 @@ const checkAuth = async (req) => {
       branchVersionId
     );
   } catch (err) {
-    // Self-heal a stale user cache: a datasource/branch/version created moments
-    // ago (e.g. testing a just-created datasource, or the pre-create transient
-    // test) may not be in the cached scope yet. Invalidate and retry ONCE with
-    // fresh data before surfacing a 404 "not found".
     if (err.status === 404 && (dataSourceId || branchId || branchVersionId)) {
-      invalidateUserCache(userId);
-      user = await findUser({ userId });
+      user = await findUser({ userId, includeModelCode: false });
       userScope = defineUserScope(
         user.dataSources,
         user.members,
@@ -131,7 +128,12 @@ const checkAuth = async (req) => {
     userId,
     userScope,
     tokenPayload,
+    queryRules: await rulesRead,
   };
+  req.securityContext.authorityRevision = buildAuthorityRevision(
+    req.securityContext,
+    req.securityContext.queryRules,
+  );
 };
 
 const checkAuthMiddleware = async (req, _, next) => {

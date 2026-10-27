@@ -216,7 +216,7 @@ export default async (req, res, cubejs) => {
     const signed = isSignedSql(sql, req.body.sql_signature);
     auditSigned = signed;
     if (!signed) {
-      const rules = await loadRules();
+      const rules = req.securityContext?.queryRules || (await loadRules());
       if (rules.length > 0) {
         res.status(403).json({
           code: "sql_api_blocked",
@@ -296,6 +296,7 @@ export default async (req, res, cubejs) => {
         clickhouse_settings: {
           ...driver.config?.clickhouseSettings,
           output_format_arrow_compression_method: "none",
+          result_overflow_mode: "throw",
         },
         abort_signal: abortController.signal,
       });
@@ -321,7 +322,10 @@ export default async (req, res, cubejs) => {
       const resultSet = await driver.client.query({
         query: sql,
         format: "CSVWithNames",
-        clickhouse_settings: driver.config?.clickhouseSettings,
+        clickhouse_settings: {
+          ...driver.config?.clickhouseSettings,
+          result_overflow_mode: "throw",
+        },
         abort_signal: abortController.signal,
       });
 
@@ -362,16 +366,6 @@ export default async (req, res, cubejs) => {
     auditRowCount = rows.length;
 
     if (format === "arrow") {
-      // Generic (non-ClickHouse) Arrow path buffers all rows + 4x memory
-      // amplification in serializeRowsToArrow.  Apply the same safety limit
-      // as JSON to prevent OOM / V8 string-size crashes.
-      const ARROW_SAFETY_LIMIT = 100_000;
-      if (rows.length > ARROW_SAFETY_LIMIT) {
-        console.warn(
-          `Arrow response truncated: ${rows.length} rows exceeded safety limit of ${ARROW_SAFETY_LIMIT}`,
-        );
-        rows.length = ARROW_SAFETY_LIMIT;
-      }
       const columns = deriveExportColumnsFromRunSql(req.body, rows);
       const body = serializeRowsToArrow(rows, { columns });
       res.set(ARROW_HEADERS);
@@ -397,7 +391,7 @@ export default async (req, res, cubejs) => {
     auditSqlExecuted("error", { error_message: err?.message || String(err) });
 
     if (res.headersSent) {
-      if (!res.writableEnded) res.end();
+      if (!res.writableEnded) res.destroy();
       return;
     }
 

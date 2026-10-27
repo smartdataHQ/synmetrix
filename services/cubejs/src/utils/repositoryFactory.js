@@ -64,7 +64,10 @@ const repositoryFactory = ({ securityContext }) => {
      */
     dataSchemaFiles: async () => {
       const ids = securityContext?.userScope?.dataSource?.files;
-      const dataSchemas = await findDataSchemasByIds({ ids });
+      const dataSchemas = await findDataSchemasByIds({
+        ids,
+        expectedChecksums: securityContext?.userScope?.dataSource?.fileChecksums,
+      });
 
       return filterLegacyEnrichmentSchemas(dataSchemas).map(mapSchemaToFile);
     },
