@@ -11,6 +11,7 @@ const ORCHESTRATOR_PACKAGE = "@cubejs-backend/query-orchestrator";
 const DUCKDB_PACKAGE = "@cubejs-backend/duckdb-driver";
 const SQLITE_PACKAGE = "@cubejs-backend/sqlite-driver";
 const DATABRICKS_PACKAGE = "@cubejs-backend/databricks-jdbc-driver";
+const FIREBOLT_PACKAGE = "@cubejs-backend/firebolt-driver";
 
 const ORIGINAL = `        else if (typeof obj === 'string') {
             let code = obj;
@@ -290,6 +291,12 @@ const DATABRICKS_CLASSPATH_PATCHED = `    async getCustomClassPath() {
         }
         return [await (0, installer_1.resolveJDBCDriver)(), ...shared];
     }`;
+// Firebolt reads its login from server env before the datasource's own
+// connection; with no CUBEJS_DB_USER it crashed on undefined.includes(), so no
+// Firebolt datasource could connect. The datasource's connection.auth applies.
+const FIREBOLT_ORIGINAL = `        const username = (0, shared_1.getEnv)('dbUser', { dataSource, preAggregations });`;
+
+const FIREBOLT_PATCHED = `        const username = (0, shared_1.getEnv)('dbUser', { dataSource, preAggregations }) || '';`;
 
 const occurrences = (source, value) => source.split(value).length - 1;
 
@@ -347,6 +354,10 @@ export function patchDatabricksClassPathSource(source) {
   return applyPatch(source, DATABRICKS_CLASSPATH_ORIGINAL, DATABRICKS_CLASSPATH_PATCHED, "Databricks driver class path");
 }
 
+export function patchFireboltDriverSource(source) {
+  return applyPatch(source, FIREBOLT_ORIGINAL, FIREBOLT_PATCHED, "Firebolt driver env login");
+}
+
 export function patchPreAggregationLoaderSource(source) {
   return applyPatch(source, LOADER_ORIGINAL, LOADER_PATCHED, "pre-aggregation loader", 2);
 }
@@ -402,6 +413,11 @@ export async function patchInstalledCompiler() {
     "dist/src/DatabricksDriver.js",
   );
   const databricksChanged = await patchFile(databricksPath, patchDatabricksClassPathSource);
+  const fireboltPath = resolve(
+    await supportedPackageRoot(FIREBOLT_PACKAGE),
+    "dist/src/FireboltDriver.js",
+  );
+  const fireboltChanged = await patchFile(fireboltPath, patchFireboltDriverSource);
   return {
     compilerPath,
     bigQueryPath,
@@ -409,7 +425,8 @@ export async function patchInstalledCompiler() {
     duckDbPath,
     sqlitePath,
     databricksPath,
-    changed: yamlChanged || bigQueryChanged || loaderChanged || duckDbChanged || sqliteChanged || databricksChanged,
+    fireboltPath,
+    changed: yamlChanged || bigQueryChanged || loaderChanged || duckDbChanged || sqliteChanged || databricksChanged || fireboltChanged,
   };
 }
 
@@ -420,7 +437,7 @@ if (
   const result = await patchInstalledCompiler();
   console.log(
     result.changed
-      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + stream error forwarding + BigQuery read-only types + DuckDB lockdown + SQLite attach limit + JDBC class path`
-      : `Cube ${SUPPORTED_VERSION} YAML metadata + stream error forwarding + BigQuery read-only type + DuckDB lockdown + SQLite attach limit + JDBC class path patches already applied`,
+      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + stream error forwarding + BigQuery read-only types + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login`
+      : `Cube ${SUPPORTED_VERSION} YAML metadata + stream error forwarding + BigQuery read-only type + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login patches already applied`,
   );
 }

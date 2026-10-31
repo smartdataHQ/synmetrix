@@ -80,12 +80,12 @@ export default async (req, res) => {
       await compiler.compile();
     } catch (err) {
       // compile() throws a CompileError when there are validation errors.
-      // The errors are already collected in compiler.errorsReport — we just
+      // The errors are already collected in compiler.errorsReporter — we just
       // need to suppress the throw and read them below.
       compileError = err;
     }
 
-    const errorsReport = compiler.errorsReport;
+    const errorsReport = compiler.errorsReporter;
     const rawErrors = errorsReport ? errorsReport.getErrors() : [];
     const rawWarnings = errorsReport ? errorsReport.getWarnings() : [];
 

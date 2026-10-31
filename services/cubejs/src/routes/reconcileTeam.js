@@ -353,7 +353,7 @@ const compileValidate = async (files) => {
   try {
     await compiler.compile();
   } catch (err) {
-    const rawErrors = compiler.errorsReport?.getErrors?.() || [];
+    const rawErrors = compiler.errorsReporter?.getErrors?.() || [];
     const errors = rawErrors.length
       ? rawErrors.map((e) => ({ message: e.plainMessage || e.message }))
       : [{ message: err?.plainMessage || err?.message || String(err) }];

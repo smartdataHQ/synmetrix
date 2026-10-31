@@ -67,6 +67,25 @@ const prepareDbParams = (dbParams, dbType) => {
         ...dbConfig,
         server: dbConfig.host,
         port: parseInt(dbConfig.port) || MSSQL_DEFAULT_PORT,
+        // The driver reads encryption from options (env otherwise); a top-level
+        // ssl is ignored, so encrypted-only servers (Azure SQL) never connected.
+        options: { encrypt: !!dbConfig.ssl, useUTC: true },
+      };
+      break;
+    case "prestodb":
+    case "trino": {
+      // presto-client authenticates only with basic_auth; the form's password
+      // (stored as `pass`) was never read.
+      const password = dbConfig.password ?? dbConfig.pass;
+      if (password) dbConfig.basic_auth = { user: dbConfig.user, password };
+      delete dbConfig.pass;
+      break;
+    }
+    case "hive":
+      dbConfig = {
+        ...dbConfig,
+        username: dbConfig.username ?? dbConfig.user,
+        dbName: dbConfig.dbName ?? dbConfig.database,
       };
       break;
     case "clickhouse":
@@ -107,14 +126,20 @@ const prepareDbParams = (dbParams, dbType) => {
     case "ksql":
       dbConfig.url = makeUrl(dbConfig.host, dbConfig.port);
       break;
-    case "firebolt":
+    case "firebolt": {
+      // The driver connects with connection.auth: user + password for an email
+      // login, client id + secret for a service account.
+      const login = String(dbConfig.username ?? "");
       dbConfig.connection = {
-        database: dbConfig?.database,
-        username: dbConfig?.username,
-        password: dbConfig?.password,
-        engineName: dbConfig?.engineName,
+        auth: login.includes("@")
+          ? { username: login, password: dbConfig.password }
+          : { client_id: login, client_secret: dbConfig.password },
+        database: dbConfig.database,
+        engineName: dbConfig.engineName,
+        ...(dbConfig.account ? { account: dbConfig.account } : {}),
       };
       break;
+    }
     case "oracle":
       dbConfig = {
         ...dbConfig,
@@ -141,8 +166,19 @@ const prepareDbParams = (dbParams, dbType) => {
       dbConfig = {
         ...dbConfig,
         databasePath: dbConfig.database || dbConfig.databasePath,
-        motherduck_token: dbConfig.motherduckToken,
+        // The driver reads motherDuckToken; the old motherduck_token key was ignored.
+        motherDuckToken: dbConfig.motherDuckToken ?? dbConfig.motherduckToken,
       };
+      // With a database path the driver ignores motherDuckToken; MotherDuck
+      // reads the token from the md: URL.
+      if (
+        /^(md|motherduck):/i.test(String(dbConfig.databasePath ?? "")) &&
+        dbConfig.motherDuckToken &&
+        !/motherduck_token=/i.test(dbConfig.databasePath)
+      ) {
+        const separator = dbConfig.databasePath.includes("?") ? "&" : "?";
+        dbConfig.databasePath += `${separator}motherduck_token=${encodeURIComponent(dbConfig.motherDuckToken)}`;
+      }
       break;
     case "databricks-jdbc":
       if (dbConfig.oauthClientId && dbConfig.oauthClientSecret) {

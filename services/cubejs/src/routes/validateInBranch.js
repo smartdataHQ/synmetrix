@@ -296,7 +296,7 @@ export default async function validateInBranch(req, res) {
       compileError = err;
     }
 
-    const errorsReport = compiler.errorsReport;
+    const errorsReport = compiler.errorsReporter;
     const rawErrors = errorsReport ? errorsReport.getErrors() : [];
     const rawWarnings = errorsReport ? errorsReport.getWarnings() : [];
 

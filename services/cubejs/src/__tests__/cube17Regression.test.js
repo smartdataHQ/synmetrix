@@ -15,6 +15,7 @@ import {
   patchCompilerSource,
   patchDatabricksClassPathSource,
   patchDuckDbDriverSource,
+  patchFireboltDriverSource,
   patchSqliteDriverSource,
 } from "../../scripts/patchCubeYamlCompiler.mjs";
 
@@ -456,6 +457,32 @@ y`);
     } finally {
       await driver.release();
     }
+  });
+
+  it("reads compile errors one by one from errorsReporter", async () => {
+    const { compiler } = prepareCompiler(
+      { dataSchemaFiles: async () => [{ fileName: "bad.yml", content: "cubes:\n  - name: orders\n    sql_table: t\n    measures:\n      - name: c\n        type: nope\n" }] },
+      { adapter: "postgres" },
+    );
+    await assert.rejects(compiler.compile());
+    assert.equal(compiler.errorsReport, undefined, "the old name is gone; reading it lost every structured error");
+    const errors = compiler.errorsReporter.getErrors();
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /^orders cube: \(measures\.c\.type = nope\)/);
+  });
+
+  it("lets a Firebolt datasource connect with its own login when the server has none", async () => {
+    assert.equal(patchFireboltDriverSource(
+      "        const username = (0, shared_1.getEnv)('dbUser', { dataSource, preAggregations });",
+    ).changed, true);
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    const { default: prepareDbParams } = await import("../utils/prepareDbParams.js");
+    const driver = ServerCore.createDriver(
+      "firebolt",
+      prepareDbParams({ username: "svc", password: "s", database: "d", engineName: "e", account: "a" }, "firebolt"),
+    );
+    assert.deepEqual(driver.config.connection.auth, { client_id: "svc", client_secret: "s" });
+    assert.equal(driver.config.connection.account, "a");
   });
 
   it("does not embed a comparison result in the test source", async () => {
