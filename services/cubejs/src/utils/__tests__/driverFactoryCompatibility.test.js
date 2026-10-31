@@ -7,7 +7,7 @@ import driverFactory, {
 import tenantDriverFactory from "../tenantDriverFactory.js";
 
 const scopeFor = (dbType, dbParams = {}) => ({
-  userScope: { dataSource: { dbType, dbParams } },
+  userScope: { dataSource: { dataSourceId: "ds-test", dbType, dbParams } },
 });
 
 const securityContext = {
@@ -76,26 +76,46 @@ describe("Cube 1.7 driver factory compatibility", () => {
     }
   });
 
-  it("refuses types that reach the Cube pod's files, its JVM, or our pre-aggregation store", async () => {
-    for (const dbType of [
-      "duckdb",
-      "sqlite",
-      "jdbc",
-      "databricks-jdbc",
-      "cubestore",
-      "elasticsearch",
-      "some-npm-package",
+  it("keeps every database type Cube knows, confined", async () => {
+    for (const [dbType, dbParams] of [
+      ["duckdb", {}],
+      ["sqlite", { database: ":memory:" }],
     ]) {
+      const driver = await driverFactory({ securityContext: scopeFor(dbType, dbParams) });
+      assert.equal(typeof driver.query, "function", dbType);
+      await driver.release?.();
+    }
+    // The JDBC drivers' pool keeps a timer after release, which would hold the
+    // test process open; their config path is what the Cube server uses.
+    for (const [dbType, dbParams] of [
+      ["jdbc", { url: "jdbc:postgresql://db.example.com/x", drivername: "org.postgresql.Driver" }],
+      ["databricks-jdbc", { url: "jdbc:databricks://x.cloud.databricks.com:443/default;httpPath=/sql/1.0/warehouses/abc", token: "t" }],
+    ]) {
+      const { customClassPath, ...config } = await driverConfigFactory({
+        securityContext: scopeFor(dbType, dbParams),
+      });
+      assert.deepEqual(config, { ...dbParams, type: dbType });
+      // generic JDBC gets the shared JVM class path
+      if (dbType === "jdbc") assert.ok(Array.isArray(customClassPath));
+    }
+  });
+
+  it("refuses types Cube does not know, so no package is looked up by name", async () => {
+    for (const dbType of ["some-npm-package", "../../etc"]) {
       await assert.rejects(
-        driverFactory({ securityContext: scopeFor(dbType, { database: "/etc/hosts" }) }),
+        driverFactory({ securityContext: scopeFor(dbType, {}) }),
         /Unsupported database type/,
-        dbType,
       );
       await assert.rejects(
-        driverConfigFactory({ securityContext: scopeFor(dbType, { database: "/etc/hosts" }) }),
+        driverConfigFactory({ securityContext: scopeFor(dbType, {}) }),
         /Unsupported database type/,
-        dbType,
       );
     }
+  });
+
+  it("confines params on both the Cube server path and the raw-route path", async () => {
+    const hostile = scopeFor("sqlite", { database: "/etc/hosts" });
+    await assert.rejects(driverFactory({ securityContext: hostile }), /database files must be under/);
+    await assert.rejects(driverConfigFactory({ securityContext: hostile }), /database files must be under/);
   });
 });
