@@ -43,10 +43,10 @@ export async function validateModelSyntax(jsContent, fileName = 'model.js') {
   try {
     await compiler.compile();
   } catch {
-    // compile() throws on errors — read them from errorsReport
+    // compile() throws on errors — read them from errorsReporter
   }
 
-  const errorsReport = compiler.errorsReport;
+  const errorsReport = compiler.errorsReporter;
   const rawErrors = errorsReport ? errorsReport.getErrors() : [];
 
   return {

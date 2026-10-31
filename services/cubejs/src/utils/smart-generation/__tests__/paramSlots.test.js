@@ -113,7 +113,7 @@ const compile = async (fileName, content) => {
   try {
     await compiler.compile();
   } catch (err) {
-    const raw = compiler.errorsReport?.getErrors?.() || [];
+    const raw = compiler.errorsReporter?.getErrors?.() || [];
     const detail = raw.map((e) => e.plainMessage || e.message).join('; ');
     return { ok: false, error: detail || err.plainMessage || err.message };
   }
