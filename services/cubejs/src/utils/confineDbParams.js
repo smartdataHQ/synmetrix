@@ -72,15 +72,40 @@ const addresses = async (host) => {
   }
 };
 
+// MotherDuck connection strings take options (motherduck_host, download URLs,
+// ports) that point the pod's requests anywhere -- at instance creation,
+// before the sandbox applies -- and a token is pasted into one. Only a
+// database name and a token-shaped token.
+const MOTHERDUCK_TOKEN = /^[A-Za-z0-9._-]+$/;
+const confineMotherDuck = (file, token) => {
+  const [name, query = ""] = String(file).split(/\?(.*)/s);
+  if (!/^(md|motherduck):[A-Za-z0-9_.-]*$/i.test(name)) {
+    refuse("duckdb", "MotherDuck database names are letters, digits, '_', '.' and '-'");
+  }
+  let urlToken = null;
+  for (const pair of query ? query.split("&") : []) {
+    const [key, value = ""] = pair.split("=");
+    if (key.trim().toLowerCase() !== "motherduck_token") {
+      refuse("duckdb", "MotherDuck connection options other than the token are not allowed");
+    }
+    urlToken = decodeURIComponent(value);
+  }
+  for (const t of [urlToken, token]) {
+    if (t != null && !MOTHERDUCK_TOKEN.test(String(t))) refuse("duckdb", "malformed MotherDuck token");
+  }
+  // Without a token MotherDuck falls back to an interactive device login that
+  // blocks the request for a minute.
+  if (!urlToken && !token) refuse("duckdb", "MotherDuck needs a token");
+};
+
 const confineDuckDb = (params, { dataSourceId }) => {
   // The credential chain hands tenant SQL this pod's own AWS credentials.
   const { duckdbS3UseCredentialChain, ...rest } = params;
   const file = rest.databasePath;
   const motherDuck = /^(md|motherduck):/i.test(String(file ?? ""));
-  // Without a token MotherDuck falls back to an interactive device login that
-  // blocks the request for a minute.
-  if (motherDuck && !rest.motherDuckToken && !/motherduck_token=/i.test(file)) {
-    refuse("duckdb", "MotherDuck needs a token");
+  if (motherDuck) confineMotherDuck(file, rest.motherDuckToken);
+  else if (rest.motherDuckToken != null && !MOTHERDUCK_TOKEN.test(String(rest.motherDuckToken))) {
+    refuse("duckdb", "malformed MotherDuck token");
   }
   if (file && file !== ":memory:" && !motherDuck) {
     rest.databasePath = localFile("duckdb", file, dataSourceId);
@@ -122,6 +147,30 @@ const sharedJdbcClassPath = () => {
   return [...jarsIn(jdbcDriversDir()), ...databricks];
 };
 
+// The Databricks JDBC driver runs in our JVM, and its connection options
+// include ones that read or write pod files (Volume/Staging allowed local
+// paths, SSL key stores, log files) or reach other hosts (proxies). Only the
+// options a connection needs, in the URL and in the properties, whichever
+// JDBC-family type loads the driver.
+const DATABRICKS_OPTIONS = new Set([
+  "httppath", "authmech", "uid", "pwd", "ssl", "transportmode", "conncatalog",
+  "connschema", "usenativequery", "enablearrow", "auth_flow", "oauth2clientid",
+  "oauth2secret", "useragententry", "enablegeospatialsupport", "sockettimeout",
+  "rowsfetchedperblock",
+]);
+const refuseDatabricksOptions = (dbType, params) => {
+  const url = String(params.url ?? "");
+  if (!/^\s*jdbc:(databricks|spark):\/\//i.test(url) && dbType !== "databricks-jdbc") return;
+  const keys = [
+    ...url.split(";").slice(1).map((kv) => kv.split("=")[0].trim()).filter(Boolean),
+    ...Object.keys(params.properties ?? {}),
+  ];
+  const disallowed = keys.filter((key) => !DATABRICKS_OPTIONS.has(key.toLowerCase()));
+  if (disallowed.length) {
+    refuse(dbType, `Databricks connection options not allowed: ${disallowed.join(", ")}`);
+  }
+};
+
 // JDBC driver logging (LogPath, LogLevel, ... in the URL or properties) makes
 // the JVM-wide driver write files on this pod and trace every tenant's
 // connections. Any JDBC-family type can load the Databricks driver.
@@ -139,6 +188,7 @@ const confineJdbc = (params) => {
     refuse("jdbc", "in-process database URLs are not allowed");
   }
   refuseDriverLogging("jdbc", params);
+  refuseDatabricksOptions("jdbc", params);
   const dir = jdbcDriversDir();
   for (const entry of [params.customClassPath ?? []].flat()) {
     // One entry, one jar: a class-path separator would add others.
@@ -156,6 +206,7 @@ const confineDatabricks = (params) => {
     refuse("databricks-jdbc", "url must be a jdbc:databricks:// URL");
   }
   refuseDriverLogging("databricks-jdbc", params);
+  refuseDatabricksOptions("databricks-jdbc", params);
   return params;
 };
 
