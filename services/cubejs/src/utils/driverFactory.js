@@ -4,12 +4,22 @@ import defineUserScope from "./defineUserScope.js";
 
 const DriverDependencies = DriverDependenciesModule.default || DriverDependenciesModule;
 
-// Types a tenant may not select: DuckDB and SQLite read and write files on the
-// Cube pod (DuckDB reads /proc/self/environ, which holds JWT_KEY), and
-// cubestore is our own pre-aggregation store, which holds every tenant's data.
+// Types a tenant may not select. DuckDB and SQLite read and write files on the
+// Cube pod (DuckDB reads /proc/self/environ, which holds JWT_KEY). The JDBC
+// drivers take a tenant-supplied class path and driver class, so a datasource
+// can start the HSQLDB or Derby jar bundled in the image and run Java in our
+// JVM. cubestore is our own pre-aggregation store, holding every tenant's data.
 // Only types Cube knows are allowed, so its third-party package lookup by type
 // name never runs for a tenant.
-const BLOCKED_DB_TYPES = new Set(["duckdb", "sqlite", "cubestore"]);
+// ponytail: Databricks needs a params allowlist (no customClassPath or
+// drivername from the tenant) before it can come off this list.
+const BLOCKED_DB_TYPES = new Set([
+  "duckdb",
+  "sqlite",
+  "jdbc",
+  "databricks-jdbc",
+  "cubestore",
+]);
 
 const assertAllowedDbType = (dbType) => {
   if (BLOCKED_DB_TYPES.has(dbType) || !DriverDependencies[dbType]) {

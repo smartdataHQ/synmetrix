@@ -248,6 +248,9 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
   // Model files whose cubes could not be read: a query on a cube the map lacks
   // is refused while row rules apply, since it may be one of theirs.
   mapping.unreadable = [];
+  // Every join alias any cube declares (an `extends` child inherits its
+  // parent's joins, so these are not kept per cube).
+  mapping.joinAliases = new Set();
 
   try {
     const schemas = await findDataSchemasByIds({ ids: fileIds, expectedChecksums });
@@ -279,6 +282,9 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
         const dims = new Set(
           (cube.dimensions || []).map((d) => d.name).filter(Boolean),
         );
+        for (const join of cube.joins || []) {
+          if (join?.alias) mapping.joinAliases.add(join.alias);
+        }
         mapping.set(cube.name, {
           sourceTable,
           dimensions: dims,
@@ -304,26 +310,21 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
   return mapping;
 }
 
-/**
- * Extract cube names from every member the query reads.
- * Cube.js query members are formatted as "CubeName.memberName".
- */
 // Cube 1.8 accepts member paths through join aliases (`orders.customer.city`),
 // but row rules attach to a path's first segment, so the aliased cube's rules
-// would not apply. The only other long path Cube accepts is a time dimension
-// with a granularity (`orders.created_at.month`).
+// would not apply. A join alias is declared on a cube's join; every other long
+// path (`orders.created_at.month`, a granularity) reads its own cube.
 export function assertNoJoinAliasPaths(query, cubeToTable) {
+  const aliases = cubeToTable.joinAliases;
+  if (!aliases?.size) return;
   const order = query?.order;
   const orderMembers = Array.isArray(order)
     ? order.map((o) => (Array.isArray(o) ? o[0] : o?.id))
     : Object.keys(order || {});
   for (const member of [...queryMembers(query), ...orderMembers]) {
     if (typeof member !== "string") continue;
-    const [cube, dimension, ...rest] = member.split(".");
-    if (rest.length === 0) continue;
-    if (rest.length === 1 && cubeToTable.get(cube)?.dimensions?.has(dimension)) {
-      continue;
-    }
+    const [, next, ...rest] = member.split(".");
+    if (rest.length === 0 || !aliases.has(next)) continue;
     const error = new Error(
       `'${member}' goes through a join alias, which row rules do not follow; query the member on its own cube`,
     );
@@ -332,6 +333,10 @@ export function assertNoJoinAliasPaths(query, cubeToTable) {
   }
 }
 
+/**
+ * Extract cube names from every member the query reads.
+ * Cube.js query members are formatted as "CubeName.memberName".
+ */
 function extractCubeNames(query) {
   const names = new Set();
   const allMembers = queryMembers(query);

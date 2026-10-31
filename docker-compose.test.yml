@@ -48,6 +48,8 @@ services:
       - .test.env
     environment:
       CUBEJS_SCHEDULED_REFRESH: false
+      # Cube 1.7.47+ ignores NODE_ENV for dev mode: build missing rollups on demand
+      CUBEJS_PRE_AGGREGATIONS_BUILDER: "true"
       WORKOS_API_KEY: ${WORKOS_API_KEY}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID}
       WORKOS_ISSUER: ${WORKOS_ISSUER:-}

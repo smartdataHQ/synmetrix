@@ -76,8 +76,16 @@ describe("Cube 1.7 driver factory compatibility", () => {
     }
   });
 
-  it("refuses types that reach the Cube pod's files or our pre-aggregation store", async () => {
-    for (const dbType of ["duckdb", "sqlite", "cubestore", "elasticsearch", "some-npm-package"]) {
+  it("refuses types that reach the Cube pod's files, its JVM, or our pre-aggregation store", async () => {
+    for (const dbType of [
+      "duckdb",
+      "sqlite",
+      "jdbc",
+      "databricks-jdbc",
+      "cubestore",
+      "elasticsearch",
+      "some-npm-package",
+    ]) {
       await assert.rejects(
         driverFactory({ securityContext: scopeFor(dbType, { database: "/etc/hosts" }) }),
         /Unsupported database type/,
