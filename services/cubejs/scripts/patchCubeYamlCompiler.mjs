@@ -115,6 +115,11 @@ const DUCKDB_CREATE_PATCHED = `        const safeExtensions = ${DUCKDB_SAFE_EXTE
             allow_community_extensions: 'false',
             allow_persistent_secrets: 'false',
             temp_directory: require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'duckdb-spill-')),
+            // Every tenant's DuckDB shares the cube process and its disk:
+            // bounded unless the operator raises them.
+            memory_limit: process.env.CUBEJS_DB_DUCKDB_MEMORY_LIMIT || '1GB',
+            threads: process.env.CUBEJS_DB_DUCKDB_THREADS || '2',
+            max_temp_directory_size: process.env.CUBEJS_DB_DUCKDB_MAX_TEMP_DIRECTORY_SIZE || '4GB',
         };
         const instance = await node_api_1.DuckDBInstance.create(dbUrl, dbOptions);`;
 

@@ -20,6 +20,18 @@ describe("tenant datasource params are confined, not refused", () => {
     assert.deepEqual(await confineDbParams("duckdb", { duckdbS3UseCredentialChain: true, initSql: "x" }, ds), { initSql: "x" });
     assert.equal((await confineDbParams("duckdb", { databasePath: "md:my_db?motherduck_token=t" }, ds)).databasePath, "md:my_db?motherduck_token=t");
     await refused("duckdb", { databasePath: "md:my_db" }, /MotherDuck needs a token/);
+    // MotherDuck options would point the pod's requests anywhere, before the sandbox
+    for (const databasePath of [
+      "md:x?motherduck_token=t&motherduck_host=169.254.169.254/latest/meta-data?",
+      "md:x?motherduck_token=t&motherduck_port=9999",
+      "md:?motherduck_extension_download_url=http://10.0.0.1/",
+    ]) {
+      await refused("duckdb", { databasePath }, /options other than the token/);
+    }
+    await refused("duckdb", { databasePath: "md:x/../y?motherduck_token=t" }, /database names/);
+    await refused("duckdb", { motherDuckToken: "t&motherduck_host=10.0.0.1" }, /malformed MotherDuck token/);
+    await refused("duckdb", { databasePath: "md:x", motherDuckToken: "t&x=y" }, /malformed MotherDuck token/);
+    assert.equal((await confineDbParams("duckdb", { databasePath: "md:x", motherDuckToken: "eyJ.abc_-1" }, ds)).motherDuckToken, "eyJ.abc_-1");
     assert.equal((await confineDbParams("duckdb", { databasePath: "a.duckdb" }, ds)).databasePath, "/data/local-db/ds-1/a.duckdb");
     await refused("duckdb", { databasePath: "/etc/passwd" }, /under \/data\/local-db\/ds-1/);
     await refused("duckdb", { databasePath: "../ds-2/b.duckdb" }, /under \/data\/local-db\/ds-1/);
@@ -69,6 +81,13 @@ describe("tenant datasource params are confined, not refused", () => {
     // the Databricks driver class through the generic type, by URL or property
     await refused("jdbc", { url: `${url};LogLevel=6`, drivername: "com.databricks.client.jdbc.Driver" }, /logging/);
     await refused("jdbc", { url, properties: { LogPath: "/tmp/x" } }, /logging/);
+    // options that read or write pod files, or reach other hosts, whichever type loads the driver
+    for (const option of ["VolumeOperationAllowedLocalPaths=/", "StagingAllowedLocalPaths=/", "SSLKeyStore=/app/k.jks", "UseProxy=1;ProxyHost=10.0.0.1"]) {
+      await refused("databricks-jdbc", { url: `${url};${option}`, token: "t" }, /options not allowed/);
+      await refused("jdbc", { url: `${url};${option}` }, /options not allowed/);
+    }
+    await refused("jdbc", { url, properties: { VolumeOperationAllowedLocalPaths: "/" } }, /options not allowed/);
+    assert.equal((await confineDbParams("databricks-jdbc", { url: `${url};AuthMech=3;ConnCatalog=main`, token: "t" }, ds)).url, `${url};AuthMech=3;ConnCatalog=main`);
   });
 
   it("cubestore: never ours, never private, websocket only, every plain connection pinned", async () => {

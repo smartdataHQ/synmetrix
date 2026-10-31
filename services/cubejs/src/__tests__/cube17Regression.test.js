@@ -376,6 +376,9 @@ y`);
     }
     const driver = ServerCore.createDriver("duckdb", {});
     try {
+      const [limits] = await driver.query("SELECT current_setting('threads') AS t, current_setting('max_temp_directory_size') AS m", []);
+      assert.equal(Number(limits.t), 2, "bounded threads by default");
+      assert.match(String(limits.m), /GiB|GB/);
       await assert.rejects(driver.query("CALL enable_logging(storage='stdout')", []), /not allowed/);
     } finally {
       await driver.release();
