@@ -34,6 +34,7 @@ ENV CUBESTORE_SKIP_POST_INSTALL=true
 COPY yarn.lock /app/yarn.lock
 COPY package.json /app/package.json
 COPY scripts/ /app/scripts/
+COPY drivers/ /app/drivers/
 
 RUN yarn --frozen-lockfile --network-timeout 100000
 
