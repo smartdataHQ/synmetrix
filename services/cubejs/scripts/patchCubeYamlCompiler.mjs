@@ -142,6 +142,18 @@ const DUCKDB_PATCHED = `        const sqlLiteral = (v) => \`'\${String(v).replac
                 : []),
             ...String(process.env.CUBEJS_DB_DUCKDB_ALLOWED_PATHS || '').split(',').map((p) => p.trim()).filter(Boolean),
         ];
+        // DuckDB checks a remote prefix's path, not the host a secret's
+        // ENDPOINT (or a redirect) sends it to: with a remote prefix allowed,
+        // tenant SQL reaches whatever the pod can. Only with egress restricted.
+        if (allowed.some((p) => /^[a-z][a-z0-9+.-]*:\\/\\//i.test(p)) && process.env.CUBEJS_DB_DUCKDB_EGRESS_RESTRICTED !== 'true') {
+            throw new Error('DuckDB: remote prefixes need the cube pods\\' egress restricted (NetworkPolicy); then set CUBEJS_DB_DUCKDB_EGRESS_RESTRICTED=true');
+        }
+        // ponytail: a query-text filter can't see SQL built at run time
+        // (query('...'||'...')), so logging can still be switched on to the
+        // pod's stdout; a NetworkPolicy-free fix needs DuckDB to lock logging.
+        if (/\\b(enable|disable)_(logging|profiling)\\b/i.test(String(this.config.initSql || ''))) {
+            throw new Error('DuckDB: logging and profiling calls are not allowed');
+        }
         // Nothing loads after the lock (the extension directory is out of
         // reach), so what is loaded now is all tenant SQL gets.
         const loaded = await connection.runAndReadAll("SELECT extension_name FROM duckdb_extensions() WHERE loaded");
@@ -222,8 +234,8 @@ const SQLITE_QUERY_ORIGINAL = `  query(query, values) {
   }`;
 
 const SQLITE_QUERY_PATCHED = `  query(query, values) {
-    if (/\\b(temp_store_directory|data_store_directory)\\b/i.test(String(query))) {
-      return Promise.reject(new Error('SQLite: changing the temp or data directory is not allowed'));
+    if (/(temp_store_directory|data_store_directory|hard_heap_limit|soft_heap_limit)/i.test(String(query))) {
+      return Promise.reject(new Error('SQLite: pragmas that change process-wide settings are not allowed'));
     }
     return Promise.resolve(this.opened).then(() => {
       if (this.openError) throw this.openError;

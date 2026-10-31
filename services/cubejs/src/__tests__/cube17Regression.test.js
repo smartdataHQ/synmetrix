@@ -288,7 +288,7 @@ y`);
     assert.match(duck.source, /autoinstall_known_extensions: 'false'/);
     assert.match(duck.source, /allow_persistent_secrets: 'false'/);
     assert.ok(
-      duck.source.indexOf("lock_configuration=true") < duck.source.indexOf("this.config.initSql"),
+      duck.source.indexOf("lock_configuration=true") < duck.source.indexOf("await execAsync(this.config.initSql)"),
       "the sandbox must be locked before tenant initSql",
     );
     assert.equal(patchDuckDbDriverSource(duck.source).changed, false);
@@ -379,6 +379,29 @@ y`);
     } finally {
       await driver.release();
     }
+    const viaInitSql = ServerCore.createDriver("duckdb", { initSql: "CALL enable_logging(storage='stdout')" });
+    await assert.rejects(viaInitSql.query("SELECT 1", []), /not allowed/);
+    await viaInitSql.release().catch(() => {});
+  });
+
+  it("the installed DuckDB driver serves remote prefixes only once egress is restricted", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    process.env.CUBEJS_DB_DUCKDB_ALLOWED_PATHS = "s3://operator-bucket/";
+    try {
+      const open = ServerCore.createDriver("duckdb", {});
+      await assert.rejects(open.query("SELECT 1", []), /egress restricted/);
+      await open.release().catch(() => {});
+      process.env.CUBEJS_DB_DUCKDB_EGRESS_RESTRICTED = "true";
+      const restricted = ServerCore.createDriver("duckdb", {});
+      try {
+        assert.equal(Number((await restricted.query("SELECT 1 AS one", []))[0].one), 1);
+      } finally {
+        await restricted.release();
+      }
+    } finally {
+      delete process.env.CUBEJS_DB_DUCKDB_ALLOWED_PATHS;
+      delete process.env.CUBEJS_DB_DUCKDB_EGRESS_RESTRICTED;
+    }
   });
 
   it("the installed DuckDB driver keeps operator S3 credentials out of readable settings", async () => {
@@ -422,7 +445,13 @@ y`);
         driver.query("ATTACH DATABASE '/tmp/attached.db' AS a", []),
         /too many attached databases/,
       );
-      await assert.rejects(driver.query("PRAGMA temp_store_directory = '/dev/shm'", []), /not allowed/);
+      for (const sql of [
+        "PRAGMA temp_store_directory = '/dev/shm'",
+        "PRAGMA hard_heap_limit = 100000",
+        "SELECT * FROM pragma_soft_heap_limit(1)",
+      ]) {
+        await assert.rejects(driver.query(sql, []), /not allowed/, sql);
+      }
       await assert.rejects(driver.createSchemaIfNotExists("stb_pre_aggregations"), /must be external/);
     } finally {
       await driver.release();

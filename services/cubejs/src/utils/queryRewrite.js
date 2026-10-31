@@ -404,7 +404,16 @@ const expressionCubes = (member) => {
  */
 export function queryInstances(query, cubeToTable, { resolve, strict = false } = {}) {
   const instances = new Map();
-  for (const member of [...queryMembers(query), ...orderMembers(query)]) {
+  // The SQL API also names cubes in join hints and in the ON of a subquery
+  // join; a cube read only there is read all the same.
+  for (const hint of query?.joinHints || []) {
+    for (const cube of [hint].flat()) {
+      if (typeof cube === "string" && /^[A-Za-z0-9_]+$/.test(cube)) instances.set(cube, cube);
+      else if (strict) refuseMember(String(cube), "is a join hint row rules can't read");
+    }
+  }
+  const subqueryOns = (query?.subqueryJoins || []).map((join) => join?.on);
+  for (const member of [...queryMembers(query), ...orderMembers(query), ...subqueryOns]) {
     if (typeof member === "string") {
       if (member.indexOf(".") <= 0) continue;
       const { instance, cube } = memberInstance(member, cubeToTable, resolve);

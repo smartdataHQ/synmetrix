@@ -132,6 +132,31 @@ describe("row rules on Cube 1.8 member paths (end to end)", () => {
     ]);
   });
 
+  it("rules cubes the SQL API names only in a subquery join or a join hint", async () => {
+    const viaSubquery = await queryRewrite(
+      {
+        dimensions: ["orders.id"],
+        subqueryJoins: [{
+          sql: "SELECT 'tenant-b' p",
+          on: { cubeName: "events", name: "on", expression: ["events", "{events.partition} = sq.p"] },
+          joinType: "INNER",
+          alias: "sq",
+        }],
+      },
+      context(),
+    );
+    assert.deepEqual(viaSubquery.filters, [
+      { member: "events.partition", operator: "equals", values: ["tenant-a"] },
+    ]);
+    const viaHint = await queryRewrite(
+      { dimensions: ["orders.id"], joinHints: [["orders", "events"]] },
+      context(),
+    );
+    assert.deepEqual(viaHint.filters, [
+      { member: "events.partition", operator: "equals", values: ["tenant-a"] },
+    ]);
+  });
+
   it("never runs a blocked query without its sentinel, time-dimension-only included", async () => {
     const ctx = context();
     ctx.securityContext.userScope.teamProperties = {};
