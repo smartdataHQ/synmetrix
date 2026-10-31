@@ -27,8 +27,8 @@ describe("row rules follow join aliases (Cube 1.8)", () => {
     // Without the compiled model a cube the map lacks (a view) can't be read
     // for granularity paths: refused. Production resolves with Cube itself.
     assert.throws(() => memberInstance("sales_view.created_at.month", map), /cannot resolve/);
-    const resolved = memberInstance("sales_view.created_at.month", map, () => ({ instancePath: "sales_view", targetCube: "sales_view" }));
-    assert.deepEqual(resolved, { instance: "sales_view", cube: "sales_view" });
+    const { instance, cube } = memberInstance("sales_view.created_at.month", map, () => ({ instancePath: "sales_view", targetCube: "sales_view" }));
+    assert.deepEqual({ instance, cube }, { instance: "sales_view", cube: "sales_view" });
   });
 
   it("collects every instance a query reads, order included", () => {

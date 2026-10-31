@@ -9,6 +9,9 @@ RUN DEBIAN_FRONTEND=noninteractive \
 
 ENV TERM=rxvt-unicode
 ENV NODE_ENV=production
+# DuckDB and SQLite datasources run queries on libuv workers (default 4): a
+# few slow tenant queries would starve DNS, crypto and file I/O for the pod.
+ENV UV_THREADPOOL_SIZE=64
 
 # Required for node-oracledb to buld on ARM64
 RUN apt-get update \

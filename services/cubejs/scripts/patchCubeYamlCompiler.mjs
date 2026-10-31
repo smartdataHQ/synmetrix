@@ -95,6 +95,14 @@ const LOADER_PATCHED = `                // pipe() drops source errors; forwarded
 //   what tenants need (httpfs for S3/HTTP, excel, ...) in
 //   CUBEJS_DB_DUCKDB_EXTENSIONS;
 // - queries: no logging/profiling calls (the lock doesn't cover them).
+// Tenant SQL a DuckDB datasource refuses: logging/profiling calls (the lock
+// doesn't cover them) and writes out of the database (COPY ... TO, EXPORT),
+// which no disk quota bounds.
+const DUCKDB_REFUSED_SQL = "/\\b(enable|disable)_(logging|profiling)\\b|\\bCOPY\\b[\\s\\S]*\\bTO\\b|\\bEXPORT\\s+DATABASE\\b/i";
+// In-process engines run each query on a libuv worker; one that never ends
+// holds it, and four freeze the process. Interrupted past this deadline.
+const LOCAL_QUERY_TIMEOUT = "Number(process.env.CUBEJS_DB_LOCAL_QUERY_TIMEOUT || 300) * 1000";
+
 const DUCKDB_SAFE_EXTENSIONS = "['httpfs', 'aws', 'azure', 'motherduck', 'excel', 'json', 'parquet', 'icu', 'fts', 'inet', 'tpch', 'tpcds', 'autocomplete', 'core_functions', 'jemalloc']";
 
 const DUCKDB_CREATE_ORIGINAL = `        let dbOptions;
@@ -157,8 +165,8 @@ const DUCKDB_PATCHED = `        const sqlLiteral = (v) => \`'\${String(v).replac
         // ponytail: a query-text filter can't see SQL built at run time
         // (query('...'||'...')), so logging can still be switched on to the
         // pod's stdout; a NetworkPolicy-free fix needs DuckDB to lock logging.
-        if (/\\b(enable|disable)_(logging|profiling)\\b/i.test(String(this.config.initSql || ''))) {
-            throw new Error('DuckDB: logging and profiling calls are not allowed');
+        if (${DUCKDB_REFUSED_SQL}.test(String(this.config.initSql || ''))) {
+            throw new Error('DuckDB: logging, profiling and COPY TO / EXPORT are not allowed');
         }
         // Nothing loads after the lock (the extension directory is out of
         // reach), so what is loaded now is all tenant SQL gets.
@@ -182,25 +190,81 @@ const DUCKDB_PATCHED = `        const sqlLiteral = (v) => \`'\${String(v).replac
         }
         if (this.config.initSql) {
             try {
-                await execAsync(this.config.initSql);`;
+                const initDeadline = setTimeout(() => connection.interrupt(), ${LOCAL_QUERY_TIMEOUT});
+                try {
+                    await execAsync(this.config.initSql);
+                }
+                finally {
+                    clearTimeout(initDeadline);
+                }`;
 
 const DUCKDB_QUERY_ORIGINAL = `    async query(query, values = [], _options) {
-        const { defaultConnection } = await this.getInitiatedState();`;
+        const { defaultConnection } = await this.getInitiatedState();
+        const result = await defaultConnection.run(query, (0, Transform_1.convertDuckDBParams)(values));
+        const transform = (0, Transform_1.buildTransform)(result.columnNames(), result.columnTypes());
+        const rows = [];
+        for (const chunk of await result.fetchAllChunks()) {
+            for (const row of (0, Transform_1.transformChunk)(chunk, transform)) {
+                rows.push(row);
+            }
+        }
+        return rows;
+    }`;
 
 const DUCKDB_QUERY_PATCHED = `    async query(query, values = [], _options) {
-        if (/\\b(enable|disable)_(logging|profiling)\\b/i.test(String(query))) {
-            throw new Error('DuckDB: logging and profiling calls are not allowed');
+        if (${DUCKDB_REFUSED_SQL}.test(String(query))) {
+            throw new Error('DuckDB: logging, profiling and COPY TO / EXPORT are not allowed');
         }
-        const { defaultConnection } = await this.getInitiatedState();`;
+        const { defaultConnection } = await this.getInitiatedState();
+        const deadline = setTimeout(() => defaultConnection.interrupt(), ${LOCAL_QUERY_TIMEOUT});
+        try {
+            const result = await defaultConnection.run(query, (0, Transform_1.convertDuckDBParams)(values));
+            const transform = (0, Transform_1.buildTransform)(result.columnNames(), result.columnTypes());
+            const rows = [];
+            for (const chunk of await result.fetchAllChunks()) {
+                for (const row of (0, Transform_1.transformChunk)(chunk, transform)) {
+                    rows.push(row);
+                }
+            }
+            return rows;
+        }
+        finally {
+            clearTimeout(deadline);
+        }
+    }`;
 
 const DUCKDB_STREAM_ORIGINAL = `    async stream(query, values, { highWaterMark }) {
-        const { instance } = await this.getInitiatedState();`;
+        const { instance } = await this.getInitiatedState();
+        // new connection, because stream can break with
+        // Attempting to execute an unsuccessful or closed pending query result
+        // PreAggregation queue has a concurrency limit, it's why pool is not needed here
+        const connection = await instance.connect();
+        let closed = false;
+        const close = () => {
+            if (!closed) {
+                closed = true;
+                connection.closeSync();
+            }
+        };`;
 
 const DUCKDB_STREAM_PATCHED = `    async stream(query, values, { highWaterMark }) {
-        if (/\\b(enable|disable)_(logging|profiling)\\b/i.test(String(query))) {
-            throw new Error('DuckDB: logging and profiling calls are not allowed');
+        if (${DUCKDB_REFUSED_SQL}.test(String(query))) {
+            throw new Error('DuckDB: logging, profiling and COPY TO / EXPORT are not allowed');
         }
-        const { instance } = await this.getInitiatedState();`;
+        const { instance } = await this.getInitiatedState();
+        // new connection, because stream can break with
+        // Attempting to execute an unsuccessful or closed pending query result
+        // PreAggregation queue has a concurrency limit, it's why pool is not needed here
+        const connection = await instance.connect();
+        const deadline = setTimeout(() => connection.interrupt(), ${LOCAL_QUERY_TIMEOUT});
+        let closed = false;
+        const close = () => {
+            if (!closed) {
+                closed = true;
+                clearTimeout(deadline);
+                connection.closeSync();
+            }
+        };`;
 
 // SQLite's ATTACH opens any path the process can reach, beside the
 // datasource's own file: no attached databases at all. An open failure
@@ -245,13 +309,13 @@ const SQLITE_QUERY_PATCHED = `  query(query, values) {
     }
     return Promise.resolve(this.opened).then(() => {
       if (this.openError) throw this.openError;
-      return new Promise(
-        (resolve, reject) => this.config.db.all(
-          query,
-          values || [],
-          (err, result) => (err ? reject(err) : resolve(result))
-        )
-      );
+      return new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => this.config.db.interrupt(), ${LOCAL_QUERY_TIMEOUT});
+        this.config.db.all(query, values || [], (err, result) => {
+          clearTimeout(deadline);
+          return err ? reject(err) : resolve(result);
+        });
+      });
     });
   }`;
 

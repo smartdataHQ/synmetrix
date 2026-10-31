@@ -36,8 +36,38 @@ const MODEL = `cubes:
       - name: city
         sql: city
         type: string
+  - name: top
+    sql_table: shop.top
+    joins:
+      - name: events
+        alias: mid
+        relationship: many_to_one
+        sql: "{CUBE}.event_id = {mid}.id"
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+      - name: name
+        sql: name
+        type: string
+  - name: leaf
+    sql_table: shop.leaf
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+      - name: label
+        sql: label
+        type: string
   - name: events
     sql_table: cst.semantic_events
+    joins:
+      - name: leaf
+        alias: lf
+        relationship: many_to_one
+        sql: "{CUBE}.leaf_id = {lf}.id"
     dimensions:
       - name: id
         sql: id
@@ -59,14 +89,18 @@ mock.module("../dataSourceHelpers.js", {
     findDataSchemasByIds: async () => [{ name: "m.yml", code: MODEL }],
   },
 });
-const { default: queryRewrite } = await import("../queryRewrite.js");
+const { default: queryRewrite, memberPathHops } = await import("../queryRewrite.js");
 
 const compilers = prepareCompiler(
   { dataSchemaFiles: async () => [{ fileName: "m.yml", content: MODEL }] },
   { adapter: "postgres" },
 );
 await compilers.compiler.compile();
-const resolveMemberPath = (p) => compilers.cubeEvaluator.resolveMemberPath(p);
+// As index.js wires it: Cube's resolver plus every hop along the path.
+const resolveMemberPath = (p) => {
+  const resolved = compilers.cubeEvaluator.resolveMemberPath(p);
+  return resolved && { ...resolved, hops: memberPathHops(p, compilers.cubeEvaluator.evaluatedCubes) };
+};
 
 let version = 0;
 const context = () => ({
@@ -94,6 +128,16 @@ describe("row rules on Cube 1.8 member paths (end to end)", () => {
     );
     assert.deepEqual(query.filters, [
       { member: "orders.customer.events.partition", operator: "equals", values: ["tenant-a"] },
+    ]);
+  });
+
+  it("rules a ruled cube joined in the middle of a multi-hop path", async () => {
+    const query = await queryRewrite(
+      { dimensions: ["top.name", "top.mid.lf.label"] },
+      context(),
+    );
+    assert.deepEqual(query.filters, [
+      { member: "top.mid.partition", operator: "equals", values: ["tenant-a"] },
     ]);
   });
 
