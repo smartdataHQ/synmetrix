@@ -15,7 +15,7 @@ import driverFactory, {
 } from "./src/utils/driverFactory.js";
 import { installProcessGuards } from "./src/utils/processGuards.js";
 import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
-import queryRewrite from "./src/utils/queryRewrite.js";
+import queryRewrite, { memberPathHops } from "./src/utils/queryRewrite.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts, {
   scheduledRefreshStalledFor,
@@ -77,7 +77,15 @@ const queryRewriteOnModel = async (query, context) => {
   });
   return queryRewrite(query, {
     ...context,
-    resolveMemberPath: (path) => cubeEvaluator.resolveMemberPath(path),
+    resolveMemberPath: (path) => {
+      const resolved = cubeEvaluator.resolveMemberPath(path);
+      return (
+        resolved && {
+          ...resolved,
+          hops: memberPathHops(path, cubeEvaluator.evaluatedCubes),
+        }
+      );
+    },
   });
 };
 

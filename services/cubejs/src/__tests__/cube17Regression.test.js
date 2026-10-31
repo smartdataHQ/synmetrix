@@ -282,8 +282,29 @@ after`;
                 await execAsync(this.config.initSql);
     async query(query, values = [], _options) {
         const { defaultConnection } = await this.getInitiatedState();
+        const result = await defaultConnection.run(query, (0, Transform_1.convertDuckDBParams)(values));
+        const transform = (0, Transform_1.buildTransform)(result.columnNames(), result.columnTypes());
+        const rows = [];
+        for (const chunk of await result.fetchAllChunks()) {
+            for (const row of (0, Transform_1.transformChunk)(chunk, transform)) {
+                rows.push(row);
+            }
+        }
+        return rows;
+    }
     async stream(query, values, { highWaterMark }) {
         const { instance } = await this.getInitiatedState();
+        // new connection, because stream can break with
+        // Attempting to execute an unsuccessful or closed pending query result
+        // PreAggregation queue has a concurrency limit, it's why pool is not needed here
+        const connection = await instance.connect();
+        let closed = false;
+        const close = () => {
+            if (!closed) {
+                closed = true;
+                connection.closeSync();
+            }
+        };
 y`);
     assert.equal(duck.changed, true);
     assert.match(duck.source, /autoinstall_known_extensions: 'false'/);
@@ -344,7 +365,6 @@ y`);
     try {
       assert.equal(Number((await driver.query("SELECT 41 + 1 AS answer", []))[0].answer), 42);
       await driver.query("CREATE OR REPLACE TABLE t AS SELECT range AS b FROM range(200000)", []);
-      await driver.query(`COPY (SELECT 1) TO '${dir}/out.csv'`, []);
       await assert.rejects(driver.query("SELECT * FROM leak", []), /leak/);
       for (const sql of [
         "SELECT content FROM read_text('/proc/self/environ')",
@@ -405,6 +425,28 @@ y`);
     } finally {
       delete process.env.CUBEJS_DB_DUCKDB_ALLOWED_PATHS;
       delete process.env.CUBEJS_DB_DUCKDB_EGRESS_RESTRICTED;
+    }
+  });
+
+  it("the installed DuckDB and SQLite drivers interrupt a query past the deadline, and DuckDB refuses COPY TO", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    process.env.CUBEJS_DB_LOCAL_QUERY_TIMEOUT = "1";
+    const duck = ServerCore.createDriver("duckdb", {});
+    const lite = ServerCore.createDriver("sqlite", { database: ":memory:" });
+    try {
+      const started = Date.now();
+      await assert.rejects(duck.query("SELECT sum(hash(i)) FROM range(1000000000000) t(i)", []), /interrupt/i);
+      await assert.rejects(
+        lite.query("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c", []),
+        /interrupt/i,
+      );
+      assert.ok(Date.now() - started < 10000, "both stopped near the deadline");
+      await assert.rejects(duck.query("COPY (SELECT 1) TO 'x.csv'", []), /not allowed/);
+      await assert.rejects(duck.query("EXPORT DATABASE 'x'", []), /not allowed/);
+    } finally {
+      delete process.env.CUBEJS_DB_LOCAL_QUERY_TIMEOUT;
+      await duck.release();
+      await lite.release();
     }
   });
 

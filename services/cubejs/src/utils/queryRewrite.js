@@ -344,6 +344,42 @@ const refuseMember = (member, why) => {
   throw error;
 };
 
+// Every cube instance a member path passes through, in order, following the
+// compiled model exactly as Cube's CubeEvaluator.resolveMemberPath does: a
+// ruled cube joined in the middle of orders.customer.events.city is read too.
+// Exported for index.js (which has the compiled cubes) and tests.
+export function memberPathHops(path, cubes) {
+  const parts = String(path).split(".");
+  if (parts.length < 2 || !cubes?.[parts[0]]) return null;
+  let instancePath = parts[0];
+  let targetCube = parts[0];
+  let aliased = false;
+  const hops = [{ instancePath, targetCube }];
+  for (let i = 1; i < parts.length; i += 1) {
+    const part = parts[i];
+    const rest = parts.length - i - 1;
+    const cube = cubes[targetCube];
+    const dimension = cube?.dimensions?.[part];
+    const isMember = dimension || cube?.measures?.[part] || cube?.segments?.[part];
+    if (isMember && (rest === 0 || (rest === 1 && dimension?.type === "time"))) return hops;
+    if (!aliased || part !== targetCube) {
+      const join = (cube?.joins || []).find((j) => (j.alias ?? j.name) === part);
+      if (join && (join.alias || aliased)) {
+        instancePath = `${instancePath}.${part}`;
+        targetCube = join.name;
+        aliased = true;
+      } else if (!aliased && cubes[part]) {
+        instancePath = part;
+        targetCube = part;
+      } else {
+        return null;
+      }
+      hops.push({ instancePath, targetCube });
+    }
+  }
+  return null;
+}
+
 export function memberInstance(member, cubeToTable, resolve) {
   const parts = member.split(".");
   if (parts.length <= 2) return { instance: parts[0], cube: parts[0] };
@@ -352,7 +388,11 @@ export function memberInstance(member, cubeToTable, resolve) {
   if (resolve) {
     const resolved = resolve(member);
     if (!resolved) refuseMember(member, "is not a path the model resolves");
-    return { instance: resolved.instancePath, cube: resolved.targetCube };
+    return {
+      instance: resolved.instancePath,
+      cube: resolved.targetCube,
+      hops: resolved.hops ?? [resolved],
+    };
   }
   // Without the compiled model (tests): the aliases the model map read.
   let cube = parts[0];
@@ -416,8 +456,10 @@ export function queryInstances(query, cubeToTable, { resolve, strict = false } =
   for (const member of [...queryMembers(query), ...orderMembers(query), ...subqueryOns]) {
     if (typeof member === "string") {
       if (member.indexOf(".") <= 0) continue;
-      const { instance, cube } = memberInstance(member, cubeToTable, resolve);
+      const { instance, cube, hops } = memberInstance(member, cubeToTable, resolve);
       instances.set(instance, cube);
+      // Every cube the path passes through is read, not only the last one.
+      for (const hop of hops || []) instances.set(hop.instancePath, hop.targetCube);
       continue;
     }
     const cubes = expressionCubes(member);
