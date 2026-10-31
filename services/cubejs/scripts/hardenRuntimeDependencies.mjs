@@ -45,39 +45,6 @@ if (!thriftPackages.length || thriftPackages.some(({ parsed }) => parsed.version
   throw new Error("Every installed Apache Thrift package must resolve to 0.23.0");
 }
 
-const extractDirectory = path.join(nodeModules, "extract-zip");
-const extractManifest = path.join(extractDirectory, "package.json");
-const currentExtract = await readJson(extractManifest);
-
-if (currentExtract.version !== "0.0.0-disabled") {
-  if (currentExtract.name !== "extract-zip" || currentExtract.version !== "2.0.1") {
-    throw new Error("Refusing to replace an unreviewed extract-zip package");
-  }
-  await fs.rm(extractDirectory, { recursive: true, force: false });
-  await fs.mkdir(extractDirectory, { recursive: false });
-  await fs.writeFile(
-    extractManifest,
-    `${JSON.stringify({
-      name: "extract-zip",
-      version: "0.0.0-disabled",
-      private: true,
-      main: "index.js",
-      description: "Fail-closed runtime shim; archive extraction is install-time only",
-    }, null, 2)}\n`,
-  );
-  await fs.writeFile(
-    path.join(extractDirectory, "index.js"),
-    `"use strict";\n` +
-      `const disabled = () => {\n` +
-      `  const error = new Error("Archive extraction is disabled in the production runtime");\n` +
-      `  error.code = "CUBE_RUNTIME_ARCHIVE_EXTRACTION_DISABLED";\n` +
-      `  throw error;\n` +
-      `};\n` +
-      `module.exports = disabled;\n` +
-      `module.exports.default = disabled;\n`,
-  );
-}
-
 console.log(
-  `Runtime dependency hardening verified (${thriftPackages.length} Thrift resolution(s), archive extraction disabled)`,
+  `Runtime dependency hardening verified (${thriftPackages.length} Thrift resolution(s))`,
 );

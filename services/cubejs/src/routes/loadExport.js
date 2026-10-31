@@ -2,7 +2,8 @@ import { randomUUID } from "crypto";
 
 import sqlstring from "sqlstring";
 import * as prepareAnnotationModule from "@cubejs-backend/api-gateway/dist/src/helpers/prepare-annotation.js";
-import { QueryType } from "@cubejs-backend/api-gateway/dist/src/types/enums.js";
+// The root export: 1.8 renamed the dist enum to QueryTypeEnum.
+import { QueryType } from "@cubejs-backend/api-gateway";
 import {
   deriveExportColumnsFromLoad,
   getLoadRequestFormat,

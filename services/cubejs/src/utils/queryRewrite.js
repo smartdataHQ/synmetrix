@@ -308,6 +308,30 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
  * Extract cube names from every member the query reads.
  * Cube.js query members are formatted as "CubeName.memberName".
  */
+// Cube 1.8 accepts member paths through join aliases (`orders.customer.city`),
+// but row rules attach to a path's first segment, so the aliased cube's rules
+// would not apply. The only other long path Cube accepts is a time dimension
+// with a granularity (`orders.created_at.month`).
+export function assertNoJoinAliasPaths(query, cubeToTable) {
+  const order = query?.order;
+  const orderMembers = Array.isArray(order)
+    ? order.map((o) => (Array.isArray(o) ? o[0] : o?.id))
+    : Object.keys(order || {});
+  for (const member of [...queryMembers(query), ...orderMembers]) {
+    if (typeof member !== "string") continue;
+    const [cube, dimension, ...rest] = member.split(".");
+    if (rest.length === 0) continue;
+    if (rest.length === 1 && cubeToTable.get(cube)?.dimensions?.has(dimension)) {
+      continue;
+    }
+    const error = new Error(
+      `'${member}' goes through a join alias, which row rules do not follow; query the member on its own cube`,
+    );
+    error.type = "UserError"; // the gateway answers 400
+    throw error;
+  }
+}
+
 function extractCubeNames(query) {
   const names = new Set();
   const allMembers = queryMembers(query);
@@ -373,6 +397,7 @@ const queryRewrite = async (query, { securityContext }) => {
   const exempt = ROW_RULES_EXEMPT_PARTITIONS.has(teamProperties?.partition);
 
   if (rules.length > 0 && !exempt) {
+    assertNoJoinAliasPaths(query, cubeToTable);
     const queryCubeNames = extractCubeNames(query);
 
     // Index rules by table name for fast lookup

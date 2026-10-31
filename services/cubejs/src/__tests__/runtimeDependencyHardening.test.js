@@ -32,13 +32,4 @@ describe("production dependency hardening", () => {
     assert.equal(HiveDriver.getDefaultConcurrency(), 2);
     await driver.release();
   });
-
-  it("replaces install-time archive extraction with a fail-closed runtime shim", () => {
-    assert.equal(require("extract-zip/package.json").version, "0.0.0-disabled");
-    const extract = require("extract-zip");
-    assert.throws(
-      () => extract("untrusted.zip", { dir: "/tmp/never" }),
-      (error) => error?.code === "CUBE_RUNTIME_ARCHIVE_EXTRACTION_DISABLED",
-    );
-  });
 });
