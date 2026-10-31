@@ -270,39 +270,56 @@ after`;
 
   it("guards the DuckDB and SQLite tenant-isolation patches against upstream drift", () => {
     const duck = patchDuckDbDriverSource(`x
+        let dbOptions;
+        if (token) {
+            dbOptions = { custom_user_agent: \`Cube/\${version}\` };
+        }
+        const instance = await node_api_1.DuckDBInstance.create(dbUrl, dbOptions);
         if (this.config.initSql) {
             try {
                 await execAsync(this.config.initSql);
 y`);
     assert.equal(duck.changed, true);
+    assert.match(duck.source, /autoload_known_extensions: 'false'/);
     assert.ok(
       duck.source.indexOf("lock_configuration=true") < duck.source.indexOf("this.config.initSql"),
-      "the lockdown must run before tenant initSql",
+      "the sandbox must be locked before tenant initSql",
     );
     assert.equal(patchDuckDbDriverSource(duck.source).changed, false);
     assert.throws(() => patchDuckDbDriverSource("drifted"), /exactly once/);
 
-    const lite = patchSqliteDriverSource(`      this.config.db = new sqlite3.Database(this.config.database);`);
+    const lite = patchSqliteDriverSource(`      this.config.db = new sqlite3.Database(this.config.database);
+  async testConnection() {`);
     assert.match(lite.source, /LIMIT_ATTACHED, 0/);
+    assert.match(lite.source, /readOnly\(\) \{\n    return true;/);
     assert.throws(() => patchSqliteDriverSource("drifted"), /exactly once/);
   });
 
-  it("the installed DuckDB driver keeps tenant SQL away from the pod's files", async () => {
+  it("the installed DuckDB driver keeps tenant SQL inside its own directory", async () => {
+    const { mkdirSync } = await import("node:fs");
     const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    const dir = "/tmp/duckdb-sandbox-test/ds-1";
+    mkdirSync(dir, { recursive: true });
     const driver = ServerCore.createDriver("duckdb", {
-      // Tenant initSql tries to stash the environment before any lock.
+      databasePath: `${dir}/a.duckdb`,
+      // Tenant initSql tries to stash the environment; it runs after the lock.
       initSql: "CREATE TABLE leak AS SELECT content FROM read_text('/proc/self/environ')",
     });
     try {
       assert.equal(Number((await driver.query("SELECT 41 + 1 AS answer", []))[0].answer), 42);
+      await driver.query("CREATE OR REPLACE TABLE t AS SELECT range AS b FROM range(200000)", []);
+      await driver.query(`COPY (SELECT 1) TO '${dir}/out.csv'`, []);
       await assert.rejects(driver.query("SELECT * FROM leak", []), /leak/);
       for (const sql of [
         "SELECT content FROM read_text('/proc/self/environ')",
         "SELECT * FROM read_csv('/etc/passwd')",
+        "ATTACH '/tmp/victim.db' AS v (TYPE sqlite)",
         "ATTACH '/tmp/x.duckdb' AS x",
         "COPY (SELECT 1) TO '/tmp/out.csv'",
+        `SELECT * FROM read_csv('${dir}/../other/x.csv')`,
+        "LOAD sqlite",
+        "SET enable_external_access=true",
         "SET lock_configuration=false",
-        "RESET disabled_filesystems",
       ]) {
         await assert.rejects(driver.query(sql, []), undefined, sql);
       }
@@ -311,10 +328,11 @@ y`);
     }
   });
 
-  it("the installed SQLite driver refuses ATTACH", async () => {
+  it("the installed SQLite driver is read-only and refuses ATTACH", async () => {
     const { default: ServerCore } = await import("@cubejs-backend/server-core");
     const driver = ServerCore.createDriver("sqlite", { database: ":memory:" });
     try {
+      assert.equal(driver.readOnly(), true);
       assert.equal(Number((await driver.query("SELECT 1 AS one", []))[0].one), 1);
       await assert.rejects(
         driver.query("ATTACH DATABASE '/tmp/attached.db' AS a", []),

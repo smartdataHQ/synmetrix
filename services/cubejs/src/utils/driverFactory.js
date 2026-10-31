@@ -37,7 +37,12 @@ const resolveDriverSelection = async ({ securityContext, dataSource }) => {
     throw new Error("database type and parameters are required");
   }
   assertKnownDbType(dbType);
-  return { dbParams: await confineDbParams(dbType, dbParams), dbType };
+  return {
+    dbParams: await confineDbParams(dbType, dbParams, {
+      dataSourceId: selectedUserScope?.dataSource?.dataSourceId,
+    }),
+    dbType,
+  };
 };
 
 /**

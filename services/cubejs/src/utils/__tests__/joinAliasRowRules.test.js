@@ -24,7 +24,11 @@ describe("row rules follow join aliases (Cube 1.8)", () => {
     assert.deepEqual(memberInstance("orders.created_at.month", map), { instance: "orders", cube: "orders" });
     assert.deepEqual(memberInstance("orders.customer.city", map), { instance: "orders.customer", cube: "users" });
     assert.deepEqual(memberInstance("orders.customer.address.zip", map), { instance: "orders.customer.address", cube: "addresses" });
-    assert.deepEqual(memberInstance("sales_view.created_at.month", map), { instance: "sales_view", cube: "sales_view" });
+    // Without the compiled model a cube the map lacks (a view) can't be read
+    // for granularity paths: refused. Production resolves with Cube itself.
+    assert.throws(() => memberInstance("sales_view.created_at.month", map), /cannot resolve/);
+    const resolved = memberInstance("sales_view.created_at.month", map, () => ({ instancePath: "sales_view", targetCube: "sales_view" }));
+    assert.deepEqual(resolved, { instance: "sales_view", cube: "sales_view" });
   });
 
   it("collects every instance a query reads, order included", () => {
@@ -49,7 +53,7 @@ describe("row rules follow join aliases (Cube 1.8)", () => {
       map.joinAliases.add("vendor");
       assert.throws(
         () => memberInstance(member, map),
-        (err) => err.type === "UserError" && /join alias/.test(err.message),
+        (err) => err.type === "UserError" && /join/.test(err.message),
         member,
       );
     }

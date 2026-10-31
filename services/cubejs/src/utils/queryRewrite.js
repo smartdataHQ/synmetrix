@@ -97,13 +97,13 @@ function formatDay(ms) {
  * Explicit [from, to] windows the query states for members of `cubeName`,
  * from timeDimensions.dateRange and inDateRange filters.
  */
-function explicitDateWindows(query, instance, cubeToTable) {
+function explicitDateWindows(query, instance, cubeToTable, resolve) {
   const windows = [];
   const consider = (member, range) => {
     if (
       typeof member !== "string" ||
       !member.startsWith(`${instance}.`) ||
-      memberInstance(member, cubeToTable).instance !== instance
+      memberInstance(member, cubeToTable, resolve).instance !== instance
     ) {
       return;
     }
@@ -140,15 +140,16 @@ export function applyPartitionPruning(
   query,
   cubeToTable,
   policy = PARTITION_PRUNING,
+  resolve = undefined,
 ) {
   if (!query || !cubeToTable || cubeToTable.size === 0) return query;
   if (process.env.CUBEJS_PARTITION_PRUNING_DEBUG === "1") {
     console.log("[queryRewrite] pruning map", {
       cubes: [...cubeToTable.entries()].map(([k, v]) => `${k}→${v.sourceTable}`),
-      query: [...queryInstances(query, cubeToTable).keys()],
+      query: [...queryInstances(query, cubeToTable, { resolve }).keys()],
     });
   }
-  for (const [instance, cubeName] of queryInstances(query, cubeToTable)) {
+  for (const [instance, cubeName] of queryInstances(query, cubeToTable, { resolve })) {
     const info = cubeToTable.get(cubeName);
     if (!info?.sourceTable) continue;
     const rule = policy[info.sourceTable];
@@ -158,7 +159,7 @@ export function applyPartitionPruning(
     const member = `${instance}.${dimension}`;
     // Already constrained on the partition column — nothing to add.
     if (mentionsMember(query, member)) continue;
-    const windows = explicitDateWindows(query, instance, cubeToTable);
+    const windows = explicitDateWindows(query, instance, cubeToTable, resolve);
     if (windows.length === 0) continue;
     const margin = (Number(rule.marginDays) || 0) * DAY_MS;
     const from = Math.min(...windows.map((w) => w[0])) - margin;
@@ -335,8 +336,25 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
 // any join aliases its model declares (Cube 1.8: `orders.customer.city` reads
 // `users` as orders' `customer`). Row rules, partition pruning and the access
 // list apply to that instance and its cube. Exported for tests.
-export function memberInstance(member, cubeToTable) {
+const refuseMember = (member, why) => {
+  const error = new Error(
+    `'${member}' ${why}, so row rules could not follow it; query the member on its own cube`,
+  );
+  error.type = "UserError"; // the gateway answers 400
+  throw error;
+};
+
+export function memberInstance(member, cubeToTable, resolve) {
   const parts = member.split(".");
+  if (parts.length <= 2) return { instance: parts[0], cube: parts[0] };
+  // Cube's own resolver (CubeEvaluator.resolveMemberPath), from the compiled
+  // model: it follows aliases, and plain joins after an alias, as Cube does.
+  if (resolve) {
+    const resolved = resolve(member);
+    if (!resolved) refuseMember(member, "is not a path the model resolves");
+    return { instance: resolved.instancePath, cube: resolved.targetCube };
+  }
+  // Without the compiled model (tests): the aliases the model map read.
   let cube = parts[0];
   let depth = 1;
   while (depth < parts.length - 1) {
@@ -347,12 +365,8 @@ export function memberInstance(member, cubeToTable) {
   }
   // What remains is a member, or a time dimension and its granularity.
   const rest = parts.length - depth;
-  if (rest > 2 || (rest === 2 && cubeToTable.joinAliases?.has(parts[depth]))) {
-    const error = new Error(
-      `'${member}' goes through a join alias the model map cannot resolve, so row rules could not follow it; query the member on its own cube`,
-    );
-    error.type = "UserError"; // the gateway answers 400
-    throw error;
+  if (rest > 2 || (rest === 2 && !cubeToTable.get(cube)?.dimensions?.has(parts[depth]))) {
+    refuseMember(member, "goes through a join the model map cannot resolve");
   }
   return { instance: parts.slice(0, depth).join("."), cube };
 }
@@ -364,16 +378,42 @@ const orderMembers = (query) => {
     : Object.keys(order || {});
 };
 
+// The cubes a member expression reads. The SQL API pushes projections down as
+// { cubeName, expression: [...cubeParams, sql] } or a PatchMeasure.
+const expressionCubes = (member) => {
+  const expression = member?.expression;
+  const cubes = typeof member?.cubeName === "string" ? [member.cubeName] : [];
+  if (Array.isArray(expression)) return [...cubes, ...expression.slice(0, -1)];
+  if (expression?.type === "PatchMeasure") {
+    return [
+      ...cubes,
+      String(expression.sourceMeasure ?? "").split(".")[0],
+      ...(expression.addFilters || []).flatMap((f) => f?.cubeParams || []),
+    ];
+  }
+  return null;
+};
+
 /**
- * Every cube instance the query reads: instance path -> cube name.
+ * Every cube instance the query reads: instance path -> cube name. With
+ * `strict` (row rules apply) a member of a shape it cannot read is refused.
  * Exported for tests.
  */
-export function queryInstances(query, cubeToTable) {
+export function queryInstances(query, cubeToTable, { resolve, strict = false } = {}) {
   const instances = new Map();
   for (const member of [...queryMembers(query), ...orderMembers(query)]) {
-    if (typeof member !== "string" || member.indexOf(".") <= 0) continue;
-    const { instance, cube } = memberInstance(member, cubeToTable);
-    instances.set(instance, cube);
+    if (typeof member === "string") {
+      if (member.indexOf(".") <= 0) continue;
+      const { instance, cube } = memberInstance(member, cubeToTable, resolve);
+      instances.set(instance, cube);
+      continue;
+    }
+    const cubes = expressionCubes(member);
+    if (cubes?.every((c) => typeof c === "string" && /^[A-Za-z0-9_]+$/.test(c))) {
+      for (const cube of cubes) instances.set(cube, cube);
+    } else if (strict) {
+      refuseMember(JSON.stringify(member).slice(0, 80), "is a member expression of a shape row rules can't read");
+    }
   }
   return instances;
 }
@@ -386,7 +426,7 @@ export function queryInstances(query, cubeToTable) {
  *    Skipped for teams in CUBEJS_ROW_RULES_EXEMPT_PARTITIONS.
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
-const queryRewrite = async (query, { securityContext }) => {
+const queryRewrite = async (query, { securityContext, resolveMemberPath }) => {
   // Retired managed enrichment cubes remain unavailable even if an old
   // historical tenant version is restored.
   assertNoLegacyEnrichmentQuery(query);
@@ -424,14 +464,17 @@ const queryRewrite = async (query, { securityContext }) => {
   // --- Step 0b: Partition pruning (applies to ALL roles, before any rule) ---
   const { schemaVersion, files, fileChecksums } = userScope.dataSource;
   const cubeToTable = await buildCubeToTableMap(schemaVersion, files, fileChecksums);
-  applyPartitionPruning(query, cubeToTable);
+  applyPartitionPruning(query, cubeToTable, undefined, resolveMemberPath);
 
   // --- Step 1: Rule-based row filtering (applies to ALL roles) ---
   const rules = securityContext.queryRules || (await loadRules());
   const exempt = ROW_RULES_EXEMPT_PARTITIONS.has(teamProperties?.partition);
 
   if (rules.length > 0 && !exempt) {
-    const instances = queryInstances(query, cubeToTable);
+    const instances = queryInstances(query, cubeToTable, {
+      resolve: resolveMemberPath,
+      strict: true,
+    });
 
     // Index rules by table name for fast lookup
     const rulesByTable = new Map();
@@ -501,16 +544,21 @@ const queryRewrite = async (query, { securityContext }) => {
 
     // If blocked (missing property), block the ENTIRE query
     if (blocked) {
-      const allMembers = getColumnsArray(query);
-      if (allMembers.length > 0) {
-        query.filters = [
-          {
-            member: allMembers[0],
-            operator: "equals",
-            values: ["__blocked_by_access_control__"],
-          },
-        ];
+      const allMembers = [
+        ...getColumnsArray(query),
+        ...(query.timeDimensions || []).map((td) => td?.dimension),
+      ].filter((m) => typeof m === "string");
+      // With nothing to attach the sentinel to, the query would run unfiltered.
+      if (allMembers.length === 0) {
+        throw new Error("403: You have no access to this data");
       }
+      query.filters = [
+        {
+          member: allMembers[0],
+          operator: "equals",
+          values: ["__blocked_by_access_control__"],
+        },
+      ];
       return query;
     }
   }
@@ -543,7 +591,7 @@ const queryRewrite = async (query, { securityContext }) => {
     // needs access to users.city.
     const { instance, cube } =
       typeof cn === "string" && cn.includes(".")
-        ? memberInstance(cn, cubeToTable)
+        ? memberInstance(cn, cubeToTable, resolveMemberPath)
         : { instance: null, cube: null };
     const name = instance && instance !== cube ? `${cube}.${cn.slice(instance.length + 1)}` : cn;
     if (!accessNames.includes(name)) {

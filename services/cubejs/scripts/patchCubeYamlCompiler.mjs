@@ -79,30 +79,52 @@ const LOADER_PATCHED = `                // pipe() drops source errors; forwarded
                 tableData.rowStream = stream;`;
 
 // A DuckDB datasource runs tenant SQL (initSql, model SQL, run-sql) inside the
-// Cube process, where it can read any file the process can, /proc/self/environ
-// (JWT_KEY) included. Before the tenant's initSql runs: turn off the local
-// filesystem and extension installs, lock the configuration so tenant SQL
-// cannot undo it, and refuse to start if local files are still reachable.
-// Remote data (S3/HTTP via extensions the operator loads with
-// CUBEJS_DB_DUCKDB_EXTENSIONS, MotherDuck) keeps working.
+// Cube process. Two patches sandbox it. At creation: no extension auto-install
+// or auto-load (a sqlite-format database file would otherwise pull in the
+// sqlite extension, whose file access DuckDB's own checks don't cover) and a
+// private spill directory. Before any tenant SQL: file access only inside the
+// datasource's own directory (plus operator-listed remote prefixes,
+// CUBEJS_DB_DUCKDB_ALLOWED_PATHS), external access off, configuration locked
+// -- and it refuses to start unless the pod's files are out of reach.
+const DUCKDB_CREATE_ORIGINAL = `        let dbOptions;
+        if (token) {
+            dbOptions = { custom_user_agent: \`Cube/\${version}\` };
+        }
+        const instance = await node_api_1.DuckDBInstance.create(dbUrl, dbOptions);`;
+
+const DUCKDB_CREATE_PATCHED = `        const dbOptions = {
+            ...(token ? { custom_user_agent: \`Cube/\${version}\` } : {}),
+            autoinstall_known_extensions: 'false',
+            autoload_known_extensions: 'false',
+            allow_community_extensions: 'false',
+            temp_directory: require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'duckdb-spill-')),
+        };
+        const instance = await node_api_1.DuckDBInstance.create(dbUrl, dbOptions);`;
+
 const DUCKDB_ORIGINAL = `        if (this.config.initSql) {
             try {
                 await execAsync(this.config.initSql);`;
 
-const DUCKDB_PATCHED = `        await execAsync("SET disabled_filesystems='LocalFileSystem'; " +
-            "SET allow_community_extensions=false; " +
-            "SET autoinstall_known_extensions=false; " +
-            "SET autoload_known_extensions=false; " +
+const DUCKDB_PATCHED = `        const dbFile = this.config.databasePath;
+        const allowed = [
+            ...(dbFile && dbFile !== ':memory:' && !/^(md|motherduck):/i.test(dbFile)
+                ? [\`\${require('path').dirname(dbFile)}/\`]
+                : []),
+            ...String(process.env.CUBEJS_DB_DUCKDB_ALLOWED_PATHS || '').split(',').map((p) => p.trim()).filter(Boolean),
+        ];
+        const quote = (p) => \`'\${p.replace(/'/g, "''")}'\`;
+        await execAsync(\`SET allowed_directories=[\${allowed.map(quote).join(', ')}]; \` +
+            "SET enable_external_access=false; " +
             "SET lock_configuration=true;");
-        let localFilesReachable = true;
+        let podFilesReachable = true;
         try {
-            await execAsync("SELECT * FROM glob('/')");
+            await execAsync("SELECT 1 FROM read_text('/proc/self/environ')");
         }
         catch (e) {
-            localFilesReachable = false;
+            podFilesReachable = false;
         }
-        if (localFilesReachable) {
-            throw new Error('DuckDB: refusing tenant SQL while the local filesystem is reachable');
+        if (podFilesReachable) {
+            throw new Error('DuckDB: refusing tenant SQL while the pod\\'s files are reachable');
         }
         if (this.config.initSql) {
             try {
@@ -114,6 +136,17 @@ const SQLITE_ORIGINAL = `      this.config.db = new sqlite3.Database(this.config
 
 const SQLITE_PATCHED = `      this.config.db = new sqlite3.Database(this.config.database);
       this.config.db.configure('limit', sqlite3.LIMIT_ATTACHED, 0);`;
+
+// With no ATTACH, Cube's in-source pre-aggregation path (CREATE SCHEMA =
+// ATTACH) can't run; read-only makes Cube build rollups from query results
+// into Cube Store instead.
+const SQLITE_READONLY_ORIGINAL = `  async testConnection() {`;
+
+const SQLITE_READONLY_PATCHED = `  readOnly() {
+    return true;
+  }
+
+  async testConnection() {`;
 
 const occurrences = (source, value) => source.split(value).length - 1;
 
@@ -140,11 +173,15 @@ export function patchBigQueryDownloadSource(source) {
 }
 
 export function patchDuckDbDriverSource(source) {
-  return applyPatch(source, DUCKDB_ORIGINAL, DUCKDB_PATCHED, "DuckDB driver lockdown");
+  const create = applyPatch(source, DUCKDB_CREATE_ORIGINAL, DUCKDB_CREATE_PATCHED, "DuckDB driver creation sandbox");
+  const lock = applyPatch(create.source, DUCKDB_ORIGINAL, DUCKDB_PATCHED, "DuckDB driver lockdown");
+  return { source: lock.source, changed: create.changed || lock.changed };
 }
 
 export function patchSqliteDriverSource(source) {
-  return applyPatch(source, SQLITE_ORIGINAL, SQLITE_PATCHED, "SQLite driver attach limit");
+  const attach = applyPatch(source, SQLITE_ORIGINAL, SQLITE_PATCHED, "SQLite driver attach limit");
+  const readOnly = applyPatch(attach.source, SQLITE_READONLY_ORIGINAL, SQLITE_READONLY_PATCHED, "SQLite driver read-only");
+  return { source: readOnly.source, changed: attach.changed || readOnly.changed };
 }
 
 export function patchPreAggregationLoaderSource(source) {

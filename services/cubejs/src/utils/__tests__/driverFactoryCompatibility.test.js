@@ -7,7 +7,7 @@ import driverFactory, {
 import tenantDriverFactory from "../tenantDriverFactory.js";
 
 const scopeFor = (dbType, dbParams = {}) => ({
-  userScope: { dataSource: { dbType, dbParams } },
+  userScope: { dataSource: { dataSourceId: "ds-test", dbType, dbParams } },
 });
 
 const securityContext = {

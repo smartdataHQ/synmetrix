@@ -68,8 +68,21 @@ const externalDriverFactory = async () =>
 
 const basePath = `/api`;
 
+// Row rules follow a member path the way Cube resolves it (join aliases, and
+// plain joins after an alias), on the model compiled for this request.
+const queryRewriteOnModel = async (query, context) => {
+  const compilerApi = await cubejs.getCompilerApi(context);
+  const { cubeEvaluator } = await compilerApi.getCompilers({
+    requestId: context.requestId,
+  });
+  return queryRewrite(query, {
+    ...context,
+    resolveMemberPath: (path) => cubeEvaluator.resolveMemberPath(path),
+  });
+};
+
 const options = {
-  queryRewrite,
+  queryRewrite: queryRewriteOnModel,
   contextToAppId,
   contextToOrchestratorId,
   devServer: false,
