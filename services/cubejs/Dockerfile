@@ -40,6 +40,10 @@ RUN yarn --frozen-lockfile --network-timeout 100000
 # sqlite3's prebuilt binary needs glibc 2.38 (bookworm has 2.36); build it here.
 RUN cd node_modules/sqlite3 && node-gyp rebuild
 
+# DuckDB datasources may load but never download extensions (sandbox in
+# scripts/patchCubeYamlCompiler.mjs): ship the remote-data ones.
+RUN node -e "require('@duckdb/node-api').DuckDBInstance.create(':memory:').then((i) => i.connect()).then(async (c) => { for (const e of ['httpfs', 'aws', 'motherduck', 'excel']) await c.run('INSTALL ' + e); }).catch((e) => { console.error(e); process.exit(1); })"
+
 # Fail the build, not the first query, if a native module cannot load here.
 RUN node -e "require('@cubejs-backend/native').loadNative(); require('sqlite3'); require('@duckdb/node-api')"
 

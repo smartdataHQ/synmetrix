@@ -111,6 +111,27 @@ describe("row rules on Cube 1.8 member paths (end to end)", () => {
     );
   });
 
+  it("rules a cube a PatchMeasure reaches only through its filters", async () => {
+    const query = await queryRewrite(
+      {
+        measures: [{
+          cubeName: "orders",
+          name: "m",
+          expression: {
+            type: "PatchMeasure",
+            sourceMeasure: "orders.count",
+            replaceAggregationType: null,
+            addFilters: [["events", "{events.event} LIKE 'SECRET%'"]],
+          },
+        }],
+      },
+      context(),
+    );
+    assert.deepEqual(query.filters, [
+      { member: "events.partition", operator: "equals", values: ["tenant-a"] },
+    ]);
+  });
+
   it("never runs a blocked query without its sentinel, time-dimension-only included", async () => {
     const ctx = context();
     ctx.securityContext.userScope.teamProperties = {};

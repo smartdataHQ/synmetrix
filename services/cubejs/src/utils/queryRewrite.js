@@ -388,7 +388,10 @@ const expressionCubes = (member) => {
     return [
       ...cubes,
       String(expression.sourceMeasure ?? "").split(".")[0],
-      ...(expression.addFilters || []).flatMap((f) => f?.cubeParams || []),
+      // Parsed filters carry cubeParams; normalised ones are [...cubes, sql].
+      ...(expression.addFilters || []).flatMap((f) =>
+        Array.isArray(f) ? f.slice(0, -1) : f?.cubeParams || [],
+      ),
     ];
   }
   return null;

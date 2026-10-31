@@ -1,6 +1,10 @@
 import { lookup } from "node:dns/promises";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { BlockList, isIP } from "node:net";
 import path from "node:path";
+
+const require = createRequire(import.meta.url);
 
 // Datasource params come from the tenant (Hasura lets team members write
 // `datasources.db_params`). Every database type stays available; these rules
@@ -31,7 +35,10 @@ const insideDir = (dir, file) => {
 const localFile = (dbType, file, dataSourceId) => {
   if (!dataSourceId) refuse(dbType, "a local database file needs a datasource id");
   const dir = path.join(localDbRoot(), String(dataSourceId));
-  return insideDir(dir, file) || refuse(dbType, `database files must be under ${dir}`);
+  const resolved = insideDir(dir, file) || refuse(dbType, `database files must be under ${dir}`);
+  // A new datasource's directory, so the database can be created in it.
+  mkdirSync(path.dirname(resolved), { recursive: true });
+  return resolved;
 };
 
 // JDBC URLs that start a database inside our JVM rather than connecting to
@@ -69,7 +76,13 @@ const confineDuckDb = (params, { dataSourceId }) => {
   // The credential chain hands tenant SQL this pod's own AWS credentials.
   const { duckdbS3UseCredentialChain, ...rest } = params;
   const file = rest.databasePath;
-  if (file && file !== ":memory:" && !/^(md|motherduck):/i.test(file)) {
+  const motherDuck = /^(md|motherduck):/i.test(String(file ?? ""));
+  // Without a token MotherDuck falls back to an interactive device login that
+  // blocks the request for a minute.
+  if (motherDuck && !rest.motherDuckToken && !/motherduck_token=/i.test(file)) {
+    refuse("duckdb", "MotherDuck needs a token");
+  }
+  if (file && file !== ":memory:" && !motherDuck) {
     rest.databasePath = localFile("duckdb", file, dataSourceId);
   }
   return rest;
@@ -82,18 +95,57 @@ const confineSqlite = (params, { dataSourceId }) => {
     : { ...params, database: localFile("sqlite", params.database, dataSourceId) };
 };
 
+const jarsIn = (dir) => {
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".jar")).sort().map((f) => path.join(dir, f));
+  } catch {
+    return [];
+  }
+};
+
+// node-java runs one JVM per process, whose class path is set by the first
+// JDBC-family driver to connect. Every generic JDBC datasource gets the same
+// class path -- every operator jar plus the Databricks driver (whose own
+// class path is patched to match) -- so the order they connect in doesn't
+// matter.
+const sharedJdbcClassPath = () => {
+  let databricks = [];
+  try {
+    const download = path.join(
+      path.dirname(require.resolve("@cubejs-backend/databricks-jdbc-driver/package.json")),
+      "dist/download",
+    );
+    databricks = existsSync(download) ? jarsIn(download) : [];
+  } catch {
+    databricks = [];
+  }
+  return [...jarsIn(jdbcDriversDir()), ...databricks];
+};
+
+// JDBC driver logging (LogPath, LogLevel, ... in the URL or properties) makes
+// the JVM-wide driver write files on this pod and trace every tenant's
+// connections. Any JDBC-family type can load the Databricks driver.
+const DRIVER_LOGGING = /^\s*log(path|level|filecount|filesize)\s*$/i;
+const refuseDriverLogging = (dbType, params) => {
+  const urlKeys = String(params.url ?? "").split(";").map((kv) => kv.split("=")[0]);
+  const propertyKeys = Object.keys(params.properties ?? {});
+  if ([...urlKeys, ...propertyKeys].some((key) => DRIVER_LOGGING.test(key))) {
+    refuse(dbType, "driver logging settings are not allowed");
+  }
+};
+
 const confineJdbc = (params) => {
   if (params.url && isInProcessJdbcUrl(params.url)) {
     refuse("jdbc", "in-process database URLs are not allowed");
   }
-  if (params.customClassPath == null) return params;
+  refuseDriverLogging("jdbc", params);
   const dir = jdbcDriversDir();
-  const entries = [params.customClassPath].flat().map((entry) => {
+  for (const entry of [params.customClassPath ?? []].flat()) {
     // One entry, one jar: a class-path separator would add others.
     if (/[:;]/.test(String(entry))) refuse("jdbc", "one jar per class-path entry");
-    return insideDir(dir, entry) || refuse("jdbc", `driver jars must be under ${dir}`);
-  });
-  return { ...params, customClassPath: entries };
+    if (!insideDir(dir, entry)) refuse("jdbc", `driver jars must be under ${dir}`);
+  }
+  return { ...params, customClassPath: sharedJdbcClassPath() };
 };
 
 const confineDatabricks = (params) => {
@@ -103,11 +155,7 @@ const confineDatabricks = (params) => {
   if (!/^jdbc:(databricks|spark):\/\//i.test(url)) {
     refuse("databricks-jdbc", "url must be a jdbc:databricks:// URL");
   }
-  // Driver logging settings make the JVM-wide driver write files on this pod
-  // and trace every tenant's connections.
-  if (/;\s*log(path|level|filecount|filesize)\s*=/i.test(url)) {
-    refuse("databricks-jdbc", "driver logging settings are not allowed in the url");
-  }
+  refuseDriverLogging("databricks-jdbc", params);
   return params;
 };
 
@@ -145,6 +193,11 @@ const confineCubeStore = async (params) => {
   }
   const host = target ? target.hostname.replace(/^\[|\]$/g, "") : params.host;
   if (!host) refuse("cubestore", "host is required");
+  // The driver pastes host and port into a URL: a non-numeric port can carry
+  // another host ("1@127.0.0.1:3030").
+  if (params.port != null && !/^\d{1,5}$/.test(String(params.port))) {
+    refuse("cubestore", "port must be a number");
+  }
   const ours = process.env.CUBEJS_CUBESTORE_HOST;
   const ownStore = () => refuse("cubestore", "this deployment's own Cube Store cannot be a datasource");
   if (ours && String(host).toLowerCase().startsWith(ours.toLowerCase().split(".")[0])) ownStore();
@@ -162,7 +215,10 @@ const confineCubeStore = async (params) => {
   }
   const pinned = theirAddresses[0];
   const bracketed = isIP(pinned) === 6 ? `[${pinned}]` : pinned;
-  if (!target) return { ...params, host: bracketed };
+  if (!target) {
+    const { host: _host, port, ...rest } = params;
+    return { ...rest, url: `ws://${bracketed}:${Number(port ?? 3030)}/` };
+  }
   // TLS needs the name to verify the certificate, and a rebind to a plain
   // websocket store fails the handshake; every plain connection is pinned.
   if (target.protocol === "ws:") target.hostname = bracketed;

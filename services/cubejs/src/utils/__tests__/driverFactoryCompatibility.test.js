@@ -91,10 +91,12 @@ describe("Cube 1.7 driver factory compatibility", () => {
       ["jdbc", { url: "jdbc:postgresql://db.example.com/x", drivername: "org.postgresql.Driver" }],
       ["databricks-jdbc", { url: "jdbc:databricks://x.cloud.databricks.com:443/default;httpPath=/sql/1.0/warehouses/abc", token: "t" }],
     ]) {
-      assert.deepEqual(
-        await driverConfigFactory({ securityContext: scopeFor(dbType, dbParams) }),
-        { ...dbParams, type: dbType },
-      );
+      const { customClassPath, ...config } = await driverConfigFactory({
+        securityContext: scopeFor(dbType, dbParams),
+      });
+      assert.deepEqual(config, { ...dbParams, type: dbType });
+      // generic JDBC gets the shared JVM class path
+      if (dbType === "jdbc") assert.ok(Array.isArray(customClassPath));
     }
   });
 

@@ -13,6 +13,7 @@ import {
   patchBigQueryDriverSource,
   patchPreAggregationLoaderSource,
   patchCompilerSource,
+  patchDatabricksClassPathSource,
   patchDuckDbDriverSource,
   patchSqliteDriverSource,
 } from "../../scripts/patchCubeYamlCompiler.mjs";
@@ -278,9 +279,14 @@ after`;
         if (this.config.initSql) {
             try {
                 await execAsync(this.config.initSql);
+    async query(query, values = [], _options) {
+        const { defaultConnection } = await this.getInitiatedState();
+    async stream(query, values, { highWaterMark }) {
+        const { instance } = await this.getInitiatedState();
 y`);
     assert.equal(duck.changed, true);
-    assert.match(duck.source, /autoload_known_extensions: 'false'/);
+    assert.match(duck.source, /autoinstall_known_extensions: 'false'/);
+    assert.match(duck.source, /allow_persistent_secrets: 'false'/);
     assert.ok(
       duck.source.indexOf("lock_configuration=true") < duck.source.indexOf("this.config.initSql"),
       "the sandbox must be locked before tenant initSql",
@@ -289,10 +295,39 @@ y`);
     assert.throws(() => patchDuckDbDriverSource("drifted"), /exactly once/);
 
     const lite = patchSqliteDriverSource(`      this.config.db = new sqlite3.Database(this.config.database);
-  async testConnection() {`);
+  async testConnection() {
+  query(query, values) {
+    return new Promise(
+      (resolve, reject) => this.config.db.all(
+        query,
+        values || [],
+        (err, result) => (err ? reject(err) : resolve(result))
+      )
+    );
+  }
+  async release() {
+    await new Promise((resolve, reject) => this.config.db.close((err) => (err ? reject(err) : resolve())));
+  }
+    return this.query(
+      'PRAGMA database_list'
+    ).then((schemas) => {`);
     assert.match(lite.source, /LIMIT_ATTACHED, 0/);
     assert.match(lite.source, /readOnly\(\) \{\n    return true;/);
     assert.throws(() => patchSqliteDriverSource("drifted"), /exactly once/);
+  });
+
+  it("gives the Databricks driver the operator's JDBC jars too, so connect order doesn't matter", async () => {
+    const patched = patchDatabricksClassPathSource(`    async getCustomClassPath() {
+        return (0, installer_1.resolveJDBCDriver)();
+    }`);
+    assert.match(patched.source, /CUBEJS_JDBC_DRIVERS_DIR/);
+    // Read, not loaded: loading a JDBC driver starts node-java, which would
+    // hold the test process open.
+    const installed = await readFile(
+      require.resolve("@cubejs-backend/databricks-jdbc-driver/dist/src/DatabricksDriver.js"),
+      "utf8",
+    );
+    assert.equal(patchDatabricksClassPathSource(installed).changed, false, "the installed driver is patched");
   });
 
   it("the installed DuckDB driver keeps tenant SQL inside its own directory", async () => {
@@ -328,6 +363,55 @@ y`);
     }
   });
 
+  it("the installed DuckDB driver refuses operator extensions that bypass its sandbox, and logging calls", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    process.env.CUBEJS_DB_DUCKDB_EXTENSIONS = "httpfs,sqlite";
+    const refused = ServerCore.createDriver("duckdb", {});
+    try {
+      await assert.rejects(refused.query("SELECT 1", []), /extension "sqlite"/);
+    } finally {
+      delete process.env.CUBEJS_DB_DUCKDB_EXTENSIONS;
+      await refused.release().catch(() => {});
+    }
+    const driver = ServerCore.createDriver("duckdb", {});
+    try {
+      await assert.rejects(driver.query("CALL enable_logging(storage='stdout')", []), /not allowed/);
+    } finally {
+      await driver.release();
+    }
+  });
+
+  it("the installed DuckDB driver keeps operator S3 credentials out of readable settings", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    Object.assign(process.env, {
+      CUBEJS_DB_DUCKDB_EXTENSIONS: "httpfs",
+      CUBEJS_DB_DUCKDB_S3_ACCESS_KEY_ID: "AKIAOPERATOR",
+      CUBEJS_DB_DUCKDB_S3_SECRET_ACCESS_KEY_ID: "operator-secret",
+      CUBEJS_DB_DUCKDB_S3_REGION: "eu-west-1",
+    });
+    const driver = ServerCore.createDriver("duckdb", {});
+    try {
+      const [setting] = await driver.query("SELECT current_setting('s3_secret_access_key') AS v", []);
+      assert.ok(!setting.v, "the operator secret is not a readable setting");
+      const secrets = await driver.query("SELECT name, secret_string FROM duckdb_secrets()", []);
+      assert.equal(secrets[0].name, "synmetrix_operator_s3");
+      assert.doesNotMatch(secrets[0].secret_string, /operator-secret/);
+    } finally {
+      await driver.release();
+      for (const k of ["CUBEJS_DB_DUCKDB_EXTENSIONS", "CUBEJS_DB_DUCKDB_S3_ACCESS_KEY_ID", "CUBEJS_DB_DUCKDB_S3_SECRET_ACCESS_KEY_ID", "CUBEJS_DB_DUCKDB_S3_REGION"]) delete process.env[k];
+    }
+  });
+
+  it("an unopenable SQLite file fails its queries, not the process", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    const driver = ServerCore.createDriver("sqlite", { database: "/nonexistent-dir/x.db" });
+    try {
+      await assert.rejects(driver.query("SELECT 1", []), /SQLITE_CANTOPEN/);
+    } finally {
+      await driver.release().catch(() => {});
+    }
+  });
+
   it("the installed SQLite driver is read-only and refuses ATTACH", async () => {
     const { default: ServerCore } = await import("@cubejs-backend/server-core");
     const driver = ServerCore.createDriver("sqlite", { database: ":memory:" });
@@ -338,6 +422,8 @@ y`);
         driver.query("ATTACH DATABASE '/tmp/attached.db' AS a", []),
         /too many attached databases/,
       );
+      await assert.rejects(driver.query("PRAGMA temp_store_directory = '/dev/shm'", []), /not allowed/);
+      await assert.rejects(driver.createSchemaIfNotExists("stb_pre_aggregations"), /must be external/);
     } finally {
       await driver.release();
     }
