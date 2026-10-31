@@ -1,8 +1,31 @@
+import ServerCore from "@cubejs-backend/server-core";
 import DriverDependenciesModule from "@cubejs-backend/server-core/dist/src/core/DriverDependencies.js";
-import VerticaDriver from '@cubejs-backend/vertica-driver';
 import defineUserScope from "./defineUserScope.js";
 
 const DriverDependencies = DriverDependenciesModule.default || DriverDependenciesModule;
+
+// Types a tenant may not select. DuckDB and SQLite read and write files on the
+// Cube pod (DuckDB reads /proc/self/environ, which holds JWT_KEY). The JDBC
+// drivers take a tenant-supplied class path and driver class, so a datasource
+// can start the HSQLDB or Derby jar bundled in the image and run Java in our
+// JVM. cubestore is our own pre-aggregation store, holding every tenant's data.
+// Only types Cube knows are allowed, so its third-party package lookup by type
+// name never runs for a tenant.
+// ponytail: Databricks needs a params allowlist (no customClassPath or
+// drivername from the tenant) before it can come off this list.
+const BLOCKED_DB_TYPES = new Set([
+  "duckdb",
+  "sqlite",
+  "jdbc",
+  "databricks-jdbc",
+  "cubestore",
+]);
+
+const assertAllowedDbType = (dbType) => {
+  if (BLOCKED_DB_TYPES.has(dbType) || !DriverDependencies[dbType]) {
+    throw new Error(`Unsupported database type: "${dbType}"`);
+  }
+};
 
 const driverError = (err) => {
   console.error("Driver error:", err?.message || err);
@@ -26,6 +49,7 @@ const resolveDriverSelection = ({ securityContext, dataSource }) => {
   if (!dbType || !dbParams || typeof dbParams !== "object") {
     throw new Error("database type and parameters are required");
   }
+  assertAllowedDbType(dbType);
   return { dbParams, dbType };
 };
 
@@ -37,11 +61,6 @@ const resolveDriverSelection = ({ securityContext, dataSource }) => {
 export const driverConfigFactory = async (context) => {
   try {
     const { dbParams, dbType } = resolveDriverSelection(context);
-    if (dbType !== "vertica" && !DriverDependencies[dbType]) {
-      throw new Error(
-        `Unknown database type: "${dbType}" (available: ${Object.keys(DriverDependencies).join(", ")})`,
-      );
-    }
     return { ...dbParams, type: dbType };
   } catch (err) {
     return driverError(err);
@@ -56,37 +75,17 @@ export const driverConfigFactory = async (context) => {
  * @returns {Promise<Object>} A promise that resolves to the driver instance.
  */
 const driverFactory = async ({ securityContext, dataSource }) => {
-  const { dbParams, dbType } = resolveDriverSelection({
-    securityContext,
-    dataSource,
-  });
-
-  let driverModule;
-
   try {
-    if (dbType === "vertica") {
-      return new VerticaDriver(dbParams);
-    }
-
-    const dbDriver = DriverDependencies[dbType];
-    if (!dbDriver) {
-      throw new Error(`Unknown database type: "${dbType}" (available: ${Object.keys(DriverDependencies).join(', ')})`);
-    }
-    driverModule = await import(dbDriver);
-
-    if (dbType === "druid") {
-      driverModule = driverModule.default;
-    }
-
-    if (dbType === "databricks-jdbc") {
-      return new driverModule.DatabricksDriver(dbParams);
-    }
+    const { dbParams, dbType } = resolveDriverSelection({
+      securityContext,
+      dataSource,
+    });
+    // Cube's own resolver: drivers ship ESM entry points since 1.7.37, where a
+    // default import is the module namespace rather than the driver class.
+    return ServerCore.createDriver(dbType, dbParams);
   } catch (err) {
     return driverError(err);
   }
-
-  const driverClass = new driverModule.default(dbParams);
-  return driverClass;
 };
 
 export default driverFactory;

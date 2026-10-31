@@ -75,6 +75,8 @@ services:
     environment:
       CUBE_PRINCIPLES_PATH: /app/shared/principles/cube-principles.md
       CUBEJS_SCHEDULED_REFRESH: false
+      # Cube 1.7.47+ ignores NODE_ENV for dev mode: build missing rollups on demand
+      CUBEJS_PRE_AGGREGATIONS_BUILDER: "true"
       CUBEJS_DB_QUERY_LIMIT: 1000000
       # CubeStore's 64 MiB transport limit: a bigger message fails alone instead of wedging the connection
       CUBEJS_CUBESTORE_MAX_MESSAGE_SIZE: 67108864

@@ -248,6 +248,9 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
   // Model files whose cubes could not be read: a query on a cube the map lacks
   // is refused while row rules apply, since it may be one of theirs.
   mapping.unreadable = [];
+  // Every join alias any cube declares (an `extends` child inherits its
+  // parent's joins, so these are not kept per cube).
+  mapping.joinAliases = new Set();
 
   try {
     const schemas = await findDataSchemasByIds({ ids: fileIds, expectedChecksums });
@@ -279,6 +282,9 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
         const dims = new Set(
           (cube.dimensions || []).map((d) => d.name).filter(Boolean),
         );
+        for (const join of cube.joins || []) {
+          if (join?.alias) mapping.joinAliases.add(join.alias);
+        }
         mapping.set(cube.name, {
           sourceTable,
           dimensions: dims,
@@ -302,6 +308,29 @@ async function buildCubeToTableMap(schemaVersion, fileIds, expectedChecksums) {
   cubeTableMapCache.set(schemaVersion, mapping);
 
   return mapping;
+}
+
+// Cube 1.8 accepts member paths through join aliases (`orders.customer.city`),
+// but row rules attach to a path's first segment, so the aliased cube's rules
+// would not apply. A join alias is declared on a cube's join; every other long
+// path (`orders.created_at.month`, a granularity) reads its own cube.
+export function assertNoJoinAliasPaths(query, cubeToTable) {
+  const aliases = cubeToTable.joinAliases;
+  if (!aliases?.size) return;
+  const order = query?.order;
+  const orderMembers = Array.isArray(order)
+    ? order.map((o) => (Array.isArray(o) ? o[0] : o?.id))
+    : Object.keys(order || {});
+  for (const member of [...queryMembers(query), ...orderMembers]) {
+    if (typeof member !== "string") continue;
+    const [, next, ...rest] = member.split(".");
+    if (rest.length === 0 || !aliases.has(next)) continue;
+    const error = new Error(
+      `'${member}' goes through a join alias, which row rules do not follow; query the member on its own cube`,
+    );
+    error.type = "UserError"; // the gateway answers 400
+    throw error;
+  }
 }
 
 /**
@@ -373,6 +402,7 @@ const queryRewrite = async (query, { securityContext }) => {
   const exempt = ROW_RULES_EXEMPT_PARTITIONS.has(teamProperties?.partition);
 
   if (rules.length > 0 && !exempt) {
+    assertNoJoinAliasPaths(query, cubeToTable);
     const queryCubeNames = extractCubeNames(query);
 
     // Index rules by table name for fast lookup

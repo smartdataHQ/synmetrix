@@ -201,7 +201,7 @@ jobs:
         if: matrix.service == 'cubejs'
         run: |
           docker run --rm \
-            -e CUBE_RUNTIME_EXPECTED_VERSION=1.7.30 \
+            -e CUBE_RUNTIME_EXPECTED_VERSION=1.8.16 \
             -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
             "${{ matrix.image }}:build-${{ github.sha }}" \
             yarn test

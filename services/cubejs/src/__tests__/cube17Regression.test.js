@@ -11,7 +11,6 @@ import { validateFormat } from "../utils/formatValidator.js";
 import {
   patchBigQueryDownloadSource,
   patchBigQueryDriverSource,
-  patchClickHouseQuerySource,
   patchPreAggregationLoaderSource,
   patchCompilerSource,
 } from "../../scripts/patchCubeYamlCompiler.mjs";
@@ -36,10 +35,10 @@ const CORPUS = {
   pre_aggregations: ["../routes/__tests__/validateInBranch.corpus.test.js"],
 };
 
-describe("Cube 1.6.68 to 1.7.30 comparative corpus", () => {
+describe("Cube 1.7.30 to 1.8.16 comparative corpus", () => {
   it("runs only an explicitly supported Cube runtime", () => {
     assert.ok(
-      ["1.6.68", "1.7.30"].includes(runtimeVersion),
+      ["1.7.30", "1.8.16"].includes(runtimeVersion),
       `unsupported Cube runtime in comparative corpus: ${runtimeVersion}`,
     );
     if (process.env.CUBE_RUNTIME_EXPECTED_VERSION) {
@@ -106,24 +105,6 @@ after`;
     });
     assert.throws(
       () => patchCompilerSource("unexpected compiler source"),
-      /expected source anchor was not found exactly once/,
-    );
-  });
-
-  it("guards the ClickHouse string-type patch against upstream source drift", () => {
-    const source = `before
-        templates.types.timestamp = 'DATETIME';
-        delete templates.types.time;
-after`;
-    const first = patchClickHouseQuerySource(source);
-    assert.equal(first.changed, true);
-    assert.match(first.source, /templates\.types\.string = 'String';/);
-    assert.deepEqual(patchClickHouseQuerySource(first.source), {
-      source: first.source,
-      changed: false,
-    });
-    assert.throws(
-      () => patchClickHouseQuerySource("unexpected adapter source"),
       /expected source anchor was not found exactly once/,
     );
   });
@@ -249,7 +230,7 @@ after`;
     });
   });
 
-  it("casts composite-key count measures to ClickHouse String (Tesseract)", async () => {
+  it("casts composite-key count measures to a ClickHouse String type (Tesseract)", async () => {
     const { ClickHouseQuery } = require(
       "@cubejs-backend/schema-compiler/dist/src/adapter/ClickHouseQuery.js",
     );
@@ -280,7 +261,8 @@ after`;
       useNativeSqlPlanner: true,
     }).buildSqlAndParams();
 
-    assert.match(sql, / AS String\)/);
+    // 1.7.30 (patched) casts to String; Cube 1.7.38+ casts to Nullable(String).
+    assert.match(sql, / AS (?:Nullable\()?String\)/);
     assert.doesNotMatch(sql, / AS STRING\)/);
   });
 

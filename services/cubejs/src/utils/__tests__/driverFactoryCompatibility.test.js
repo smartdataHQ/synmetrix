@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
+import driverFactory, {
   driverConfigFactory,
 } from "../driverFactory.js";
 import tenantDriverFactory from "../tenantDriverFactory.js";
+
+const scopeFor = (dbType, dbParams = {}) => ({
+  userScope: { dataSource: { dbType, dbParams } },
+});
 
 const securityContext = {
   userScope: {
@@ -55,5 +59,43 @@ describe("Cube 1.7 driver factory compatibility", () => {
       tenantDriverFactory({ options: { driverFactory: cubeFactory } }),
       cubeFactory,
     );
+  });
+
+  it("constructs real driver instances through Cube's resolver", async () => {
+    // Drivers ship ESM entry points since Cube 1.7.37: a default import
+    // yields the module namespace, not the class.
+    for (const [dbType, dbParams] of [
+      ["postgres", { host: "127.0.0.1", database: "x", user: "x" }],
+      ["clickhouse", { host: "127.0.0.1", port: 8123 }],
+      ["vertica", { host: "127.0.0.1", database: "x", user: "x" }],
+    ]) {
+      const driver = await driverFactory({ securityContext: scopeFor(dbType, dbParams) });
+      assert.equal(typeof driver.query, "function", dbType);
+      assert.equal(typeof driver.testConnection, "function", dbType);
+      await driver.release?.();
+    }
+  });
+
+  it("refuses types that reach the Cube pod's files, its JVM, or our pre-aggregation store", async () => {
+    for (const dbType of [
+      "duckdb",
+      "sqlite",
+      "jdbc",
+      "databricks-jdbc",
+      "cubestore",
+      "elasticsearch",
+      "some-npm-package",
+    ]) {
+      await assert.rejects(
+        driverFactory({ securityContext: scopeFor(dbType, { database: "/etc/hosts" }) }),
+        /Unsupported database type/,
+        dbType,
+      );
+      await assert.rejects(
+        driverConfigFactory({ securityContext: scopeFor(dbType, { database: "/etc/hosts" }) }),
+        /Unsupported database type/,
+        dbType,
+      );
+    }
   });
 });
