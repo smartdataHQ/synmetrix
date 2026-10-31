@@ -8,6 +8,8 @@ const SUPPORTED_VERSION = "1.8.16";
 const COMPILER_PACKAGE = "@cubejs-backend/schema-compiler";
 const BIGQUERY_PACKAGE = "@cubejs-backend/bigquery-driver";
 const ORCHESTRATOR_PACKAGE = "@cubejs-backend/query-orchestrator";
+const DUCKDB_PACKAGE = "@cubejs-backend/duckdb-driver";
+const SQLITE_PACKAGE = "@cubejs-backend/sqlite-driver";
 
 const ORIGINAL = `        else if (typeof obj === 'string') {
             let code = obj;
@@ -76,6 +78,43 @@ const LOADER_PATCHED = `                // pipe() drops source errors; forwarded
                 tableData.rowStream.pipe(stream);
                 tableData.rowStream = stream;`;
 
+// A DuckDB datasource runs tenant SQL (initSql, model SQL, run-sql) inside the
+// Cube process, where it can read any file the process can, /proc/self/environ
+// (JWT_KEY) included. Before the tenant's initSql runs: turn off the local
+// filesystem and extension installs, lock the configuration so tenant SQL
+// cannot undo it, and refuse to start if local files are still reachable.
+// Remote data (S3/HTTP via extensions the operator loads with
+// CUBEJS_DB_DUCKDB_EXTENSIONS, MotherDuck) keeps working.
+const DUCKDB_ORIGINAL = `        if (this.config.initSql) {
+            try {
+                await execAsync(this.config.initSql);`;
+
+const DUCKDB_PATCHED = `        await execAsync("SET disabled_filesystems='LocalFileSystem'; " +
+            "SET allow_community_extensions=false; " +
+            "SET autoinstall_known_extensions=false; " +
+            "SET autoload_known_extensions=false; " +
+            "SET lock_configuration=true;");
+        let localFilesReachable = true;
+        try {
+            await execAsync("SELECT * FROM glob('/')");
+        }
+        catch (e) {
+            localFilesReachable = false;
+        }
+        if (localFilesReachable) {
+            throw new Error('DuckDB: refusing tenant SQL while the local filesystem is reachable');
+        }
+        if (this.config.initSql) {
+            try {
+                await execAsync(this.config.initSql);`;
+
+// SQLite's ATTACH opens any path the process can reach, beside the
+// datasource's own file. No attached databases at all.
+const SQLITE_ORIGINAL = `      this.config.db = new sqlite3.Database(this.config.database);`;
+
+const SQLITE_PATCHED = `      this.config.db = new sqlite3.Database(this.config.database);
+      this.config.db.configure('limit', sqlite3.LIMIT_ATTACHED, 0);`;
+
 const occurrences = (source, value) => source.split(value).length - 1;
 
 function applyPatch(source, original, patched, label, expected = 1) {
@@ -98,6 +137,14 @@ export function patchBigQueryDriverSource(source) {
 
 export function patchBigQueryDownloadSource(source) {
   return applyPatch(source, BIGQUERY_DOWNLOAD_ORIGINAL, BIGQUERY_DOWNLOAD_PATCHED, "BigQuery read-only download");
+}
+
+export function patchDuckDbDriverSource(source) {
+  return applyPatch(source, DUCKDB_ORIGINAL, DUCKDB_PATCHED, "DuckDB driver lockdown");
+}
+
+export function patchSqliteDriverSource(source) {
+  return applyPatch(source, SQLITE_ORIGINAL, SQLITE_PATCHED, "SQLite driver attach limit");
 }
 
 export function patchPreAggregationLoaderSource(source) {
@@ -140,11 +187,23 @@ export async function patchInstalledCompiler() {
     "dist/src/orchestrator/PreAggregationLoader.js",
   );
   const loaderChanged = await patchFile(loaderPath, patchPreAggregationLoaderSource);
+  const duckDbPath = resolve(
+    await supportedPackageRoot(DUCKDB_PACKAGE),
+    "dist/src/DuckDBDriver.js",
+  );
+  const duckDbChanged = await patchFile(duckDbPath, patchDuckDbDriverSource);
+  const sqlitePath = resolve(
+    await supportedPackageRoot(SQLITE_PACKAGE),
+    "driver/SqliteDriver.js",
+  );
+  const sqliteChanged = await patchFile(sqlitePath, patchSqliteDriverSource);
   return {
     compilerPath,
     bigQueryPath,
     loaderPath,
-    changed: yamlChanged || bigQueryChanged || loaderChanged,
+    duckDbPath,
+    sqlitePath,
+    changed: yamlChanged || bigQueryChanged || loaderChanged || duckDbChanged || sqliteChanged,
   };
 }
 
@@ -155,7 +214,7 @@ if (
   const result = await patchInstalledCompiler();
   console.log(
     result.changed
-      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + stream error forwarding + BigQuery read-only types`
-      : `Cube ${SUPPORTED_VERSION} YAML metadata + stream error forwarding + BigQuery read-only type patches already applied`,
+      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + stream error forwarding + BigQuery read-only types + DuckDB lockdown + SQLite attach limit`
+      : `Cube ${SUPPORTED_VERSION} YAML metadata + stream error forwarding + BigQuery read-only type + DuckDB lockdown + SQLite attach limit patches already applied`,
   );
 }

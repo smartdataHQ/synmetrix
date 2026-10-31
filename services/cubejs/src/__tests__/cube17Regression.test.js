@@ -13,6 +13,8 @@ import {
   patchBigQueryDriverSource,
   patchPreAggregationLoaderSource,
   patchCompilerSource,
+  patchDuckDbDriverSource,
+  patchSqliteDriverSource,
 } from "../../scripts/patchCubeYamlCompiler.mjs";
 
 const require = createRequire(import.meta.url);
@@ -264,6 +266,63 @@ after`;
     // 1.7.30 (patched) casts to String; Cube 1.7.38+ casts to Nullable(String).
     assert.match(sql, / AS (?:Nullable\()?String\)/);
     assert.doesNotMatch(sql, / AS STRING\)/);
+  });
+
+  it("guards the DuckDB and SQLite tenant-isolation patches against upstream drift", () => {
+    const duck = patchDuckDbDriverSource(`x
+        if (this.config.initSql) {
+            try {
+                await execAsync(this.config.initSql);
+y`);
+    assert.equal(duck.changed, true);
+    assert.ok(
+      duck.source.indexOf("lock_configuration=true") < duck.source.indexOf("this.config.initSql"),
+      "the lockdown must run before tenant initSql",
+    );
+    assert.equal(patchDuckDbDriverSource(duck.source).changed, false);
+    assert.throws(() => patchDuckDbDriverSource("drifted"), /exactly once/);
+
+    const lite = patchSqliteDriverSource(`      this.config.db = new sqlite3.Database(this.config.database);`);
+    assert.match(lite.source, /LIMIT_ATTACHED, 0/);
+    assert.throws(() => patchSqliteDriverSource("drifted"), /exactly once/);
+  });
+
+  it("the installed DuckDB driver keeps tenant SQL away from the pod's files", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    const driver = ServerCore.createDriver("duckdb", {
+      // Tenant initSql tries to stash the environment before any lock.
+      initSql: "CREATE TABLE leak AS SELECT content FROM read_text('/proc/self/environ')",
+    });
+    try {
+      assert.equal(Number((await driver.query("SELECT 41 + 1 AS answer", []))[0].answer), 42);
+      await assert.rejects(driver.query("SELECT * FROM leak", []), /leak/);
+      for (const sql of [
+        "SELECT content FROM read_text('/proc/self/environ')",
+        "SELECT * FROM read_csv('/etc/passwd')",
+        "ATTACH '/tmp/x.duckdb' AS x",
+        "COPY (SELECT 1) TO '/tmp/out.csv'",
+        "SET lock_configuration=false",
+        "RESET disabled_filesystems",
+      ]) {
+        await assert.rejects(driver.query(sql, []), undefined, sql);
+      }
+    } finally {
+      await driver.release();
+    }
+  });
+
+  it("the installed SQLite driver refuses ATTACH", async () => {
+    const { default: ServerCore } = await import("@cubejs-backend/server-core");
+    const driver = ServerCore.createDriver("sqlite", { database: ":memory:" });
+    try {
+      assert.equal(Number((await driver.query("SELECT 1 AS one", []))[0].one), 1);
+      await assert.rejects(
+        driver.query("ATTACH DATABASE '/tmp/attached.db' AS a", []),
+        /too many attached databases/,
+      );
+    } finally {
+      await driver.release();
+    }
   });
 
   it("does not embed a comparison result in the test source", async () => {

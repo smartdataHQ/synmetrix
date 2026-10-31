@@ -1,28 +1,15 @@
 import ServerCore from "@cubejs-backend/server-core";
 import DriverDependenciesModule from "@cubejs-backend/server-core/dist/src/core/DriverDependencies.js";
+import confineDbParams from "./confineDbParams.js";
 import defineUserScope from "./defineUserScope.js";
 
 const DriverDependencies = DriverDependenciesModule.default || DriverDependenciesModule;
 
-// Types a tenant may not select. DuckDB and SQLite read and write files on the
-// Cube pod (DuckDB reads /proc/self/environ, which holds JWT_KEY). The JDBC
-// drivers take a tenant-supplied class path and driver class, so a datasource
-// can start the HSQLDB or Derby jar bundled in the image and run Java in our
-// JVM. cubestore is our own pre-aggregation store, holding every tenant's data.
-// Only types Cube knows are allowed, so its third-party package lookup by type
-// name never runs for a tenant.
-// ponytail: Databricks needs a params allowlist (no customClassPath or
-// drivername from the tenant) before it can come off this list.
-const BLOCKED_DB_TYPES = new Set([
-  "duckdb",
-  "sqlite",
-  "jdbc",
-  "databricks-jdbc",
-  "cubestore",
-]);
-
-const assertAllowedDbType = (dbType) => {
-  if (BLOCKED_DB_TYPES.has(dbType) || !DriverDependencies[dbType]) {
+// Only types Cube knows, so its third-party package lookup by type name never
+// runs for a tenant. Each type's tenant-supplied params are confined to what
+// cannot reach this pod or other tenants (confineDbParams).
+const assertKnownDbType = (dbType) => {
+  if (!DriverDependencies[dbType]) {
     throw new Error(`Unsupported database type: "${dbType}"`);
   }
 };
@@ -32,7 +19,7 @@ const driverError = (err) => {
   throw new Error(err?.message || err);
 };
 
-const resolveDriverSelection = ({ securityContext, dataSource }) => {
+const resolveDriverSelection = async ({ securityContext, dataSource }) => {
   const { userScope, user } = securityContext || {};
   let selectedUserScope = userScope;
 
@@ -49,8 +36,8 @@ const resolveDriverSelection = ({ securityContext, dataSource }) => {
   if (!dbType || !dbParams || typeof dbParams !== "object") {
     throw new Error("database type and parameters are required");
   }
-  assertAllowedDbType(dbType);
-  return { dbParams, dbType };
+  assertKnownDbType(dbType);
+  return { dbParams: await confineDbParams(dbType, dbParams), dbType };
 };
 
 /**
@@ -60,7 +47,7 @@ const resolveDriverSelection = ({ securityContext, dataSource }) => {
  */
 export const driverConfigFactory = async (context) => {
   try {
-    const { dbParams, dbType } = resolveDriverSelection(context);
+    const { dbParams, dbType } = await resolveDriverSelection(context);
     return { ...dbParams, type: dbType };
   } catch (err) {
     return driverError(err);
@@ -76,7 +63,7 @@ export const driverConfigFactory = async (context) => {
  */
 const driverFactory = async ({ securityContext, dataSource }) => {
   try {
-    const { dbParams, dbType } = resolveDriverSelection({
+    const { dbParams, dbType } = await resolveDriverSelection({
       securityContext,
       dataSource,
     });

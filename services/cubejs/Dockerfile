@@ -37,8 +37,11 @@ COPY scripts/ /app/scripts/
 
 RUN yarn --frozen-lockfile --network-timeout 100000
 
-# Fail the build, not the first query, if the native module cannot load here.
-RUN node -e "require('@cubejs-backend/native').loadNative()"
+# sqlite3's prebuilt binary needs glibc 2.38 (bookworm has 2.36); build it here.
+RUN cd node_modules/sqlite3 && node-gyp rebuild
+
+# Fail the build, not the first query, if a native module cannot load here.
+RUN node -e "require('@cubejs-backend/native').loadNative(); require('sqlite3'); require('@duckdb/node-api')"
 
 COPY index.js /app/
 COPY src/ /app/src/
