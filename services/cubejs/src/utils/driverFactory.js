@@ -8,8 +8,12 @@ const DriverDependencies = DriverDependenciesModule.default || DriverDependencie
 // Only types Cube knows, so its third-party package lookup by type name never
 // runs for a tenant. Each type's tenant-supplied params are confined to what
 // cannot reach this pod or other tenants (confineDbParams).
+// Drivers Cube no longer ships, kept as local packages (drivers/). Cube finds
+// them as `<type>-cubejs-driver`.
+const LOCAL_DRIVERS = new Set(["elasticsearch"]);
+
 const assertKnownDbType = (dbType) => {
-  if (!DriverDependencies[dbType]) {
+  if (!DriverDependencies[dbType] && !LOCAL_DRIVERS.has(dbType)) {
     throw new Error(`Unsupported database type: "${dbType}"`);
   }
 };

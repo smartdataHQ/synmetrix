@@ -107,6 +107,20 @@ const prepareDbParams = (dbParams, dbType) => {
         region: dbConfig.awsRegion,
       };
       break;
+    case "elasticsearch":
+      dbConfig = {
+        ...dbConfig,
+        queryFormat: "json",
+        url: dbConfig.url,
+        auth: {
+          username: dbConfig.username,
+          password: dbConfig.password,
+          ...(dbConfig.apiId && dbConfig.apiKey
+            ? { apiKey: { id: dbConfig.apiId, api_key: dbConfig.apiKey } }
+            : {}),
+        },
+      };
+      break;
     case "snowflake":
       const account = [dbConfig.orgId, dbConfig.accountId].join("-");
 
