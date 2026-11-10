@@ -768,10 +768,34 @@ const findMemberByUserAndTeamQuery = `
   }
 `;
 
+const provisionTeamDatasourcesMutation = `
+  mutation ProvisionTeamDatasources($team_id: uuid!) {
+    provision_default_datasources(team_id: $team_id) {
+      datasources_created
+    }
+  }
+`;
+
 async function findTeamByName(name) {
   const normalized = name.toLowerCase().trim();
   const result = await fetchGraphQL(findTeamByNameQuery, { name: normalized });
   return result.data?.teams?.[0] || null;
+}
+
+/**
+ * Give a team created here its default datasources, as the Actions flow does
+ * in provision.js. Without them every query for the new org fails with "no
+ * datasource". Never throws: the login that created the team must still
+ * succeed, and the datasource can be added later.
+ */
+async function provisionTeamDatasources(teamId) {
+  try {
+    await fetchGraphQL(provisionTeamDatasourcesMutation, { team_id: teamId });
+  } catch (err) {
+    console.warn(
+      `Default datasources not provisioned for team ${teamId}: ${err?.message || err}`
+    );
+  }
 }
 
 /**
@@ -794,6 +818,7 @@ async function ensureTeamMembership(userId, email, partition, teamRole = "member
     const teamId = teamResult.data?.insert_teams_one?.id;
     if (teamId) {
       team = { id: teamId };
+      await provisionTeamDatasources(teamId);
     } else {
       team = await findTeamByName(teamName);
     }
@@ -939,6 +964,7 @@ async function _provisionUserFromWorkOS(sub, partition) {
       if (teamId) {
         team = { id: teamId };
         isTeamCreator = true;
+        await provisionTeamDatasources(teamId);
       } else {
         // on_conflict returned null — team was created concurrently, re-fetch
         team = await findTeamByName(teamName);
@@ -1079,6 +1105,7 @@ async function _provisionUserFromFraiOS(externalId, email, partition, teamRole =
       if (teamId) {
         team = { id: teamId };
         isTeamCreator = true;
+        await provisionTeamDatasources(teamId);
       } else {
         team = await findTeamByName(teamName);
       }
