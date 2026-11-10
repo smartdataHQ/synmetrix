@@ -134,4 +134,73 @@ describe("provisionUserFromFraiOS", () => {
 
     assert.equal(callCount, 1, "should hit cache on second call");
   });
+
+  const provisionCalls = () =>
+    fetchGraphQLMock.mock.calls.filter((c) =>
+      c.arguments[0].includes("ProvisionTeamDatasources")
+    );
+
+  it("gives a team it creates default datasources, and still logs in when that fails", async () => {
+    fetchGraphQLMock.mock.mockImplementation(async (query) => {
+      if (query.includes("ProvisionTeamDatasources")) {
+        throw new Error("actions service down");
+      }
+      if (query.includes("FindAccountByEmail")) {
+        return {
+          data: {
+            accounts: [{ id: "acc-4", user_id: "user-uuid-4", email: "d@new.is" }],
+          },
+        };
+      }
+      if (query.includes("FindTeamByName")) {
+        return { data: { teams: [] } };
+      }
+      if (query.includes("CreateTeam")) {
+        return { data: { insert_teams_one: { id: "team-new" } } };
+      }
+      if (query.includes("CreateMember")) {
+        return { data: { insert_members_one: { id: "member-new" } } };
+      }
+      return { data: {} };
+    });
+
+    const userId = await provisionUserFromFraiOS({
+      userId: "fraios-user-4",
+      email: "d@new.is",
+      accountId: "org-4",
+      partition: "new.is",
+    });
+
+    assert.equal(userId, "user-uuid-4");
+    assert.equal(provisionCalls().length, 1);
+    assert.deepEqual(provisionCalls()[0].arguments[1], { team_id: "team-new" });
+  });
+
+  it("does not provision datasources for a team that already exists", async () => {
+    fetchGraphQLMock.mock.mockImplementation(async (query) => {
+      if (query.includes("FindAccountByEmail")) {
+        return {
+          data: {
+            accounts: [{ id: "acc-5", user_id: "user-uuid-5", email: "e@bonus.is" }],
+          },
+        };
+      }
+      if (query.includes("FindTeamByName")) {
+        return { data: { teams: [{ id: "team-5" }] } };
+      }
+      if (query.includes("CreateMember")) {
+        return { data: { insert_members_one: { id: "member-5" } } };
+      }
+      return { data: {} };
+    });
+
+    await provisionUserFromFraiOS({
+      userId: "fraios-user-5",
+      email: "e@bonus.is",
+      accountId: "org-5",
+      partition: "bonus.is",
+    });
+
+    assert.equal(provisionCalls().length, 0);
+  });
 });

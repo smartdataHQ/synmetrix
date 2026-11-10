@@ -2,17 +2,20 @@ import { fetchGraphQL } from "../utils/graphql.js";
 import { provisionDefaultDatasources } from "../utils/provisionDefaultDatasources.js";
 import logger from "../utils/logger.js";
 
-const allTeamsQuery = `
-  query AllTeams {
-    teams {
+const teamsQuery = `
+  query Teams($where: teams_bool_exp!) {
+    teams(where: $where) {
       id
       user_id
     }
   }
 `;
 
+// With `team_id` only that team is provisioned (the CubeJS login flow calls
+// this for a team it has just created); without it every team is backfilled.
 export default async (session, input) => {
-  const res = await fetchGraphQL(allTeamsQuery);
+  const where = input?.team_id ? { id: { _eq: input.team_id } } : {};
+  const res = await fetchGraphQL(teamsQuery, { where });
   const teams = res.data?.teams || [];
 
   logger.log(

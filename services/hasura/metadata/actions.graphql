@@ -388,7 +388,7 @@ type CopyDatasourceOutput {
 }
 
 type Mutation {
-  provision_default_datasources: ProvisionDefaultDatasourcesOutput
+  provision_default_datasources(team_id: uuid): ProvisionDefaultDatasourcesOutput
 }
 
 type ProvisionDefaultDatasourcesOutput {
