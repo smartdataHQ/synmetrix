@@ -40,15 +40,7 @@ export function invalidateWorkosSubCache(sub) {
   }
 }
 
-// Request-auth scope reads in flight, by user. Nothing settled is kept: see
-// `findUserForRequest`.
-const requestScopeReads = new Map();
-
-/** A scope read that started before a change must not answer a request that comes after it. */
-export function invalidateUserCache(userId) {
-  if (userId == null) requestScopeReads.clear();
-  else requestScopeReads.delete(userId);
-}
+export function invalidateUserCache() {}
 
 const sourceFragment = `
   id
@@ -297,25 +289,6 @@ export const findUser = async ({ userId, includeModelCode = true }) => {
   const dataSources = Array.from(dataSourcesMap.values());
 
   return { dataSources, members };
-};
-
-/**
- * `findUser` for request auth (`checkAuth`): still one fresh read per request,
- * except that requests asking while the same user's read is in flight share it.
- * A dashboard open sends about ten requests at once, and ten copies of this
- * query took 230-300 ms each against well under 100 ms for one (measured
- * 2026-11-19). Nothing is kept once the read settles, so no request decides on
- * a scope read before it arrived. Each caller gets its own copy.
- */
-export const findUserForRequest = ({ userId }) => {
-  let read = requestScopeReads.get(userId);
-  if (!read) {
-    read = findUser({ userId, includeModelCode: false }).finally(() => {
-      if (requestScopeReads.get(userId) === read) requestScopeReads.delete(userId);
-    });
-    requestScopeReads.set(userId, read);
-  }
-  return read.then((user) => structuredClone(user));
 };
 
 /**
