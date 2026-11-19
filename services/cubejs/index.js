@@ -20,6 +20,7 @@ import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts, {
   scheduledRefreshStalledFor,
 } from "./src/utils/scheduledRefreshContexts.js";
+import shareCompilerApiBuilds from "./src/utils/shareCompilerApiBuilds.js";
 
 // Installed before anything else so failures during startup are covered too.
 // A pre-aggregation whose build query fails rejects past Cube's orchestrator;
@@ -120,6 +121,8 @@ const options = {
 };
 
 const cubejs = new ServerCore(options);
+// Before anything reads `cubejs.getCompilerApi`: the API gateway binds it once.
+shareCompilerApiBuilds(cubejs, contextToAppId);
 // Custom raw-SQL routes require driver instances; Cube's server-level factory
 // must remain config-only so 1.7 can derive the dialect per tenant context.
 cubejs.tenantDriverFactory = driverFactory;
