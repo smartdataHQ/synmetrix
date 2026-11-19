@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 
 import {
   findUser,
+  findUserForRequest,
   provisionUserFromWorkOS,
   provisionUserFromFraiOS,
 } from "./dataSourceHelpers.js";
@@ -91,7 +92,7 @@ const checkAuth = async (req) => {
   // The scope and the rules are independent reads: fetch them together.
   const rulesRead = loadRules();
   rulesRead.catch(() => {});
-  let user = await findUser({ userId, includeModelCode: false });
+  let user = await findUserForRequest({ userId });
 
   if (!user.dataSources?.length || !user.members?.length) {
     const error = new Error(`404: user "${userId}" not found`);
