@@ -156,3 +156,92 @@ describe("anything else is generated exactly as without the hook (US2)", () => {
     assert.deepEqual(plain.lines, []);
   });
 });
+
+describe("a routed answer says through what time it is complete (US4, FR-030)", () => {
+  const HEADER = "x-synmetrix-aggregate-covered-until";
+  const servers = [];
+  let withHook;
+  let without;
+  let coveredUntil;
+
+  /**
+   * A server on a local port: Cube's own routes and, with `routing`, the
+   * service's real ones in front of them. The service's router is one object
+   * per process, so only one server can mount it; the other one is plain Cube.
+   */
+  async function listen(routing) {
+    const { default: express } = await import("express");
+    const { default: routes } = await import("../../src/routes/index.js");
+    const basePath = "/api";
+    const cubejs = await h.service({
+      routing,
+      basePath,
+      checkAuth: (req) => { req.securityContext = h.securityContext(); },
+    });
+    const app = express();
+    app.use(express.json());
+    if (routing) app.use(routes({ basePath, cubejs }));
+    cubejs.initApp(app);
+    const server = await new Promise((resolve) => { const listening = app.listen(0, "127.0.0.1", () => resolve(listening)); });
+    servers.push(server);
+    return `http://127.0.0.1:${server.address().port}${basePath}/v1/load`;
+  }
+  const load = async (url, query, format) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "test" },
+      body: JSON.stringify({ query: { timezone: "UTC", ...query }, ...(format ? { format } : {}) }),
+    });
+    return { status: response.status, mark: response.headers.get(HEADER), text: await response.text() };
+  };
+
+  before(async () => {
+    const entry = await h.reloadCatalog();
+    coveredUntil = entry.aggregates.find((aggregate) => aggregate.table === AGGREGATE).coveredUntil;
+    withHook = await listen(true);
+    without = await listen(false);
+  });
+
+  after(() => {
+    for (const server of servers) server.close();
+  });
+
+  it("carries the coverage boundary on a routed answer, and the body is what the source returns", async () => {
+    const answer = await load(withHook, SUITABLE);
+    assert.equal(answer.status, 200, answer.text.slice(0, 300));
+    assert.equal(answer.mark, new Date(coveredUntil).toISOString());
+    assert.match(answer.mark, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+    const plainAnswer = await load(without, SUITABLE);
+    assert.equal(plainAnswer.status, 200);
+    const [routedBody, plainBody] = [JSON.parse(answer.text), JSON.parse(plainAnswer.text)];
+    h.assertSameRows(routedBody.data, plainBody.data, { label: "load" });
+    assert.deepEqual(routedBody.annotation, plainBody.annotation);
+    assert.ok(routedBody.data.length > 0);
+  });
+
+  it("carries no mark on an answer from the source, on an error, or with the switch off", async () => {
+    const unrouted = await load(withHook, { ...SUITABLE, measures: [m("transactions")] });
+    assert.deepEqual([unrouted.status, unrouted.mark], [200, null]);
+
+    const failed = await load(withHook, { measures: [m("no_such_measure")] });
+    assert.ok(failed.status >= 400, String(failed.status));
+    assert.equal(failed.mark, null);
+
+    const off = await load(without, SUITABLE);
+    assert.deepEqual([off.status, off.mark], [200, null]);
+  });
+
+  it("carries the mark on an export as well, with the same rows", async () => {
+    const exported = await load(withHook, SUITABLE, "csv");
+    assert.equal(exported.status, 200, exported.text.slice(0, 300));
+    assert.equal(exported.mark, new Date(coveredUntil).toISOString());
+    const lines = exported.text.trim().split("\n");
+    const { data } = JSON.parse((await load(without, SUITABLE)).text);
+    assert.equal(lines.length, data.length + 1); // a header line and the rows the source returns
+    assert.match(lines[0], /main_category/);
+
+    const unrouted = await load(withHook, { ...SUITABLE, measures: [m("transactions")] }, "csv");
+    assert.deepEqual([unrouted.status, unrouted.mark], [200, null]);
+  });
+});

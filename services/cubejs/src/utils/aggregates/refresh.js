@@ -15,6 +15,21 @@ const STATE_COLUMNS = "(aggregate, partition_id, fingerprint, verified_at, cover
 const stamp = (ms) => `fromUnixTimestamp64Milli(toInt64(${Math.trunc(ms)}), 'UTC')`;
 
 /**
+ * The staging table is local to the server the job is connected to and never
+ * replicated, whatever the aggregate is: a copy of a replicated table's own
+ * engine could claim the same replication path. It has the aggregate's keys
+ * and storage policy, which swapping a partition requires.
+ */
+function stagingEngine({ partitionKey, sortingKey, primaryKey, storagePolicy }) {
+  const settings = ["allow_nullable_key = 1", "allow_suspicious_low_cardinality_types = 1"];
+  if (storagePolicy && storagePolicy !== "default") settings.push(`storage_policy = '${String(storagePolicy).replace(/[^A-Za-z0-9_-]/g, "")}'`);
+  return (
+    `ENGINE = AggregatingMergeTree PARTITION BY ${partitionKey} ORDER BY (${sortingKey})` +
+    `${primaryKey && primaryKey !== sortingKey ? ` PRIMARY KEY (${primaryKey})` : ""} SETTINGS ${settings.join(", ")}`
+  );
+}
+
+/**
  * One pass over one aggregate.
  *
  * @param {(sql: string) => Promise<object[]>} queryFn runs any statement; rows for a read
@@ -85,7 +100,7 @@ export async function refreshAggregate(queryFn, structure) {
       if (held.includes(partition.id) && recorded.get(partition.id) === partition.fingerprint) continue;
       if (!stagingCreated) {
         await queryFn(`DROP TABLE IF EXISTS ${staging} SYNC`);
-        await queryFn(`CREATE TABLE ${staging} AS ${target}`);
+        await queryFn(`CREATE TABLE ${staging} AS ${target} ${stagingEngine(structure)}`);
         stagingCreated = true;
         // The copy carries the binding comment; without it nothing takes the staging table for an aggregate.
         await queryFn(`ALTER TABLE ${staging} MODIFY COMMENT ''`);

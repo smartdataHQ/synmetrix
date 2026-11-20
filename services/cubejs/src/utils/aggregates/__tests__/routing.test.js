@@ -11,7 +11,7 @@ import { structure } from "./fixtures/salesAggregate.js";
 mock.module("../../dataSourceHelpers.js", {
   namedExports: { findDataSchemasByIds: async () => { throw new Error("not used in unit tests"); } },
 });
-const { aggregateAppIdSuffix, clearVariants, derivedFilesFor, installAggregateRouting } = await import("../routing.js");
+const { ANSWER_MARK_HEADER, aggregateAppIdSuffix, answerMark, clearVariants, derivedFilesFor, installAggregateRouting } = await import("../routing.js");
 
 const MODEL = readFileSync(new URL("./fixtures/sales_model.yml", import.meta.url), "utf8");
 const NOW = Date.UTC(2026, 10, 20, 12);
@@ -158,6 +158,12 @@ describe("installAggregateRouting", () => {
     assert.deepEqual(routed.context.aggregateRouting, { aggregate: "agg_test.sales__agg_1day", coveredUntil: COVERED });
     const unrouted = await run(UNSUITABLE);
     assert.equal(unrouted.context.aggregateRouting, undefined);
+
+    assert.equal(ANSWER_MARK_HEADER, "x-synmetrix-aggregate-covered-until");
+    assert.equal(answerMark(routed.context), "2026-11-01T00:00:00.000Z");
+    assert.equal(answerMark(unrouted.context), null);
+    assert.equal(answerMark(undefined), null);
+    assert.equal(answerMark({ aggregateRouting: { aggregate: "x", coveredUntil: null } }), null);
   });
 
   it("logs one line per request with the request id, cube and aggregate, and no query values", async () => {

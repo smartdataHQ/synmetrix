@@ -11,6 +11,7 @@ import express from "express";
 //   POST   /api/v1/version/diff               (direct-verify, US5)
 //   POST   /api/v1/version/rollback           (direct-verify, US5)
 
+import { ANSWER_MARK_HEADER, answerMark } from "../utils/aggregates/routing.js";
 import checkAuthMiddleware from "../utils/checkAuth.js";
 import {
   invalidateUserCache,
@@ -77,6 +78,8 @@ export default ({ basePath, cubejs }) => {
     ) {
       return next();
     }
+    // read here: the path is relative to the mount point only inside this middleware
+    const isLoad = req.path.replace(/\/$/, "") === "/v1/load";
     const writeHead = res.writeHead;
     res.writeHead = function (...args) {
       const revision = req.securityContext?.authorityRevision;
@@ -89,6 +92,12 @@ export default ({ basePath, cubejs }) => {
         // CUBEJS_DB_QUERY_LIMIT, which it cannot see: name the limit to rely on it.
         this.setHeader("x-synmetrix-capabilities", "fail-closed-exports");
         this.setHeader("Cache-Control", "no-store");
+      }
+      // An answer served from an aggregate table (015) says through what time
+      // that aggregate holds data. An answer from the source carries nothing.
+      const mark = isLoad ? answerMark(req.context) : null;
+      if (mark && status >= 200 && status < 300) {
+        this.setHeader(ANSWER_MARK_HEADER, mark);
       }
       return writeHead.apply(this, args);
     };

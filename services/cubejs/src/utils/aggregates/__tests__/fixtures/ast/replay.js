@@ -3,7 +3,8 @@
  * trees for expressions, and table descriptions for the generator. Statements
  * are answered from recorded.json. To record new ones, start the disposable
  * ClickHouse (test/aggregates/docker-compose.clickhouse.yml) and run the
- * tests once with AGGREGATES_RECORD=1.
+ * tests once with AGGREGATES_RECORD=1 and --test-concurrency=1 (test files
+ * share the recording and the database).
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

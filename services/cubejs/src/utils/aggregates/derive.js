@@ -279,11 +279,12 @@ function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstP
     case "avg": {
       if (missing) return { detail: missing };
       if (column && has(`${column}${SUFFIX.count}`, "count")) {
-        const sql = `${total(`{CUBE}.${column}`)} / nullIf(${total(`{CUBE}.${column}${SUFFIX.count}`)}, 0)`;
+        // toFloat64: avg() answers in floating point; a decimal sum divided as it is would be cut to its scale
+        const sql = `toFloat64(${total(`{CUBE}.${column}`)}) / nullIf(${total(`{CUBE}.${column}${SUFFIX.count}`)}, 0)`;
         return { definition: { ...unfiltered, sql, type: "number" } };
       }
       if (isMapKey(node, effective) && rows) {
-        const sql = `${total(String(member.sql).trim())} / nullIf(${total(`{CUBE}.${ROWS_COLUMN}`)}, 0)`;
+        const sql = `toFloat64(${total(String(member.sql).trim())}) / nullIf(${total(`{CUBE}.${ROWS_COLUMN}`)}, 0)`;
         return { definition: { ...unfiltered, sql, type: "number" } };
       }
       return { detail: "no_stored_field" };

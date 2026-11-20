@@ -40,10 +40,10 @@ CREATE TABLE gen_test.retail_lines
     `flags` Map(LowCardinality(String), Bool),
     `properties` JSON,
     `loaded_at` DateTime64(3) DEFAULT now64(3),
-    `quantity` Float64 ALIAS toFloat64(units * ifNull(bundled_units, 1)),
-    `revenue` Float64 ALIAS quantity * unit_price,
-    `cost` Float64 ALIAS quantity * unit_cost,
-    `margin` Float64 ALIAS revenue - cost,
+    `quantity` Nullable(Float64) ALIAS toFloat64(units * ifNull(bundled_units, 1)),
+    `revenue` Nullable(Float64) ALIAS quantity * unit_price,
+    `cost` Nullable(Float64) ALIAS quantity * unit_cost,
+    `margin` Nullable(Float64) ALIAS revenue - cost,
     `store_label` String ALIAS concat(store_id, ' ', store)
 )
 ENGINE = MergeTree

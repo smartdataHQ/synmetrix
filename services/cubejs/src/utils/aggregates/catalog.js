@@ -32,7 +32,7 @@ export async function probeAggregates(queryFn, now = () => performance.now()) {
 
   // 1. Tables that declare a binding, and the databases that keep refresh records.
   const tables = await queryFn(
-    "SELECT database, name, comment, partition_key, sorting_key, total_rows FROM system.tables " +
+    "SELECT database, name, comment, partition_key, sorting_key, primary_key, storage_policy, total_rows FROM system.tables " +
       `WHERE startsWith(comment, '${BINDING_PREFIX}') OR name = '${STATE_TABLE}'`,
   );
   const stateDatabases = new Set();
@@ -120,6 +120,8 @@ export async function probeAggregates(queryFn, now = () => performance.now()) {
       ...binding,
       partitionKey: row.partition_key,
       sortingKey: row.sorting_key,
+      primaryKey: row.primary_key,
+      storagePolicy: row.storage_policy,
       totalRows: Number(row.total_rows) || 0,
       columns,
       verifiedAt: record ? Number(record.verified_ms) : null,

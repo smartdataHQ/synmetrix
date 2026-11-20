@@ -119,7 +119,7 @@ describe("generate: a definition that follows the contract", () => {
         "SimpleAggregateFunction(min, Nullable(Float32))",
         "SimpleAggregateFunction(sum, Nullable(Int64))",
         "SimpleAggregateFunction(sum, UInt64)",
-        "SimpleAggregateFunction(sum, Float64)",
+        "SimpleAggregateFunction(sum, Nullable(Float64))",
         "SimpleAggregateFunction(sumMap, Map(String, Float64))",
         "SimpleAggregateFunction(sum, UInt64)",
       ],

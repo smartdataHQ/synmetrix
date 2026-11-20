@@ -116,6 +116,15 @@ paths:
       responses:
         200:
           description: Successful response
+          headers:
+            x-synmetrix-aggregate-covered-until:
+              description: >
+                Present only when the answer was served from an aggregate table
+                (aggregate routing). The time through which that aggregate holds
+                data, ISO-8601 in UTC: a time bucket that ends at or before it is
+                complete, a later one may be missing or behind. An answer served
+                from the source table carries no such header.
+              type: string
           schema:
             type: object
             properties:

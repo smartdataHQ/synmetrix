@@ -205,3 +205,46 @@ describe("without a recent pass the aggregate is not used", () => {
     assert.equal((await both(held)).table, AGGREGATE);
   });
 });
+
+describe("the account the refresh job runs as", () => {
+  // The privileges of contracts/aggregates-cli.md, for one aggregate.
+  const GRANTS = [
+    "SELECT ON system.parts",
+    "SELECT ON system.tables",
+    "SELECT ON system.columns",
+    "SELECT ON agg_test.sales",
+    "SELECT, INSERT, ALTER DELETE ON agg_test.sales__agg_1day",
+    "CREATE TABLE, DROP TABLE, SELECT, INSERT, TRUNCATE, ALTER MODIFY COMMENT ON agg_test.sales__agg_1day__staging",
+    "SELECT, INSERT ON agg_test.aggregate_state",
+  ];
+  let asJob;
+
+  before(async () => {
+    await h.run("DROP USER IF EXISTS aggregate_refresh_test");
+    await h.run("CREATE USER aggregate_refresh_test IDENTIFIED BY 'refresh-test'");
+    for (const grant of GRANTS) await h.run(`GRANT ${grant} TO aggregate_refresh_test`);
+    asJob = h.runAs("aggregate_refresh_test", "refresh-test");
+  });
+
+  it("can build, swap, drop and record with exactly the documented privileges", async () => {
+    await h.run(
+      "INSERT INTO agg_test.sales (partition, timestamp, event_gid, position, sold_location, main_category, product_id, uom, units, checkout_id, loaded_at) " +
+        "VALUES ('t2', '2026-01-10 12:00:00', 'late-row', 0, 'store0', 'food', 'p1', 'pc', 5, 'late', now64(3))",
+    );
+    const built = await refreshAll(asJob, { only: AGGREGATE });
+    assert.ok(built.results[0].ok, built.results[0].error);
+    assert.equal(built.results[0].built.length, 1);
+
+    await h.run(`ALTER TABLE ${AGGREGATE} MODIFY COMMENT '${BINDING("400 day")}'`);
+    const dropped = await refreshAll(asJob, { only: AGGREGATE });
+    assert.ok(dropped.results[0].ok, dropped.results[0].error);
+    assert.equal(dropped.results[0].dropped.length, 8);
+  });
+
+  it("cannot change a source table or remove an aggregate", async () => {
+    await assert.rejects(asJob("ALTER TABLE agg_test.sales DELETE WHERE 1"), /Not enough privileges/);
+    await assert.rejects(asJob("INSERT INTO agg_test.sales (partition) VALUES ('x')"), /Not enough privileges/);
+    await assert.rejects(asJob(`DROP TABLE ${AGGREGATE}`), /Not enough privileges/);
+    await assert.rejects(asJob(`ALTER TABLE ${AGGREGATE} MODIFY COMMENT ''`), /Not enough privileges/);
+  });
+});

@@ -96,14 +96,14 @@ describe("deriveCube: an eligible cube", () => {
     const { member } = await derive(CUBE);
     assert.deepEqual(member("measures", "avg_units"), {
       name: "avg_units",
-      sql: "sum({CUBE}.units) / nullIf(sum({CUBE}.units__count), 0)",
+      sql: "toFloat64(sum({CUBE}.units)) / nullIf(sum({CUBE}.units__count), 0)",
       type: "number",
       title: "Average Units",
     });
-    assert.equal(member("measures", "avg_discount").sql, "sum({CUBE}.discount) / nullIf(sum({CUBE}.discount__count), 0)");
+    assert.equal(member("measures", "avg_discount").sql, "toFloat64(sum({CUBE}.discount)) / nullIf(sum({CUBE}.discount__count), 0)");
     assert.equal(
       member("measures", "store0_avg_units").sql,
-      "sumIf({CUBE}.units, ({CUBE}.sold_location = 'store0')) / nullIf(sumIf({CUBE}.units__count, ({CUBE}.sold_location = 'store0')), 0)",
+      "toFloat64(sumIf({CUBE}.units, ({CUBE}.sold_location = 'store0'))) / nullIf(sumIf({CUBE}.units__count, ({CUBE}.sold_location = 'store0')), 0)",
     );
     assert.equal(member("measures", "store0_avg_units").filters, undefined);
   });
@@ -112,7 +112,7 @@ describe("deriveCube: an eligible cube", () => {
     const { member } = await derive(CUBE);
     assert.deepEqual(member("measures", "avg_weight"), {
       name: "avg_weight",
-      sql: "sum({CUBE}.metrics['weight']) / nullIf(sum({CUBE}._rows), 0)",
+      sql: "toFloat64(sum({CUBE}.metrics['weight'])) / nullIf(sum({CUBE}._rows), 0)",
       type: "number",
     });
   });

@@ -42,9 +42,23 @@ export async function run(sql, values) {
   return [];
 }
 
+const others = [];
+
 export async function close() {
   await driver?.release?.();
   driver = undefined;
+  for (const other of others.splice(0)) await other.release?.();
+}
+
+/** `run` as another account of the test database. */
+export function runAs(username, password) {
+  const other = ServerCore.createDriver("clickhouse", { ...connectionParams, username, password });
+  others.push(other);
+  return async (sql, values) => {
+    if (READS.test(sql)) return other.query(sql, values);
+    await other.command(sql);
+    return [];
+  };
 }
 
 /** Runs every statement of fixtures/<name>.sql. */
@@ -285,6 +299,8 @@ export async function service({ routing = true, lines = [], ...options } = {}) {
     repositoryFactory,
     ...options,
   });
+  // As index.js: routes that issue SQL themselves (exports) get a driver instance from here.
+  cubejs.tenantDriverFactory = async () => ServerCore.createDriver("clickhouse", connectionParams);
   cubejs.lines = lines;
   cubejs.routingInstalled = installAggregateRouting(cubejs, {
     enabled: routing,

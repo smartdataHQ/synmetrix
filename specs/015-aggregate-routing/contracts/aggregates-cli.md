@@ -13,7 +13,24 @@ Both commands read their own connection settings from the environment. They do n
 | `AGGREGATES_CLICKHOUSE_USER` | account name |
 | `AGGREGATES_CLICKHOUSE_PASSWORD` | password |
 
-`generate` needs read access to the source and to `system.tables` / `system.columns`. `refresh` additionally needs to read `system.parts`, create and drop a staging table, alter aggregate partitions, and insert into `aggregate_state`, in the databases that hold aggregates.
+`AGGREGATES_CLICKHOUSE_URL` must address one replica, not a load-balanced service: `refresh` builds each partition in a staging table that exists only on the server it is connected to.
+
+`generate` needs `SELECT` on the source table and on `system.tables` and `system.columns`.
+
+`refresh` needs these privileges and no others (the engine tests run a pass with exactly this set):
+
+```sql
+GRANT SELECT ON system.parts TO <account>;
+GRANT SELECT ON system.tables TO <account>;
+GRANT SELECT ON system.columns TO <account>;
+GRANT SELECT, INSERT ON <database>.aggregate_state TO <account>;
+-- per aggregate:
+GRANT SELECT ON <database>.<source> TO <account>;
+GRANT SELECT, INSERT, ALTER DELETE ON <database>.<aggregate> TO <account>;
+GRANT CREATE TABLE, DROP TABLE, SELECT, INSERT, TRUNCATE, ALTER MODIFY COMMENT ON <database>.<aggregate>__staging TO <account>;
+```
+
+With them the account cannot write to a source table, drop an aggregate or change its binding. A new aggregate needs its three grants before the first pass.
 
 ## `generate`
 

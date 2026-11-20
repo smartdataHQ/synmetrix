@@ -9,6 +9,8 @@ services:
     environment:
       CLICKHOUSE_USER: test
       CLICKHOUSE_PASSWORD: test
+      # lets the tests create the restricted account the refresh job runs as
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     tmpfs:
       - /var/lib/clickhouse
     ulimits:

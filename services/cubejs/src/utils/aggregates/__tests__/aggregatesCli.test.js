@@ -1,8 +1,8 @@
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { main } from "../../../../scripts/aggregates.mjs";
-import { replay } from "./fixtures/ast/replay.js";
+import { prepare, replay } from "./fixtures/ast/replay.js";
 
 const NOW = Date.UTC(2026, 10, 20, 12);
 const saf = (fn, type) => `SimpleAggregateFunction(${fn}, ${type})`;
@@ -105,6 +105,8 @@ describe("aggregates.mjs refresh", () => {
 });
 
 describe("aggregates.mjs generate", () => {
+  before(() => prepare("generator_sources"));
+
   const OPTIONS = [
     "--source", "gen_test.retail_lines", "--time-column", "timestamp", "--grain", "1 day",
     "--group-by", "partition,store,category,product_id,uom,bundled_units,unit_price,tax_rate",

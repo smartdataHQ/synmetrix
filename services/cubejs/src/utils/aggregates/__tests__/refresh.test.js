@@ -79,7 +79,9 @@ describe("refreshAggregate", () => {
     const fill = fillSelect(target, "p09");
     assert.deepEqual(writes.slice(0, 7), [
       `DROP TABLE IF EXISTS ${STAGING} SYNC`,
-      `CREATE TABLE ${STAGING} AS ${TARGET}`,
+      `CREATE TABLE ${STAGING} AS ${TARGET} ENGINE = AggregatingMergeTree PARTITION BY (partition, toStartOfMonth(timestamp)) ` +
+        "ORDER BY (partition, timestamp, sold_location, main_category, product_id, uom, bundled_units, unit_size, unit_price, is_volume_pack) " +
+        "SETTINGS allow_nullable_key = 1, allow_suspicious_low_cardinality_types = 1",
       `ALTER TABLE ${STAGING} MODIFY COMMENT ''`,
       `INSERT INTO ${STAGING} (${fill.columns.map((name) => `\`${name}\``).join(", ")}) ${fill.sql}`,
       `ALTER TABLE ${TARGET} REPLACE PARTITION ID 'p09' FROM ${STAGING}`,
@@ -179,6 +181,15 @@ describe("refreshAggregate", () => {
     assert.ok(!writes.some((sql) => /REPLACE PARTITION/.test(sql)));
     assert.equal(passRecord(writes), undefined);
     assert.equal(writes.at(-1), `DROP TABLE IF EXISTS ${STAGING} SYNC`);
+  });
+
+  it("gives the staging table the aggregate's primary key and storage policy when they are not the defaults", async () => {
+    const { queryFn, writes } = database({ source: [SEPTEMBER], recorded: {}, held: [] });
+    await refreshAggregate(queryFn, AGGREGATE({ primaryKey: "partition, timestamp", storagePolicy: "tiered" }));
+    const create = writes.find((sql) => sql.startsWith("CREATE TABLE"));
+    assert.match(create, / ORDER BY \(partition, timestamp, sold_location, .*\) PRIMARY KEY \(partition, timestamp\) SETTINGS /);
+    assert.ok(create.endsWith(", storage_policy = 'tiered'"));
+    assert.doesNotMatch(create, /Replicated/);
   });
 
   it("refuses a partition id or fingerprint that is not plain", async () => {
