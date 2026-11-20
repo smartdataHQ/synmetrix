@@ -52,7 +52,7 @@ The three time settings:
 node services/cubejs/scripts/aggregates.mjs refresh --only cst.sales_lines__agg_1day
 ```
 
-3. Deploy the scheduled refresh job (`../fraios/infra/k8s/data/clickhouse/base/aggregate-refresh-cronjob.yaml`) at an interval well under one day.
+3. Deploy the scheduled refresh job (`../fraios/infra/k8s/data/clickhouse/overlays/dev/aggregate-refresh-cronjob.yaml`) at an interval well under one day.
 
 ## 4. Switch routing on
 

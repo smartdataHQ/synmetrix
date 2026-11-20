@@ -144,10 +144,10 @@ description: "Task list for 015-aggregate-routing"
 - [X] T040 [US4] Implement `services/cubejs/src/utils/aggregates/refresh.js`: `refreshAggregate(queryFn, structure)` and `refreshAll(queryFn, { only })`; make T035 pass
 - [X] T041 [US4] Implement the `refresh` command in `services/cubejs/scripts/aggregates.mjs` (connection from `AGGREGATES_CLICKHOUSE_URL`, `AGGREGATES_CLICKHOUSE_USER`, `AGGREGATES_CLICKHOUSE_PASSWORD` through the existing ClickHouse driver); make T036 and T037 pass
 - [X] T042 [US4] Add the answer mark: set `context.aggregateRouting` in `services/cubejs/src/utils/aggregates/routing.js`, add `x-synmetrix-aggregate-covered-until` in the existing response-header hook of `services/cubejs/src/routes/index.js` when `req.context.aggregateRouting` is set, and document the header in `services/cubejs/src/swagger.yaml`; make T038 and T039 pass
-- [X] T043 [P] [US4] (cross-repo) Add `../fraios/shared/schemas/clickhouse/aggregate_state.sql`: the refresh-record table from data-model.md for the `cst` database, replicated, `ON CLUSTER fraios` — written, uncommitted in `../fraios`
-- [X] T044 [P] [US4] (cross-repo) Define the refresh account in `../fraios/infra/k8s/data/clickhouse/base/` following the existing user and secret manifests there: an account that may read sources and system tables, create and drop the staging table, alter aggregate partitions and insert into `aggregate_state` in `cst`, and nothing else; its password in a dedicated secret — written as `aggregate-refresh-user.yaml` (same pattern as `sandbox-user.yaml`), uncommitted in `../fraios`
-- [X] T045 [US4] (cross-repo) Add `../fraios/infra/k8s/data/clickhouse/base/aggregate-refresh-cronjob.yaml` and list it in that directory's `kustomization.yaml`: runs `node scripts/aggregates.mjs refresh` from the cubejs image with the T044 secret, concurrent runs forbidden, schedule shorter than the smallest `max_staleness` in use — written, uncommitted in `../fraios`; listed in `kustomization.yaml` as a commented entry, to be enabled by the owner once the tables exist and the image carries the script
-- [X] T046 [US4] (cross-repo) Make old partitions of the first candidate consolidate by themselves: `min_age_to_force_merge_seconds = 604800` and `min_age_to_force_merge_on_partition_only = 1` on `cst.sales_lines`. Applied on the dev cluster on 2026-11-20 at the owner's request and written into `../fraios/shared/schemas/clickhouse/sales_lines.sql` (that file change is not yet committed)
+- [X] T043 [P] [US4] (cross-repo) Add `../fraios/shared/schemas/clickhouse/aggregate_state.sql`: the refresh-record table from data-model.md for the `cst` database, replicated, `ON CLUSTER fraios` — in fraios PR #1755
+- [X] T044 [P] [US4] (cross-repo) Define the refresh account in `../fraios/infra/k8s/data/clickhouse/base/` following the existing user and secret manifests there: an account that may read sources and system tables, create and drop the staging table, alter aggregate partitions and insert into `aggregate_state` in `cst`, and nothing else; its password in a dedicated secret — in fraios PR #1755, declared the way that deployment declares its other service accounts: credentials in `base/bootstrap-secrets.yaml`, account and grants in `base/clickhouse-installation.yaml`
+- [X] T045 [US4] (cross-repo) Add `../fraios/infra/k8s/data/clickhouse/base/aggregate-refresh-cronjob.yaml` and list it in that directory's `kustomization.yaml`: runs `node scripts/aggregates.mjs refresh` from the cubejs image with the T044 secret, concurrent runs forbidden, schedule shorter than the smallest `max_staleness` in use — in fraios PR #1755 as `overlays/dev/aggregate-refresh-cronjob.yaml` (dev only)
+- [X] T046 [US4] (cross-repo) Make old partitions of the first candidate consolidate by themselves: `min_age_to_force_merge_seconds = 604800` and `min_age_to_force_merge_on_partition_only = 1` on `cst.sales_lines`. Applied on the dev cluster on 2026-11-20 at the owner's request and written into `../fraios/shared/schemas/clickhouse/sales_lines.sql` (the file change is in fraios PR #1755)
 
 **Checkpoint**: aggregates follow their source; history is exact, long windows are fast, short current windows stay live, and a stopped job cannot keep an old aggregate in use.
 
@@ -170,7 +170,7 @@ description: "Task list for 015-aggregate-routing"
 
 - [X] T051 [US5] Implement `services/cubejs/src/utils/aggregates/generator.js`: `generate(queryFn, { source, timeColumn, grain, groupBy, minAge, minWindow, maxStaleness, cluster })` returning the definition, the left-out list and the forced-merge statement when applicable, or a decline reason; make T048 pass
 - [X] T052 [US5] Implement the `generate` command in `services/cubejs/scripts/aggregates.mjs`; make T049 and T050 pass
-- [X] T053 [US5] (cross-repo) Generate the first candidate with the options in quickstart.md and add it as `../fraios/shared/schemas/clickhouse/sales_lines__agg_1day.sql` — generated from the live table on dev (read-only) on 2026-11-20; uncommitted in `../fraios`
+- [X] T053 [US5] (cross-repo) Generate the first candidate with the options in quickstart.md and add it as `../fraios/shared/schemas/clickhouse/sales_lines__agg_1day.sql` — generated from the live table on dev (read-only) on 2026-11-20; in fraios PR #1755
 
 **Checkpoint**: an aggregate for a new table is produced by one command and passes the equivalence check.
 
@@ -250,5 +250,5 @@ T015 repositoryFactoryAggregates.test.js
 
 ### Notes
 
-- Cross-repo tasks: T043, T044, T045, T046, T053: all written or applied, none committed in `../fraios`.
+- Cross-repo tasks: T043, T044, T045, T046, T053: in fraios PR #1755.
 - Each task cites the requirement it serves; a task that needs something not in spec.md is a signal to stop and revisit the spec, not to widen the task.

@@ -97,8 +97,9 @@ tests/workflows/aggregate-routing/
 │   ├── aggregate_state.sql           # refresh records
 │   ├── sales_lines.sql               # source: settings that consolidate old partitions
 │   └── sales_lines__agg_1day.sql     # first candidate, produced by `generate`
-└── infra/k8s/data/clickhouse/base/
-    └── aggregate-refresh-cronjob.yaml
+└── infra/k8s/data/clickhouse/
+    ├── base/bootstrap-secrets.yaml, clickhouse-installation.yaml   # the refresh account
+    └── overlays/dev/aggregate-refresh-cronjob.yaml                 # hourly refresh, dev first
 ```
 
 **Structure Decision**: one new directory, `services/cubejs/src/utils/aggregates/`, holds the capability. `contract.js` is the single implementation of the column contract and is used by discovery, derivation, generation and refresh, so the convention cannot drift between them. Three existing source files change: `index.js` (two small hooks), `repositoryFactory.js` (one branch) and `routes/index.js` (one header in the response-header hook that is already there). `package.json` gains one test script and `.env.example` one variable. `queryRewrite.js` is not modified and no route is added.
