@@ -180,7 +180,12 @@ description: "Task list for 015-aggregate-routing"
 
 - [X] T054 [P] Add a timing test to `services/cubejs/src/utils/aggregates/__tests__/suitability.test.js`: 1,000 decisions against a warm catalog with the first candidate's member count finish with a 95th percentile under 5 ms (SC-005)
 - [X] T055 [P] Document the feature in `CLAUDE.md`: the `services/cubejs/src/utils/aggregates/` modules and `scripts/aggregates.mjs` under Key File Locations, and `AGGREGATE_ROUTING_ENABLED` under Environment Configuration
-- [ ] T056 Run `yarn test` and `yarn test:aggregates` in `services/cubejs` on the pinned Cube version and `./cli.sh tests stepci`; all green — partly done on 2026-11-20: the aggregate unit tests (158) and the engine suite (53) are green on Cube 1.7.30 (installed locally) and on 1.8.16 (the pinned version, through a resolver shim); the service's full unit suite shows only failures that exist without this feature (drivers and dependency checks that need the 1.8.16 install); StepCI has not been run, because the local stack is off
+- [X] T056 Run the service's unit tests, `test:aggregates`, `test:aggregates:cluster` and the StepCI workflow. Done on 2026-11-20:
+  - the aggregate unit tests (158) and the engine suite (53) are green on Cube 1.7.30 (installed locally) and on 1.8.16 (the pinned version, through a resolver shim); the cluster suite (9) is green on a disposable three-replica cluster;
+  - the service's full unit suite fails the same 17 tests with and without this feature (drivers and dependency checks that need the 1.8.16 install);
+  - a second copy of the real service with the switch on, next to the unchanged one, answered 19 of 19 end-to-end checks over HTTP (real authentication, row rules, model loading and driver): routed answers equal the unchanged service's, carry the mark, and the team's row rule is in the routed statement;
+  - `tests/workflows/aggregate-routing/off-by-default.yml` passes against the unchanged service and fails, as a control, against the switched-on one;
+  - the platform's own StepCI suite (`tests/stepci/workflow.yml`) cannot give a signal: it fails before reaching the service (its flows send an empty token, one has a broken URL setting, and `invite_team_member` fails as it did before this feature)
 - [ ] T057 Follow `specs/015-aggregate-routing/quickstart.md` on dev and record in `specs/015-aggregate-routing/research.md` ("To verify during implementation"): the wrapper on Cube 1.8.16 at runtime, the answer mark on a routed and an unrouted `/api/v1/load` response, the replicated definition and `REPLACE PARTITION` on three replicas, and the two SC-002 measurements (time for revenue by month over one year; rows read for the store-name list) routed and unrouted
 
 ---

@@ -1,35 +1,50 @@
-# Aggregate routing (015) is off unless AGGREGATE_ROUTING_ENABLED=true (FR-027,
-# SC-004): the model list, the generated statements and the answers are what
-# they were before the feature. Like the model-management workflows, this one
-# expects the dev stack up and the captures of a signed-in, seeded run
-# (accessToken, datasourceId, cubeName).
+version: "1.1"
+name: Aggregate routing — off unless switched on (015, FR-027)
+# With AGGREGATE_ROUTING_ENABLED unset or not "true" the service behaves as it
+# did before the feature, even for a model that has a filled, verified
+# aggregate: the model list is unchanged, statements read the source table, and
+# no answer carries the coverage mark.
+#
+# Needs a running stack with the switch off, and three values from the caller:
+#   AGGREGATE_TEST_TOKEN          a bearer token of a member of the team
+#   AGGREGATE_TEST_DATASOURCE_ID  a datasource of that team
+#   AGGREGATE_TEST_CUBE           a cube of that datasource with a `count` measure
+# Optional: CUBEJS_URL (default http://cubejs:4000).
+#
+#   docker run --rm --network <stack network> -v "$PWD/tests/workflows/aggregate-routing:/tests" \
+#     -e AGGREGATE_TEST_TOKEN=… -e AGGREGATE_TEST_DATASOURCE_ID=… -e AGGREGATE_TEST_CUBE=… \
+#     stepci-test:latest /tests/off-by-default.yml
+env:
+  CUBEJS_URL: http://cubejs:4000
+
 tests:
   aggregate_routing_off_by_default:
     steps:
       - name: meta_lists_the_model_as_before
         http:
-          url: http://cubejs:4000/api/v1/meta
+          url: ${{env.CUBEJS_URL}}/api/v1/meta
           method: GET
           headers:
-            Authorization: Bearer ${{captures.accessToken}}
-            x-hasura-datasource-id: ${{captures.datasourceId}}
+            Authorization: Bearer ${{env.AGGREGATE_TEST_TOKEN}}
+            x-hasura-datasource-id: ${{env.AGGREGATE_TEST_DATASOURCE_ID}}
           check:
             status: 200
             jsonpath:
               $.cubes:
                 - isArray: true
+              $.cubes[0].name: ${{env.AGGREGATE_TEST_CUBE}}
 
       - name: statement_reads_no_aggregate_table
         http:
-          url: http://cubejs:4000/api/v1/sql
+          url: ${{env.CUBEJS_URL}}/api/v1/sql
           method: POST
           headers:
             Content-Type: application/json
-            Authorization: Bearer ${{captures.accessToken}}
-            x-hasura-datasource-id: ${{captures.datasourceId}}
+            Authorization: Bearer ${{env.AGGREGATE_TEST_TOKEN}}
+            x-hasura-datasource-id: ${{env.AGGREGATE_TEST_DATASOURCE_ID}}
           json:
             query:
-              measures: ["${{captures.cubeName}}.count"]
+              measures: ["${{env.AGGREGATE_TEST_CUBE}}.count"]
           check:
             status: 200
             jsonpath:
@@ -38,15 +53,15 @@ tests:
 
       - name: answer_carries_no_coverage_mark
         http:
-          url: http://cubejs:4000/api/v1/load
+          url: ${{env.CUBEJS_URL}}/api/v1/load
           method: POST
           headers:
             Content-Type: application/json
-            Authorization: Bearer ${{captures.accessToken}}
-            x-hasura-datasource-id: ${{captures.datasourceId}}
+            Authorization: Bearer ${{env.AGGREGATE_TEST_TOKEN}}
+            x-hasura-datasource-id: ${{env.AGGREGATE_TEST_DATASOURCE_ID}}
           json:
             query:
-              measures: ["${{captures.cubeName}}.count"]
+              measures: ["${{env.AGGREGATE_TEST_CUBE}}.count"]
           check:
             status: 200
             headers:

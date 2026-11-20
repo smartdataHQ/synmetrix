@@ -18,7 +18,7 @@ x-synmetrix-aggregate-covered-until: 2026-11-01T00:00:00.000Z
 | Present | On a successful (2xx) response whose queries were answered from an aggregate. |
 | Absent | On every response answered from the source, on every error response, and always when `AGGREGATE_ROUTING_ENABLED` is not `true`. |
 | Count | At most one per response. One aggregate serves every query of a request (FR-014), so one value describes the whole answer, including a request that compares two date ranges. |
-| Body | Not changed. The response body is identical with or without the header. |
+| Body | Not changed. The response body has the same content with or without the header. (The key order inside it already varies from call to call in Cube; it is not a signal.) |
 
 ## Meaning
 
