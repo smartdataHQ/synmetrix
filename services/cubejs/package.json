@@ -8,6 +8,7 @@
     "jsdoc": "jsdoc index.js -r src -d docs",
     "test": "node --experimental-test-module-mocks --test 'src/**/__tests__/*.test.js'",
     "test:aggregates": "node --experimental-test-module-mocks --test --test-force-exit --test-concurrency=1 'test/aggregates/*.test.js'",
+    "test:aggregates:cluster": "node --test --test-force-exit --test-concurrency=1 'test/aggregates/cluster/*.test.js'",
     "lint:error-codes": "node ../../scripts/lint-error-codes.mjs"
   },
   "dependencies": {

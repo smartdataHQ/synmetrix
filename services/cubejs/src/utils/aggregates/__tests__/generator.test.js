@@ -62,6 +62,7 @@ describe("generate: a definition that follows the contract", () => {
       revenue: "sum", revenue__count: "count", revenue__min: "min", revenue__max: "max",
       cost: "sum", cost__count: "count", cost__min: "min", cost__max: "max",
       margin: "sum", margin__count: "count", margin__min: "min", margin__max: "max",
+      is_multi: "sum", is_multi__count: "count", is_multi__min: "min", is_multi__max: "max",
       metrics: "sumMap",
       _rows: "rows",
     });
@@ -82,6 +83,7 @@ describe("generate: a definition that follows the contract", () => {
       properties: "type cannot be summarised (JSON)",
       loaded_at: "not numeric and not in --group-by",
       store_label: "not numeric and not in --group-by",
+      is_bulk: "declared UInt8 while its expression can be NULL: reading it fails on a row with a missing value",
     });
   });
 
@@ -105,7 +107,7 @@ describe("generate: a definition that follows the contract", () => {
 
   it("takes exact types from ClickHouse's description of the fill statement", async () => {
     const { definition, statements } = await run(RETAIL);
-    assert.equal(statements.filter((sql) => sql.startsWith("DESCRIBE (SELECT ")).length, 1);
+    assert.equal(statements.filter((sql) => sql.startsWith("DESCRIBE (SELECT ") && sql.includes(" GROUP BY ")).length, 1);
     const types = Object.fromEntries(columnsOf(definition).map(({ name, type }) => [name, type]));
     assert.deepEqual(
       [types.partition, types.timestamp, types.unit_price, types.tax_rate],
@@ -127,9 +129,9 @@ describe("generate: a definition that follows the contract", () => {
   });
 
   it("issues only reads", async () => {
-    for (const options of [RETAIL, POINTS, EVENTS]) {
+    for (const [options, expected] of [[RETAIL, 4], [POINTS, 3], [EVENTS, 3]]) {
       const { statements } = await run(options);
-      assert.equal(statements.length, 3);
+      assert.equal(statements.length, expected); // one more to check derived columns, when the source has any
       for (const sql of statements) assert.match(sql, /^(SELECT|DESCRIBE) /);
     }
   });
@@ -247,6 +249,11 @@ describe("generate: when it declines", () => {
     assert.equal(await declined({ groupBy: ["partition", "properties"] }), "`properties` (JSON) cannot be a grouping column");
     assert.equal(await declined({ groupBy: ["partition", "timestamp"] }), "`timestamp` is the time column and cannot also be a grouping column");
     assert.equal(await declined({ groupBy: ["store"] }), "the source's partition expression reads `partition`, which must be listed in --group-by");
+    assert.equal(
+      await declined({ groupBy: ["partition", "is_bulk"] }),
+      "`is_bulk` is declared UInt8 while its expression can be NULL: reading it fails on a row with a missing value",
+    );
+    assert.equal((await run({ ...RETAIL, groupBy: ["partition", "is_multi", "store_label"] })).declined, undefined);
     assert.equal(
       await declined({ source: "gen_test.wide_events", groupBy: ["partition", "product_ids"] }),
       "`product_ids` (Array(LowCardinality(String))) cannot be a grouping column",

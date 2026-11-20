@@ -65,7 +65,7 @@ export async function generate(queryFn, options) {
   );
   if (!sourceTable) return decline(`the source table ${source} does not exist`);
   const columns = await queryFn(
-    "SELECT name, type, default_kind, is_in_sorting_key, is_in_partition_key FROM system.columns " +
+    "SELECT name, type, default_kind, default_expression, is_in_sorting_key, is_in_partition_key FROM system.columns " +
       `WHERE database = '${database}' AND table = '${table}' ORDER BY position`,
   );
   const byName = new Map(columns.map((column) => [column.name, column]));
@@ -91,6 +91,25 @@ export async function generate(queryFn, options) {
     return decline(`a grain of ${grain.text} does not nest inside the source's partition expression`);
   }
 
+  // A derived (ALIAS) column declared non-nullable over an expression that can be NULL fails
+  // when it is read on a row with a missing value. One such row would stop every build.
+  const derived = columns.filter(
+    ({ name, type, default_kind: kind }) =>
+      kind === "ALIAS" && name !== timeColumn && !/Nullable\(/.test(type) && (groupBy.includes(name) || NUMERIC.test(unwrapped(type))),
+  );
+  const canFail = new Map();
+  if (derived.length) {
+    const described = await queryFn(
+      `DESCRIBE (SELECT ${derived.map((column, index) => `(${column.default_expression}) AS a${index}`).join(", ")} ` +
+        `FROM ${quote(database)}.${quote(table)})`,
+    );
+    derived.forEach((column, index) => {
+      if (/^(LowCardinality\()?Nullable\(/.test(described[index]?.type || "")) {
+        canFail.set(column.name, `declared ${column.type} while its expression can be NULL: reading it fails on a row with a missing value`);
+      }
+    });
+  }
+
   // Grouping columns: what the partition expression reads, plus the requested ones.
   for (const column of columns) {
     if (Number(column.is_in_partition_key) === 1 && column.name !== timeColumn && !groupBy.includes(column.name)) {
@@ -101,6 +120,7 @@ export async function generate(queryFn, options) {
     if (name === timeColumn) return decline(`${quote(name)} is the time column and cannot also be a grouping column`);
     const { type } = byName.get(name);
     if (NOT_A_KEY.test(unwrapped(type))) return decline(`${quote(name)} (${type}) cannot be a grouping column`);
+    if (canFail.has(name)) return decline(`${quote(name)} is ${canFail.get(name)}`);
   }
 
   // Every other column: a metric, a summed map, or left out with a reason.
@@ -113,6 +133,7 @@ export async function generate(queryFn, options) {
     const mapValue = NUMERIC_MAP.exec(type);
     const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
     if (reserved) leftOut.push({ name, reason: "its name is reserved by the aggregate contract" });
+    else if (canFail.has(name)) leftOut.push({ name, reason: canFail.get(name) });
     else if (NUMERIC.test(inner) && kind !== "ALIAS" && Number(inKey) === 1) {
       leftOut.push({ name, reason: "numeric column in the source's sorting key: an identifier, not a metric" });
     } else if (NUMERIC.test(inner)) metrics.push(name);

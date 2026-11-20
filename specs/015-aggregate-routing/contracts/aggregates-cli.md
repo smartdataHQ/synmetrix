@@ -62,6 +62,7 @@ node scripts/aggregates.mjs generate \
 | listed in `--group-by` | grouping column |
 | numeric, not in the source's sorting key, not listed in `--group-by` | metric: sum, `__count`, `__min`, `__max` |
 | numeric `ALIAS`, not listed in `--group-by` | stored metric, same four fields |
+| `ALIAS` declared non-nullable while its expression can be NULL | left out: reading it fails on a row with a missing value, which would stop every build |
 | map of string to non-nullable number | per-key sum |
 | anything else | left out, with a reason |
 | (always) | `_rows` |
@@ -73,7 +74,8 @@ node scripts/aggregates.mjs generate \
 - the source's partition expression does not involve the time column;
 - the grain does not divide one day, or does not nest inside the source's partition expression;
 - a `--group-by` column has a type that cannot be a grouping column (map, array, nested, JSON);
-- a column the source's partition expression reads is not listed in `--group-by`.
+- a column the source's partition expression reads is not listed in `--group-by`;
+- a `--group-by` column is an `ALIAS` declared non-nullable while its expression can be NULL.
 
 **Exit codes**: `0` definition written; `2` declined (reason on standard error); `1` connection or unexpected error, including a missing option.
 

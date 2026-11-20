@@ -1,0 +1,24 @@
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+    <remote_servers>
+        <test_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica><host>ch1</host><port>9000</port></replica>
+                <replica><host>ch2</host><port>9000</port></replica>
+                <replica><host>ch3</host><port>9000</port></replica>
+            </shard>
+        </test_cluster>
+    </remote_servers>
+    <zookeeper>
+        <node><host>ch1</host><port>9181</port></node>
+    </zookeeper>
+    <macros>
+        <cluster>test_cluster</cluster>
+        <shard>0</shard>
+        <replica from_env="CH_REPLICA"/>
+    </macros>
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+</clickhouse>

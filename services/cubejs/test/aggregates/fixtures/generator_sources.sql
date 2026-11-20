@@ -44,7 +44,9 @@ CREATE TABLE gen_test.retail_lines
     `revenue` Nullable(Float64) ALIAS quantity * unit_price,
     `cost` Nullable(Float64) ALIAS quantity * unit_cost,
     `margin` Nullable(Float64) ALIAS revenue - cost,
-    `store_label` String ALIAS concat(store_id, ' ', store)
+    `store_label` String ALIAS concat(store_id, ' ', store),
+    `is_bulk` UInt8 ALIAS bundled_units > 1,
+    `is_multi` UInt8 ALIAS coalesce(bundled_units, 1) > 1
 )
 ENGINE = MergeTree
 PARTITION BY (partition, toStartOfMonth(timestamp))
