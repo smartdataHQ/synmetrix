@@ -7,6 +7,7 @@
     "start.dev": "nodemon --exitcrash --inspect=0.0.0.0  --max-old-space-size=8096 --max-http-header-size=32768 --watch src --watch index.js",
     "jsdoc": "jsdoc index.js -r src -d docs",
     "test": "node --experimental-test-module-mocks --test 'src/**/__tests__/*.test.js'",
+    "test:aggregates": "node --experimental-test-module-mocks --test --test-concurrency=1 'test/aggregates/*.test.js'",
     "lint:error-codes": "node ../../scripts/lint-error-codes.mjs"
   },
   "dependencies": {

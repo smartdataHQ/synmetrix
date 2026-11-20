@@ -1,0 +1,17 @@
+# Disposable ClickHouse for the aggregate engine tests (yarn test:aggregates).
+# Same version as the cluster. Data lives in memory and is gone when the
+# container stops. Reachable from this machine only.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.7.19
+    ports:
+      - "127.0.0.1:18124:8123"
+    environment:
+      CLICKHOUSE_USER: test
+      CLICKHOUSE_PASSWORD: test
+    tmpfs:
+      - /var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
