@@ -304,6 +304,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL via Hasura (existing `dataschemas`, `versions`, `branches` tables — one new Hasura delete-permission migration on `dataschemas`). In-memory LRU compiler cache inside the cubejs process (existing). No new tables. (011-model-mgmt-api)
 - JavaScript (ES modules), Node.js 22.x (CubeJS service), Node.js 18+ (Actions service) + Cube.js v1.6.x (`@cubejs-backend/server-core`, `schema-compiler`, `api-gateway` — all existing), Express 4.18.2 (existing), `yaml` ^2.3.4 (existing), Hasura v2 (existing). **No new npm dependencies.** (013-mature-default-models)
 - PostgreSQL via Hasura — existing `datasources`, `branches`, `versions`, `dataschemas`, `teams.settings`, `query_rewrite_rules`; ONE new table `reconciliation_runs` + one new `team.settings` key. ClickHouse: probe target, read-only. (013-mature-default-models)
+- JavaScript (ES modules), Node.js 22.x (CubeJS service) + Cube.js 1.8.16, pinned exactly (`@cubejs-backend/server-core`, `api-gateway`, `schema-compiler`, `clickhouse-driver`), `yaml` ^2.3.4. All existing. **No new npm dependencies.** (015-aggregate-routing)
+- No PostgreSQL/Hasura changes. ClickHouse 26.8: aggregate tables and one small `aggregate_state` table per database, both defined in the schema repository (`../fraios/shared/schemas/clickhouse/`). In-memory caches in the cubejs process. (015-aggregate-routing)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)
