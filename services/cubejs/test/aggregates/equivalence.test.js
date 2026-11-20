@@ -127,3 +127,48 @@ describe("a routed query equals the source (US1)", () => {
     assert.equal(Number(rows[0].line_items__count), 2 * Number(merged));
   });
 });
+
+describe("with two grains, the coarsest one that is exact answers (US3)", () => {
+  const FINE = "agg_test.sales__agg_30minute";
+  const COARSE = "agg_test.sales__agg_1day";
+
+  before(async () => {
+    await h.loadFixture("sales_like_30minute");
+    await h.fillAll(await h.structureOf(FINE));
+    await h.reloadCatalog();
+  });
+
+  /** Asserts the query runs on the source, for the given reason. */
+  async function onSource(query, expected) {
+    const statement = await h.sqlFor(routed, query, h.requestContext());
+    assert.deepEqual(h.tablesOf(statement), ["agg_test.sales"]);
+    assert.match(routed.lines.at(-1), new RegExp(`reason=${expected}$`));
+  }
+
+  it("an hourly bucket over whole days reads the 30-minute table", async () => {
+    const rows = await same("hour", { measures: [m("units"), m("count")], timeDimensions: over("hour", "2026-02-03", "2026-02-04") }, FINE);
+    assert.ok(rows.length > 24, `${rows.length} hourly buckets`);
+  });
+
+  it("day, week and month buckets read the one-day table", async () => {
+    for (const granularity of ["day", "week", "month"]) {
+      await same(granularity, { measures: [m("units"), m("avg_units")], timeDimensions: over(granularity, "2026-02-02", "2026-03-29") }, COARSE);
+    }
+  });
+
+  it("a range from 10:30 to 10:30 reads the 30-minute table", async () => {
+    await same(
+      "10:30",
+      { measures: [m("quantity"), m("count")], dimensions: [m("main_category")], timeDimensions: over(undefined, "2026-02-03T10:30:00.000", "2026-02-05T10:29:59.999") },
+      FINE,
+    );
+  });
+
+  it("a minute bucket, or a range from 10:15, reads the source", async () => {
+    await onSource({ measures: [m("units")], timeDimensions: over("minute", "2026-02-03", "2026-02-03") }, "granularity");
+    await onSource(
+      { measures: [m("units")], timeDimensions: over(undefined, "2026-02-03T10:15:00.000", "2026-02-05T10:14:59.999") },
+      "range_not_aligned",
+    );
+  });
+});

@@ -2039,5 +2039,1841 @@
   "    TablesInSelectQueryElement (children 1)",
   "     TableExpression (children 1)",
   "      TableIdentifier system.one"
+ ],
+ "1959adfbd0130d3f6f59058ec28a8930": [
+  {
+   "engine": "MergeTree",
+   "engine_full": "MergeTree PARTITION BY (partition, toStartOfMonth(timestamp)) ORDER BY (entity_gid, store_id, product_id, event_gid, checkout_id, timestamp, position) SETTINGS index_granularity = 8192",
+   "partition_key": "(partition, toStartOfMonth(timestamp))",
+   "sorting_key": "entity_gid, store_id, product_id, event_gid, checkout_id, timestamp, position",
+   "server_timezone": "UTC"
+  }
+ ],
+ "691acd2cc1300235b1363c1103e72890": [
+  {
+   "name": "entity_gid",
+   "type": "LowCardinality(UUID)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime64(3)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "business_day",
+   "type": "LowCardinality(Date)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "event_gid",
+   "type": "UUID",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "position",
+   "type": "UInt16",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "checkout_id",
+   "type": "String",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "customer_id",
+   "type": "Nullable(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "store",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "store_id",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "category",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_id",
+   "type": "String",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "uom",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "tax_rate",
+   "type": "LowCardinality(Float32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "is_return",
+   "type": "Nullable(Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "is_volume_pack",
+   "type": "Nullable(Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "delivered_at",
+   "type": "Nullable(DateTime64(3))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "units",
+   "type": "Nullable(Float32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "bundled_units",
+   "type": "Nullable(Float32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "unit_price",
+   "type": "Nullable(Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "unit_cost",
+   "type": "Nullable(Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "discount",
+   "type": "Nullable(Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "points",
+   "type": "Nullable(Int32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "scans",
+   "type": "UInt32",
+   "default_kind": "DEFAULT",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "dimensions",
+   "type": "Map(LowCardinality(String), LowCardinality(String))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "metrics",
+   "type": "Map(LowCardinality(String), Float32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "flags",
+   "type": "Map(LowCardinality(String), Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "properties",
+   "type": "JSON",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "loaded_at",
+   "type": "DateTime64(3)",
+   "default_kind": "DEFAULT",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "quantity",
+   "type": "Float64",
+   "default_kind": "ALIAS",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "revenue",
+   "type": "Float64",
+   "default_kind": "ALIAS",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "cost",
+   "type": "Float64",
+   "default_kind": "ALIAS",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "margin",
+   "type": "Float64",
+   "default_kind": "ALIAS",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "store_label",
+   "type": "String",
+   "default_kind": "ALIAS",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  }
+ ],
+ "7edaee1a8d3a5b855146e80875aabd4b": [
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime('UTC')",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "store",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "category",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "product_id",
+   "type": "String",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "uom",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "bundled_units",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_price",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "tax_rate",
+   "type": "LowCardinality(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__min",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__max",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points",
+   "type": "Nullable(Int64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__min",
+   "type": "Nullable(Int32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__max",
+   "type": "Nullable(Int32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__min",
+   "type": "UInt32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__max",
+   "type": "UInt32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "metrics",
+   "type": "Map(String, Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "_rows",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  }
+ ],
+ "ed5c0a21127e522a0f7ed4d35061c7fa": [
+  {
+   "engine": "MergeTree",
+   "engine_full": "MergeTree PARTITION BY (partition, toYYYYMM(timestamp)) ORDER BY (series_gid, entity_gid, period, timestamp, signature, partition) SETTINGS index_granularity = 8192",
+   "partition_key": "(partition, toYYYYMM(timestamp))",
+   "sorting_key": "series_gid, entity_gid, period, timestamp, signature, partition",
+   "server_timezone": "UTC"
+  }
+ ],
+ "47ebd0c159be43162c6bd3472e86e9cb": [
+  {
+   "name": "series_gid",
+   "type": "LowCardinality(UUID)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "entity_gid",
+   "type": "LowCardinality(UUID)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "period",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime64(3, 'UTC')",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "valid_until",
+   "type": "Nullable(DateTime64(3, 'UTC'))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "signature",
+   "type": "UUID",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "access",
+   "type": "Enum8('Local' = 1, 'Group' = 2, 'Shared' = 3, 'Public' = 4)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "source",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "unit",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "revision",
+   "type": "UInt8",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "tags",
+   "type": "Array(LowCardinality(String))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "location",
+   "type": "Point",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "labels",
+   "type": "Map(LowCardinality(String), LowCardinality(String))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "owners",
+   "type": "Map(LowCardinality(String), LowCardinality(UUID))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "flags",
+   "type": "Map(LowCardinality(String), Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "metrics",
+   "type": "Map(LowCardinality(String), Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "counters",
+   "type": "Map(String, UInt32)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "context",
+   "type": "JSON",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "loaded_at",
+   "type": "DateTime64(3, 'UTC')",
+   "default_kind": "DEFAULT",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  }
+ ],
+ "c6ce839a44f5f2064de3fd9f65f79f88": [
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime('UTC')",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "period",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "access",
+   "type": "Enum8('Local' = 1, 'Group' = 2, 'Shared' = 3, 'Public' = 4)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revision",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revision__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revision__min",
+   "type": "UInt8",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revision__max",
+   "type": "UInt8",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "metrics",
+   "type": "Map(String, Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "counters",
+   "type": "Map(String, UInt64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "_rows",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  }
+ ],
+ "82f5df1ba2f8839e148aee5d2d11991f": [
+  {
+   "engine": "MergeTree",
+   "engine_full": "MergeTree PARTITION BY (partition, toStartOfMonth(timestamp)) ORDER BY (entity_gid, type, event, timestamp, event_gid) SETTINGS index_granularity = 8192",
+   "partition_key": "(partition, toStartOfMonth(timestamp))",
+   "sorting_key": "entity_gid, type, event, timestamp, event_gid",
+   "server_timezone": "UTC"
+  }
+ ],
+ "f1026aceeda87f178f0441350658777f": [
+  {
+   "name": "entity_gid",
+   "type": "UUID",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "type",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "event",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime64(3)",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 1
+  },
+  {
+   "name": "event_gid",
+   "type": "UUID",
+   "default_kind": "",
+   "is_in_sorting_key": 1,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "session_id",
+   "type": "Nullable(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "user_id",
+   "type": "Nullable(UUID)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "ip",
+   "type": "Nullable(IPv4)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "country",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "device",
+   "type": "LowCardinality(String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "birthday",
+   "type": "Nullable(Date)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "is_bot",
+   "type": "Nullable(Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "duration_ms",
+   "type": "Nullable(Int64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "scroll_depth",
+   "type": "Nullable(Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "revenue",
+   "type": "Nullable(Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "amount",
+   "type": "Decimal(18, 4)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "sequence",
+   "type": "Int32",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_ids",
+   "type": "Array(LowCardinality(String))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_names",
+   "type": "Array(Nullable(String))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_prices",
+   "type": "Array(Nullable(Float64))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_units",
+   "type": "Array(Nullable(Int32))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_gids",
+   "type": "Array(Nullable(UUID))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "product_added_at",
+   "type": "Array(Nullable(DateTime64(3)))",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "involved_gids",
+   "type": "Array(UUID)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "traits",
+   "type": "Map(LowCardinality(String), String)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "switches",
+   "type": "Map(LowCardinality(String), Bool)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "measurements",
+   "type": "Map(LowCardinality(String), Float64)",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  },
+  {
+   "name": "note",
+   "type": "String",
+   "default_kind": "",
+   "is_in_sorting_key": 0,
+   "is_in_partition_key": 0
+  }
+ ],
+ "c1580be26a17b6d70ef5f312015cb65e": [
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime('UTC')",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "type",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "event",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "country",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "is_bot",
+   "type": "Nullable(Bool)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "duration_ms",
+   "type": "Nullable(Int64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "duration_ms__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "duration_ms__min",
+   "type": "Nullable(Int64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "duration_ms__max",
+   "type": "Nullable(Int64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scroll_depth",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scroll_depth__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scroll_depth__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scroll_depth__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "amount",
+   "type": "Decimal(38, 4)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "amount__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "amount__min",
+   "type": "Decimal(18, 4)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "amount__max",
+   "type": "Decimal(18, 4)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "sequence",
+   "type": "Int64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "sequence__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "sequence__min",
+   "type": "Int32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "sequence__max",
+   "type": "Int32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "measurements",
+   "type": "Map(String, Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "_rows",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  }
+ ],
+ "52160bb9098f9611862a17b5b9595453": [],
+ "64124b417ec1adb5f65241a6d802a2ec": [
+  {
+   "name": "partition",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "timestamp",
+   "type": "DateTime('UTC')",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "store",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "category",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "product_id",
+   "type": "String",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "uom",
+   "type": "LowCardinality(String)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "bundled_units",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_price",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "tax_rate",
+   "type": "LowCardinality(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__min",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "units__max",
+   "type": "Nullable(Float32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "unit_cost__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__min",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "discount__max",
+   "type": "Nullable(Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points",
+   "type": "Nullable(Int64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__min",
+   "type": "Nullable(Int32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "points__max",
+   "type": "Nullable(Int32)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__min",
+   "type": "UInt32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "scans__max",
+   "type": "UInt32",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "quantity__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "revenue__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "cost__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__count",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__min",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "margin__max",
+   "type": "Float64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "metrics",
+   "type": "Map(String, Float64)",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  },
+  {
+   "name": "_rows",
+   "type": "UInt64",
+   "default_type": "",
+   "default_expression": "",
+   "comment": "",
+   "codec_expression": "",
+   "ttl_expression": ""
+  }
  ]
 }

@@ -11,7 +11,7 @@ export const ROWS_COLUMN = "_rows";
 
 export const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const QUALIFIED = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/;
-const PARTITION_ID = /^[A-Za-z0-9_-]+$/;
+export const PARTITION_ID = /^[A-Za-z0-9_-]+$/;
 const UNIT_SECONDS = { second: 1, minute: 60, hour: 3600, day: 86400 };
 const DAY = 86400;
 const BINDING_FIELDS = ["aggregate_of", "time_column", "grain", "min_age", "min_window", "max_staleness"];
