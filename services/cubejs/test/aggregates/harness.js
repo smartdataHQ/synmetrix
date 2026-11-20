@@ -9,23 +9,29 @@ import assert from "node:assert/strict";
 
 import ServerCoreModule from "@cubejs-backend/server-core";
 
-import { probeAggregates } from "../../src/utils/aggregates/catalog.js";
+import { createCatalog, probeAggregates } from "../../src/utils/aggregates/catalog.js";
 import { fillSelect, quote } from "../../src/utils/aggregates/contract.js";
+
+// The planner the deployed service runs with.
+process.env.CUBEJS_TESSERACT_SQL_PLANNER ??= "true";
+process.env.CUBEJS_LOG_LEVEL ??= "error";
 
 export const ServerCore = ServerCoreModule.default || ServerCoreModule;
 
 const target = new URL(process.env.AGGREGATES_TEST_CLICKHOUSE_URL || "http://test:test@127.0.0.1:18124");
 const READS = /^\s*(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b/i;
 
+const connectionParams = {
+  host: target.hostname,
+  port: Number(target.port) || 8123,
+  username: decodeURIComponent(target.username),
+  password: decodeURIComponent(target.password),
+  database: "default",
+};
+
 let driver;
 const connection = () => {
-  driver ??= ServerCore.createDriver("clickhouse", {
-    host: target.hostname,
-    port: Number(target.port) || 8123,
-    username: decodeURIComponent(target.username),
-    password: decodeURIComponent(target.password),
-    database: "default",
-  });
+  driver ??= ServerCore.createDriver("clickhouse", connectionParams);
   return driver;
 };
 
@@ -136,13 +142,25 @@ export function cubeFor(files, options = {}) {
   return cubejs;
 }
 
-/** The statement Cube generates for a query: [text, values]. */
-export async function sqlFor(cubejs, query, context = { securityContext: {}, requestId: "harness" }) {
+/** The statements Cube generates for a request, one per query: {text, values}. */
+export async function sqlAll(cubejs, query, context = { securityContext: {}, requestId: "harness" }) {
   let answer;
-  await cubejs.apiGateway().sql({ query: { timezone: "UTC", ...query }, context, res: (body) => { answer = body; } });
+  const withZone = (one) => ({ timezone: "UTC", ...one });
+  await cubejs.apiGateway().sql({
+    query: Array.isArray(query) ? query.map(withZone) : withZone(query),
+    context,
+    res: (body) => { answer = body; },
+  });
   assert.ok(!answer?.error, `Cube refused the query: ${answer?.error}`);
-  const [text, values] = answer.sql.sql;
-  return { text, values };
+  // one query: {sql: {…}}; several: [{sql: {…}}, …]
+  return [answer].flat().map((one) => ({ text: one.sql.sql[0], values: one.sql.sql[1] }));
+}
+
+/** The statement Cube generates for a single query. */
+export async function sqlFor(cubejs, query, context) {
+  const statements = await sqlAll(cubejs, query, context);
+  assert.equal(statements.length, 1);
+  return statements[0];
 }
 
 /** Runs a statement Cube generated. */
@@ -168,7 +186,8 @@ export function assertSameRows(actual, expected, { ordered = false, label = "" }
   assert.equal(actual.length, expected.length, `${label}: row count ${actual.length} != ${expected.length}`);
   if (expected.length === 0) return;
   assert.deepEqual(Object.keys(actual[0]), Object.keys(expected[0]), `${label}: output columns differ`);
-  const key = (row) => JSON.stringify(Object.values(row).map((value) => (typeof value === "number" ? null : value)));
+  const textual = (value) => (typeof value === "number" || (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) ? null : value);
+  const key = (row) => JSON.stringify(Object.values(row).map(textual));
   const sorted = (rows) => (ordered ? rows : [...rows].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
   const [left, right] = [sorted(actual), sorted(expected)];
   left.forEach((row, index) => {
@@ -180,3 +199,101 @@ export function assertSameRows(actual, expected, { ordered = false, label = "" }
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// The service's own wiring (index.js) around a real Cube gateway.
+
+export const MODEL = readFileSync(
+  new URL("../../src/utils/aggregates/__tests__/fixtures/sales_model.yml", import.meta.url),
+  "utf8",
+);
+
+/** Statements issued by routing itself (catalog probes and expression parsing). */
+export const issued = { statements: 0 };
+const counted = async (sql) => {
+  issued.statements += 1;
+  return run(sql);
+};
+const routingDriver = async () => ({ query: counted });
+
+/**
+ * Replaces the loader of tenant model files (a Hasura call) with `schemas()`.
+ * Call before anything imports repositoryFactory or routing.
+ */
+export async function stubSchemaLoader(mock, schemas) {
+  const path = new URL("../../src/utils/dataSourceHelpers.js", import.meta.url).href;
+  const real = await import(`${path}?real`);
+  mock.module(path, { namedExports: { ...real, findDataSchemasByIds: async () => schemas() } });
+}
+
+export const securityContext = (patch = {}) => ({
+  userScope: {
+    dataSource: {
+      dbType: "clickhouse",
+      dataSourceVersion: "dsv-test",
+      schemaVersion: "sv-test",
+      files: ["f1"],
+      dbParams: { database: "default" },
+      ...patch,
+    },
+  },
+});
+
+let requests = 0;
+export const requestContext = (patch) => {
+  requests += 1;
+  return { securityContext: securityContext(patch), requestId: `req-${requests}` };
+};
+
+// One catalog for every service of a test file; replaced when a test changes the database.
+let catalog = null;
+const currentCatalog = { lookup: (context) => (catalog ? catalog.lookup(context) : null) };
+
+/** Reads the aggregates again and waits until they are in memory. */
+export async function reloadCatalog() {
+  const fresh = createCatalog({ driverFor: routingDriver, ttlMs: 3_600_000 });
+  const context = securityContext();
+  fresh.lookup(context);
+  for (let attempt = 0; attempt < 200 && !fresh.lookup(context); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(fresh.lookup(context), "the catalog did not load");
+  catalog = fresh;
+  return fresh.lookup(context);
+}
+
+/**
+ * A Cube server wired the way index.js wires it: the variant suffix in the app
+ * id, the real repositoryFactory, and (with `routing`) the real hook.
+ * `lines` receives the decision log.
+ */
+export async function service({ routing = true, lines = [], ...options } = {}) {
+  const { default: repositoryFactory } = await import("../../src/utils/repositoryFactory.js");
+  const { aggregateAppIdSuffix, installAggregateRouting } = await import("../../src/utils/aggregates/routing.js");
+  const scope = (context) => context.securityContext?.userScope?.dataSource;
+  const cubejs = new ServerCore({
+    apiSecret: "aggregates-harness",
+    devServer: false,
+    telemetry: false,
+    scheduledRefreshTimer: false,
+    cacheAndQueueDriver: "memory",
+    driverFactory: async () => ({ type: "clickhouse", ...connectionParams }),
+    contextToAppId: (context) =>
+      `CUBEJS_APP_${scope(context)?.dataSourceVersion}_${scope(context)?.schemaVersion}}${aggregateAppIdSuffix(context)}`,
+    contextToOrchestratorId: (context) => `CUBEJS_APP_${scope(context)?.dataSourceVersion}_${scope(context)?.schemaVersion}}`,
+    schemaVersion: (context) => scope(context)?.schemaVersion,
+    repositoryFactory,
+    ...options,
+  });
+  cubejs.lines = lines;
+  cubejs.routingInstalled = installAggregateRouting(cubejs, {
+    enabled: routing,
+    driverFor: routingDriver,
+    catalog: currentCatalog,
+    log: (line) => lines.push(line),
+  });
+  return cubejs;
+}
+
+/** Tables a statement reads, e.g. ["agg_test.sales__agg_1day"]. */
+export const tablesOf = ({ text }) => [...new Set([...text.matchAll(/\bagg_test\.[A-Za-z0-9_]+/g)].map((match) => match[0]))];

@@ -1,7 +1,8 @@
 /**
  * Decides whether an expression gives the same result on aggregate rows as on
  * source rows. ClickHouse parses the expression (`EXPLAIN AST`, nothing is
- * executed); this module walks the tree.
+ * executed); this module walks the tree. The account must be allowed to read
+ * EXPLAIN through a SELECT, which a `readonly = 1` account is not.
  *
  *   K  reads grouping columns only: the same on both tables
  *   S  exact when summed: linear in exactly one summed value
@@ -148,7 +149,9 @@ export async function classifyBatch(queryFn, expressions, columns) {
   if (sent.length === 0) return results;
 
   // Each expression on its own lines, so a trailing line comment cannot swallow the next one.
-  const sql = `EXPLAIN AST SELECT ${sent.map((index) => `tuple(\n${expressions[index]}\n)`).join(", ")}`;
+  // EXPLAIN is read through a SELECT: a driver that appends an output format to the
+  // statement would otherwise have it apply to the explained query, not to the answer.
+  const sql = `SELECT explain FROM (EXPLAIN AST SELECT ${sent.map((index) => `tuple(\n${expressions[index]}\n)`).join(", ")})`;
   const rows = await queryFn(sql);
   const roots = expressionRoots(parseAst(rows.map((row) => row.explain).join("\n")), sent.length);
   sent.forEach((index, position) => {
@@ -158,22 +161,26 @@ export async function classifyBatch(queryFn, expressions, columns) {
   return results;
 }
 
-// SELECT tuple(e1), tuple(e2), … and nothing else: no table, no second statement.
+// SELECT tuple(e1), tuple(e2), … and nothing else: no second statement, and no
+// table other than the `system.one` ClickHouse itself adds to a SELECT without FROM.
 function expressionRoots(root, expected) {
+  const fail = () => {
+    throw new Error("the statement did not parse as a plain list of expressions");
+  };
   const only = (node, type) => {
-    if (!node || node.type !== type || node.children.length !== 1) {
-      throw new Error("the statement did not parse as a plain list of expressions");
-    }
+    if (!node || node.type !== type || node.children.length !== 1) fail();
     return node.children[0];
   };
-  const select = only(only(only(root, "SelectWithUnionQuery"), "ExpressionList"), "SelectQuery");
-  if (select.type !== "ExpressionList" || select.children.length !== expected) {
-    throw new Error("the statement did not parse as one tree per expression");
+  const query = only(only(root, "SelectWithUnionQuery"), "ExpressionList");
+  if (query.type !== "SelectQuery" || query.children.length < 1 || query.children.length > 2) fail();
+  const [select, tables] = query.children;
+  if (tables) {
+    const table = only(only(only(tables, "TablesInSelectQuery"), "TablesInSelectQueryElement"), "TableExpression");
+    if (table.type !== "TableIdentifier" || table.name !== "system.one" || table.children.length) fail();
   }
+  if (select.type !== "ExpressionList" || select.children.length !== expected) fail();
   return select.children.map((node) => {
-    if (node.type !== "Function" || node.name !== "tuple") {
-      throw new Error("the statement did not parse as one tree per expression");
-    }
+    if (node.type !== "Function" || node.name !== "tuple") fail();
     return node.children[0] ? node.children[0].children : [];
   });
 }

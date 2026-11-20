@@ -16,6 +16,10 @@ import driverFactory, {
 import { installProcessGuards } from "./src/utils/processGuards.js";
 import createQueryPreprocessor from "./src/utils/queryPreprocessor.js";
 import queryRewrite, { memberPathHops } from "./src/utils/queryRewrite.js";
+import {
+  aggregateAppIdSuffix,
+  installAggregateRouting,
+} from "./src/utils/aggregates/routing.js";
 import repositoryFactory from "./src/utils/repositoryFactory.js";
 import scheduledRefreshContexts, {
   scheduledRefreshStalledFor,
@@ -52,8 +56,11 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 const contextToOrchestratorId = ({ securityContext }) =>
   `CUBEJS_APP_${securityContext?.userScope?.dataSource?.dataSourceVersion}_${securityContext?.userScope?.dataSource?.schemaVersion}}`;
 
-const contextToAppId = ({ securityContext }) =>
-  `CUBEJS_APP_${securityContext?.userScope?.dataSource?.dataSourceVersion}_${securityContext?.userScope?.dataSource?.schemaVersion}}`;
+// A request routed to an aggregate table (015) compiles its own model variant.
+// Only the app id carries it: the orchestrator, schema version and
+// pre-aggregation schema stay the tenant's, so driver and queue are shared.
+const contextToAppId = (context) =>
+  `CUBEJS_APP_${context.securityContext?.userScope?.dataSource?.dataSourceVersion}_${context.securityContext?.userScope?.dataSource?.schemaVersion}}${aggregateAppIdSuffix(context)}`;
 
 const schemaVersion = ({ securityContext }) =>
   securityContext?.userScope?.dataSource?.schemaVersion;
@@ -157,6 +164,9 @@ app.use(
 app.use(routes({ basePath, cubejs }));
 
 cubejs.initApp(app);
+
+// Aggregate routing (015). Does nothing unless AGGREGATE_ROUTING_ENABLED=true.
+installAggregateRouting(cubejs);
 
 if (String(CUBEJS_SQL_API) === "true") {
   const sqlServer = cubejs.initSQLServer();

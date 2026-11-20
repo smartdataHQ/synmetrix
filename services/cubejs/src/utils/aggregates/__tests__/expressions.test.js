@@ -59,7 +59,7 @@ describe("classifyBatch", () => {
     const results = await classifyBatch(queryFn, CASES.map(([, expression]) => expression), COLUMNS);
 
     assert.equal(statements.length, 1);
-    assert.match(statements[0], /^EXPLAIN AST SELECT /);
+    assert.match(statements[0], /^SELECT explain FROM \(EXPLAIN AST SELECT .*\)$/s);
     for (const [, expression] of CASES) assert.ok(statements[0].includes(expression), expression);
 
     const actual = Object.fromEntries(
@@ -114,6 +114,25 @@ describe("classifyBatch", () => {
         COLUMNS,
       ),
     );
+  });
+
+  it("accepts the table ClickHouse adds to a SELECT without FROM, and no other", async () => {
+    const tree = (table) =>
+      [
+        "SelectWithUnionQuery (children 1)",
+        " ExpressionList (children 1)",
+        "  SelectQuery (children 2)",
+        "   ExpressionList (children 1)",
+        "    Function tuple (children 1)",
+        "     ExpressionList (children 1)",
+        "      Identifier units",
+        "   TablesInSelectQuery (children 1)",
+        "    TablesInSelectQueryElement (children 1)",
+        "     TableExpression (children 1)",
+        `      TableIdentifier ${table}`,
+      ].map((explain) => ({ explain }));
+    assert.equal((await classifyBatch(async () => tree("system.one"), ["units"], COLUMNS))[0].cls, "S");
+    await assert.rejects(classifyBatch(async () => tree("cst.sales_lines"), ["units"], COLUMNS));
   });
 
   it("keeps the parsed tree, so a caller can tell a plain column from an expression", async () => {
