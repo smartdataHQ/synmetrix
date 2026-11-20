@@ -205,6 +205,26 @@ describe("refresh on a cluster", () => {
     assert.equal(Number(february.lines), Number(distinct));
   });
 
+  it("returns only once every replica that is up has the rebuilt partition, also a slow one", async () => {
+    const lines = (port) => sql(port, `SELECT sum(_rows) AS lines FROM ${AGGREGATE} WHERE partition = 't2' AND toStartOfMonth(timestamp) = '2026-01-01'`);
+    const [[before]] = [await lines(REPLICAS[0])];
+    await sql(
+      REPLICAS[0],
+      "INSERT INTO agg_cluster.sales VALUES ('t2', '2026-01-15 12:00:00', 'slow-replica-row', 'store0', 'p1', 11, 5, {'weight': 1}, now64(3))",
+    );
+    await synced("agg_cluster.sales");
+    // Replica 3 is up but cannot fetch for a while.
+    await sql(REPLICAS[2], `SYSTEM STOP FETCHES ${AGGREGATE}`);
+    const resumed = new Promise((resolve) => setTimeout(() => resolve(sql(REPLICAS[2], `SYSTEM START FETCHES ${AGGREGATE}`)), 3000));
+    const { code, out } = await cli(REFRESH, REPLICAS[0]);
+    assert.equal(code, 0);
+    assert.match(out, / built=1 /);
+    // No waiting, no SYNC REPLICA: the pass itself waited.
+    const after = await everyReplica(lines);
+    assert.deepEqual(after.map(([row]) => Number(row.lines)), Array(3).fill(Number(before.lines) + 1));
+    await resumed;
+  });
+
   it("does nothing when nothing changed", async () => {
     const { code, out } = await cli(REFRESH, REPLICAS[2]);
     assert.equal(code, 0);

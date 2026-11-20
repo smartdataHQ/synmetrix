@@ -12,6 +12,10 @@ import { probeAggregates } from "./catalog.js";
 import { PARTITION_ID, fillSelect, quote } from "./contract.js";
 
 const STATE_COLUMNS = "(aggregate, partition_id, fingerprint, verified_at, covered_until, updated_at)";
+// A change of the aggregate's partitions waits until every replica that is up has it. Without
+// that, a replica could receive the refresh record, which is replicated on its own, a moment
+// before the partition the record describes. A replica that is down is not waited for.
+const ON_EVERY_REPLICA = "SETTINGS alter_sync = 2, replication_wait_for_inactive_replica_timeout = 0";
 const stamp = (ms) => `fromUnixTimestamp64Milli(toInt64(${Math.trunc(ms)}), 'UTC')`;
 
 /**
@@ -91,6 +95,16 @@ export async function refreshAggregate(queryFn, structure) {
   const record = (partitionId, fingerprint) =>
     queryFn(`INSERT INTO ${state} ${STATE_COLUMNS} VALUES ('${name}', '${partitionId}', ${fingerprint}, now(), 0, now64(3))`);
 
+  const alterPartition = async (statement) => {
+    try {
+      await queryFn(`${statement} ${ON_EVERY_REPLICA}`);
+    } catch (error) {
+      // UNFINISHED: applied on every replica that is up; one that is down applies it from the
+      // replication log when it returns. Anything else is a failure.
+      if (!/UNFINISHED/.test(String(error?.message || error))) throw error;
+    }
+  };
+
   const built = [];
   const dropped = [];
   let stagingCreated = false;
@@ -115,7 +129,7 @@ export async function refreshAggregate(queryFn, structure) {
       );
       if (Number(strays) > 0) throw new Error("the aggregate's buckets do not nest inside the source's partitions");
       // One step: a reader sees the partition's old content or its new content.
-      await queryFn(`ALTER TABLE ${target} REPLACE PARTITION ID '${partition.id}' FROM ${staging}`);
+      await alterPartition(`ALTER TABLE ${target} REPLACE PARTITION ID '${partition.id}' FROM ${staging}`);
       await queryFn(`TRUNCATE TABLE ${staging}`);
       await record(partition.id, partition.fingerprint);
       built.push(partition.id);
@@ -125,7 +139,7 @@ export async function refreshAggregate(queryFn, structure) {
     const belonging = new Set(source.filter(belongs).map((partition) => partition.id));
     for (const id of held) {
       if (belonging.has(id)) continue;
-      await queryFn(`ALTER TABLE ${target} DROP PARTITION ID '${id}'`);
+      await alterPartition(`ALTER TABLE ${target} DROP PARTITION ID '${id}'`);
       await record(id, 0);
       dropped.push(id);
     }
