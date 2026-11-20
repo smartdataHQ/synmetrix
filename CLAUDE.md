@@ -90,6 +90,7 @@ Environment files load in layers: `.env` (base) + `.{env}.env` (override). Key v
 - `HASURA_ENDPOINT` — Internal Hasura URL (used by Actions service for GraphQL queries)
 - `CUBEJS_SECRET` — CubeJS API secret
 - `CUBEJS_CUBESTORE_HOST/PORT` — CubeStore connection for pre-aggregation cache
+- `AGGREGATE_ROUTING_ENABLED` — `true` lets CubeJS answer suitable queries from ClickHouse aggregate tables (015); anything else, or unset, and nothing is wrapped or probed
 - `ACTIONS_URL` — Internal Actions service URL (used in Hasura action definitions)
 
 Docker Compose files per environment: `docker-compose.dev.yml`, `docker-compose.stage.yml`, `docker-compose.test.yml`, `docker-compose.stack.yml` (Swarm production).
@@ -123,6 +124,15 @@ Docker Compose files per environment: `docker-compose.dev.yml`, `docker-compose.
 - `services/cubejs/src/routes/dynamicMeta.js` — POST /api/v1/meta/dynamic: filter-scoped map/JSON property discovery, cube-meta-shaped, TTL-cached (014 FR-005)
 - `services/cubejs/src/utils/dynamicPropertyProbe.js` — map/JSON probe SQL builders + member shaping + probe cache (014)
 - `services/cubejs/src/utils/smart-generation/templateMerger.js` — template-provenance three-class merge (013 FR-011/FR-012)
+- `services/cubejs/src/utils/aggregates/` — aggregate routing (015): a query whose members are all exactly reproducible from a self-describing ClickHouse aggregate table reads that table instead of the source, with the same cube and member names
+  - `contract.js` — the column contract: binding comment, column roles, the one fill `SELECT` (used by every module below)
+  - `catalog.js` — per-datasource probe of aggregates and their refresh records, kept 60 s, never awaited by a query
+  - `expressions.js` — classifies member SQL from ClickHouse's own parse tree (`EXPLAIN AST`): grouping-only, exact-when-summed, or unsafe
+  - `derive.js` — canonical YAML cube + aggregate → in-memory derived cube, with a reason for every member left out
+  - `suitability.js` — the per-request decision: members, time grain, window rule, refresh record, best aggregate; reason codes
+  - `routing.js` — `installAggregateRouting` (wraps the gateway's `getNormalizedQueries`), the variant suffix for `contextToAppId`, derived files for `repositoryFactory`, the answer mark header
+  - `refresh.js`, `generator.js` — behind `services/cubejs/scripts/aggregates.mjs refresh|generate` (own credentials, `AGGREGATES_CLICKHOUSE_*`; never run by query pods)
+- `services/cubejs/test/aggregates/` — engine tests against a disposable ClickHouse (`docker compose -f test/aggregates/docker-compose.clickhouse.yml up -d`, then the `test:aggregates` script)
 - `services/actions/src/rpc/{reconcileDefaultModels,reconcileTeamDefaultModels,getDefaultModelsReport}.js` — default-models orchestrator/single-team/report RPCs (013; cron-secret or portal-admin gated)
 - `services/actions/src/utils/defaultModels/` — config, cohorts, drift, runReporter, shared helpers (013)
 - `services/hasura/migrations/1783381844000_create_reconciliation_runs/` — reconciliation_runs table (013; admin-only, no `user`-role permissions)
@@ -304,6 +314,8 @@ These are the target patterns for adapting Synmetrix and client-v2:
 - PostgreSQL via Hasura (existing `dataschemas`, `versions`, `branches` tables — one new Hasura delete-permission migration on `dataschemas`). In-memory LRU compiler cache inside the cubejs process (existing). No new tables. (011-model-mgmt-api)
 - JavaScript (ES modules), Node.js 22.x (CubeJS service), Node.js 18+ (Actions service) + Cube.js v1.6.x (`@cubejs-backend/server-core`, `schema-compiler`, `api-gateway` — all existing), Express 4.18.2 (existing), `yaml` ^2.3.4 (existing), Hasura v2 (existing). **No new npm dependencies.** (013-mature-default-models)
 - PostgreSQL via Hasura — existing `datasources`, `branches`, `versions`, `dataschemas`, `teams.settings`, `query_rewrite_rules`; ONE new table `reconciliation_runs` + one new `team.settings` key. ClickHouse: probe target, read-only. (013-mature-default-models)
+- JavaScript (ES modules), Node.js 22.x (CubeJS service) + Cube.js 1.8.16, pinned exactly (`@cubejs-backend/server-core`, `api-gateway`, `schema-compiler`, `clickhouse-driver`), `yaml` ^2.3.4. All existing. **No new npm dependencies.** (015-aggregate-routing)
+- No PostgreSQL/Hasura changes. ClickHouse 26.8: aggregate tables and one small `aggregate_state` table per database, both defined in the schema repository (`../fraios/shared/schemas/clickhouse/`). In-memory caches in the cubejs process. (015-aggregate-routing)
 
 ## Recent Changes
 - 001-dev-environment: Added TypeScript (ES2022, Node16 modules) — matches + oclif (CLI framework), zx (shell execution)

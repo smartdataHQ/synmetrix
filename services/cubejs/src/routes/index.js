@@ -77,6 +77,8 @@ export default ({ basePath, cubejs }) => {
     ) {
       return next();
     }
+    // read here: the path is relative to the mount point only inside this middleware
+    const isLoad = req.path.replace(/\/$/, "") === "/v1/load";
     const writeHead = res.writeHead;
     res.writeHead = function (...args) {
       const revision = req.securityContext?.authorityRevision;
@@ -89,6 +91,17 @@ export default ({ basePath, cubejs }) => {
         // CUBEJS_DB_QUERY_LIMIT, which it cannot see: name the limit to rely on it.
         this.setHeader("x-synmetrix-capabilities", "fail-closed-exports");
         this.setHeader("Cache-Control", "no-store");
+      }
+      // An answer served from an aggregate table (015) says through what time
+      // that aggregate holds data; an answer from the source carries nothing.
+      // The routing hook leaves that time on the request context. Contract:
+      // specs/015-aggregate-routing/contracts/answer-mark.md
+      const covered = isLoad ? req.context?.aggregateRouting?.coveredUntil : undefined;
+      if (typeof covered === "number" && status >= 200 && status < 300) {
+        this.setHeader(
+          "x-synmetrix-aggregate-covered-until",
+          new Date(covered).toISOString(),
+        );
       }
       return writeHead.apply(this, args);
     };

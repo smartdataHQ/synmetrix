@@ -1,0 +1,86 @@
+# The canonical model used by the aggregate tests: shaped like the first
+# candidate's cube. The members under "stays on the source" cannot be answered
+# exactly from the aggregate of test/aggregates/fixtures/sales_like.sql.
+cubes:
+  - name: line_items
+    title: Line Items
+    description: Sales lines of one tenant.
+    sql: >
+      SELECT * REPLACE (if(is_volume_pack, 'yes', 'no') AS is_volume_pack,
+      (toFloat64(units * ifNull(bundled_units, 1)) * if(uom IN ('d', 'wk'), toFloat64(unit_size * transform(uom, ['d', 'wk'], [1, 7], 1)), 1)) AS quantity,
+      nullIf(checkout_id, '') AS checkout_id)
+      FROM agg_test.sales WHERE partition = 't1' SETTINGS asterisk_include_alias_columns = 1
+    meta:
+      source_table: sales
+    dimensions:
+      - {name: partition, sql: "{CUBE}.partition", type: string, title: Tenant}
+      - {name: sold_location, sql: "{CUBE}.sold_location", type: string, title: Store}
+      - {name: main_category, sql: "{CUBE}.main_category", type: string}
+      - {name: product_id, sql: "{CUBE}.product_id", type: string}
+      - {name: uom, sql: "{CUBE}.uom", type: string}
+      - {name: is_volume_pack, sql: "{CUBE}.is_volume_pack", type: string}
+      - {name: is_time_unit, sql: "{CUBE.uom} IN ('d', 'wk')", type: boolean}
+      - name: price_tier
+        type: string
+        case:
+          when:
+            - sql: "{CUBE}.unit_price >= 15"
+              label: high
+          else:
+            label: low
+      - {name: timestamp, sql: "{CUBE}.timestamp", type: time}
+      # stays on the source
+      - {name: checkout_id, sql: "{CUBE}.checkout_id", type: string}
+      - {name: sale_date, sql: "toDate({CUBE}.timestamp)", type: time}
+      - {name: big_line, sql: "{CUBE}.units > 2", type: boolean}
+    segments:
+      - {name: store0, sql: "{CUBE}.sold_location = 'store0'"}
+      # stays on the source
+      - {name: big_lines, sql: "{CUBE}.units > 2"}
+    measures:
+      - {name: units, sql: "{CUBE}.units", type: sum, title: Units Sold, format: number, meta: {unit: pcs}}
+      - {name: quantity, sql: "{CUBE}.quantity", type: sum}
+      - {name: gross_revenue, sql: "{CUBE}.quantity * {CUBE}.unit_price", type: sum, format: currency}
+      - {name: avg_units, sql: "{CUBE}.units", type: avg, title: Average Units}
+      - {name: min_units, sql: "{CUBE}.units", type: min}
+      - {name: max_units, sql: "{CUBE}.units", type: max}
+      - {name: avg_discount, sql: "{CUBE}.discount", type: avg}
+      - {name: max_price, sql: "{CUBE}.unit_price", type: max}
+      - {name: count, type: count}
+      - name: store0_lines
+        type: count
+        filters:
+          - sql: "{CUBE}.sold_location = 'store0'"
+      - name: store0_units
+        sql: "{CUBE}.units"
+        type: sum
+        filters:
+          - sql: "{CUBE}.sold_location = 'store0'"
+      - name: store0_avg_units
+        sql: "{CUBE}.units"
+        type: avg
+        filters:
+          - sql: "{CUBE}.sold_location = 'store0'"
+      - {name: store0_share, sql: "1.0 * {store0_lines} / NULLIF({count}, 0)", type: number, format: percent}
+      - {name: weight, sql: "{CUBE}.metrics['weight']", type: sum}
+      - {name: avg_weight, sql: "{CUBE}.metrics['weight']", type: avg}
+      - {name: unique_products, sql: "{CUBE}.product_id", type: count_distinct}
+      # stays on the source
+      - {name: transactions, sql: "{CUBE}.checkout_id", type: count_distinct}
+      - {name: units_times_discount, sql: "{CUBE}.units * {CUBE}.discount", type: sum}
+      - name: big_line_count
+        type: count
+        filters:
+          - sql: "{CUBE}.units > 2"
+      - {name: avg_quantity, sql: "{CUBE}.quantity", type: avg}
+      - {name: min_weight, sql: "{CUBE}.metrics['weight']", type: min}
+      - {name: units_this_year, sql: "CASE WHEN {CUBE}.timestamp >= '2026-01-01' THEN {CUBE}.units END", type: sum}
+      - name: rolling_units
+        sql: "{CUBE}.units"
+        type: sum
+        rolling_window:
+          trailing: 7 day
+      - {name: units_per_transaction, sql: "{units} / NULLIF({transactions}, 0)", type: number}
+      - {name: raw_ratio, sql: "sum({CUBE}.units) / count()", type: number}
+      - {name: approx_products, sql: "{CUBE}.product_id", type: count_distinct_approx}
+      - {name: non_null_discounts, sql: "{CUBE}.discount", type: count}

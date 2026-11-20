@@ -1,6 +1,7 @@
 import mapSchemaToFile from "./mapSchemaToFile.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
 import { LEGACY_ENRICHMENT_CUBES } from "./legacyEnrichmentGuard.js";
+import { derivedFilesFor } from "./aggregates/routing.js";
 import YAML from "yaml";
 
 const MANAGED_TEMPLATE_NAMES = new Set([
@@ -63,6 +64,12 @@ const repositoryFactory = ({ securityContext }) => {
      * @returns {Array} - The data schema files.
      */
     dataSchemaFiles: async () => {
+      // A request routed to an aggregate table (015) compiles the derived cube
+      // held in memory. Without it the canonical files follow, and the query
+      // runs on the source.
+      const derived = derivedFilesFor(securityContext);
+      if (derived) return derived;
+
       const ids = securityContext?.userScope?.dataSource?.files;
       const dataSchemas = await findDataSchemasByIds({
         ids,

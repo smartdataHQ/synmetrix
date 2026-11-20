@@ -1,0 +1,294 @@
+SelectWithUnionQuery (children 1)
+ ExpressionList (children 1)
+  SelectQuery (children 1)
+   ExpressionList (children 44)
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier sold_location
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier units (alias u)
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Identifier unit_price
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Function multiply (children 1)
+         ExpressionList (children 2)
+          Identifier units
+          Identifier unit_price
+        Identifier bundled_units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Identifier net
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function divide (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Identifier bundled_units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function divide (children 1)
+       ExpressionList (children 2)
+        Identifier bundled_units
+        Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function plus (children 1)
+       ExpressionList (children 2)
+        Identifier net
+        Identifier tax
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function minus (children 1)
+       ExpressionList (children 2)
+        Identifier net
+        Identifier cost
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function plus (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function negate (children 1)
+       ExpressionList (children 1)
+        Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function toFloat64 (children 1)
+       ExpressionList (children 1)
+        Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function CAST (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal 'Float64'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function CAST (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal 'Float64'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function toInt32 (children 1)
+       ExpressionList (children 1)
+        Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function CAST (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal 'Int32'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Function toFloat64 (children 1)
+         ExpressionList (children 1)
+          Function multiply (children 1)
+           ExpressionList (children 2)
+            Identifier units
+            Function ifNull (children 1)
+             ExpressionList (children 2)
+              Identifier bundled_units
+              Literal UInt64_1
+        Function if (children 1)
+         ExpressionList (children 3)
+          Function in (children 1)
+           ExpressionList (children 2)
+            Identifier uom
+            Literal Tuple_('d', 'wk')
+          Function toFloat64 (children 1)
+           ExpressionList (children 1)
+            Function multiply (children 1)
+             ExpressionList (children 2)
+              Identifier unit_size
+              Function transform (children 1)
+               ExpressionList (children 4)
+                Identifier uom
+                Literal Array_['d', 'wk']
+                Literal Array_[UInt64_1, UInt64_7]
+                Literal UInt64_1
+          Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function if (children 1)
+       ExpressionList (children 3)
+        Identifier is_volume_pack
+        Literal 'yes'
+        Literal 'no'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiIf (children 1)
+       ExpressionList (children 5)
+        Function equals (children 1)
+         ExpressionList (children 2)
+          Identifier uom
+          Literal 'kg'
+        Literal 'weight'
+        Function equals (children 1)
+         ExpressionList (children 2)
+          Identifier uom
+          Literal 'l'
+        Literal 'volume'
+        Literal 'piece'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiIf (children 1)
+       ExpressionList (children 3)
+        Function equals (children 1)
+         ExpressionList (children 2)
+          Identifier uom
+          Literal 'kg'
+        Literal 'weight'
+        Literal 'other'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function ifNull (children 1)
+       ExpressionList (children 2)
+        Identifier bundled_units
+        Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function nullIf (children 1)
+       ExpressionList (children 2)
+        Identifier cart_id
+        Literal ''
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function transform (children 1)
+       ExpressionList (children 4)
+        Identifier uom
+        Literal Array_['d', 'wk']
+        Literal Array_[UInt64_1, UInt64_7]
+        Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function in (children 1)
+       ExpressionList (children 2)
+        Identifier uom
+        Literal Tuple_('d', 'wk')
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function if (children 1)
+       ExpressionList (children 3)
+        Identifier is_volume_pack
+        Identifier units
+        Literal UInt64_0
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function ifNull (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal UInt64_0
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function greater (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Literal UInt64_0
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function arrayElement (children 1)
+       ExpressionList (children 2)
+        Identifier metrics
+        Literal 'weight'
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Function arrayElement (children 1)
+         ExpressionList (children 2)
+          Identifier metrics
+          Literal 'weight'
+        Identifier unit_price
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier metrics
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function arrayElement (children 1)
+       ExpressionList (children 2)
+        Identifier metrics
+        Identifier units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function toDate (children 1)
+       ExpressionList (children 1)
+        Identifier timestamp
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier timestamp
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier checkout_id
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function multiply (children 1)
+       ExpressionList (children 2)
+        Identifier units
+        Identifier checkout_price
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier note
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Identifier t.units
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function in (children 1)
+       ExpressionList (children 2)
+        Identifier sold_location
+        Subquery (children 1)
+         SelectWithUnionQuery (children 1)
+          ExpressionList (children 1)
+           SelectQuery (children 1)
+            ExpressionList (children 1)
+             Literal UInt64_1
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function arrayMap (children 1)
+       ExpressionList (children 2)
+        Function lambda (children 1)
+         ExpressionList (children 2)
+          Function tuple (children 1)
+           ExpressionList (children 1)
+            Identifier x
+          Function plus (children 1)
+           ExpressionList (children 2)
+            Identifier x
+            Literal UInt64_1
+        Literal Array_[UInt64_1, UInt64_2]
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function runningDifference (children 1)
+       ExpressionList (children 1)
+        Identifier bundled_units
+    Function tuple (children 1)
+     ExpressionList (children 2)
+      Identifier units
+      Identifier net
+    Function tuple (children 1)
+     ExpressionList (children 1)
+      Function sum (children 1)
+       ExpressionList (children 1)
+        Identifier units
