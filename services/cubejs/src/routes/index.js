@@ -11,7 +11,6 @@ import express from "express";
 //   POST   /api/v1/version/diff               (direct-verify, US5)
 //   POST   /api/v1/version/rollback           (direct-verify, US5)
 
-import { ANSWER_MARK_HEADER, answerMark } from "../utils/aggregates/routing.js";
 import checkAuthMiddleware from "../utils/checkAuth.js";
 import {
   invalidateUserCache,
@@ -94,10 +93,15 @@ export default ({ basePath, cubejs }) => {
         this.setHeader("Cache-Control", "no-store");
       }
       // An answer served from an aggregate table (015) says through what time
-      // that aggregate holds data. An answer from the source carries nothing.
-      const mark = isLoad ? answerMark(req.context) : null;
-      if (mark && status >= 200 && status < 300) {
-        this.setHeader(ANSWER_MARK_HEADER, mark);
+      // that aggregate holds data; an answer from the source carries nothing.
+      // The routing hook leaves that time on the request context. Contract:
+      // specs/015-aggregate-routing/contracts/answer-mark.md
+      const covered = isLoad ? req.context?.aggregateRouting?.coveredUntil : undefined;
+      if (typeof covered === "number" && status >= 200 && status < 300) {
+        this.setHeader(
+          "x-synmetrix-aggregate-covered-until",
+          new Date(covered).toISOString(),
+        );
       }
       return writeHead.apply(this, args);
     };

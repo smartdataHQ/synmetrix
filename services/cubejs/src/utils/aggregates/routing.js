@@ -64,18 +64,6 @@ export function derivedFilesFor(securityContext) {
   return files?.length ? files : null;
 }
 
-export const ANSWER_MARK_HEADER = "x-synmetrix-aggregate-covered-until";
-
-/**
- * The answer mark of a request (FR-030): the time through which the aggregate
- * that served it holds data, ISO-8601 in UTC; null for a request answered
- * from the source. Contract: specs/015-aggregate-routing/contracts/answer-mark.md
- */
-export function answerMark(context) {
-  const covered = context?.aggregateRouting?.coveredUntil;
-  return typeof covered === "number" && Number.isFinite(covered) ? new Date(covered).toISOString() : null;
-}
-
 function unmark(context) {
   if (!context) return;
   const securityContext = context.securityContext;
@@ -97,6 +85,7 @@ function mark(context, decision) {
       dataSource: { ...securityContext.userScope.dataSource, aggregateVariant: decision.variantKey },
     },
   };
+  // What the answer covers (FR-030): routes/index.js turns it into the response header.
   context.aggregateRouting = { aggregate: decision.aggregate, coveredUntil: decision.coveredUntil };
 }
 
