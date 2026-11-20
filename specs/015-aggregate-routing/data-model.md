@@ -82,7 +82,9 @@ CatalogEntry
 ```text
 AggregateStructure
   table               "database.table" of the aggregate
-  source              "database.table" of the source
+  name, database      the aggregate's own name and database
+  source, sourceTable "database.table" of the source, and its name alone
+  partitionKey, sortingKey, primaryKey, storagePolicy   as the database reports them; the refresh gives its staging table the same
   timeColumn          string
   grainSeconds        integer
   minAgeSeconds       integer
@@ -109,6 +111,7 @@ DerivedCube
   files               [{ fileName, content }]   one YAML file holding the one derived cube
   available           Set<"cube.member">
   leftOut             Map<"cube.member", detailCode>
+  timeMembers         Set<"cube.member">        the members that are the plain bound time column
   ineligible          detailCode | null         when the cube as a whole cannot be derived
 ```
 
@@ -158,7 +161,7 @@ RoutingDecision
 | `no_stored_field` | an average, minimum or maximum without the stored field it needs |
 | `reads_time_column` | the member reads the time column other than as the plain time dimension |
 | `unsupported_member` | rolling window, multi-stage, sub-query, or an unresolvable template reference |
-| `depends_on_unavailable_member` | a calculation over a member that is itself unavailable |
+| `depends_on_unavailable_member` | a calculation over a member that is itself unavailable, or a measure whose drill members are not all available |
 
 **Detail codes** appended to `cube_not_eligible`:
 
@@ -169,6 +172,7 @@ RoutingDecision
 | `pre_aggregations` | the cube declares built-in pre-aggregations |
 | `not_plain_read` | the cube's SQL is not a single plain `SELECT *` read of the source |
 | `predicate_not_grouping` | the cube's `WHERE` reads a column that is not a grouping column |
+| `does_not_compile` | the derived cube was built but the model compiler refused it; the cube stays on the source |
 
 **Rejection reasons** for an aggregate (recorded in `CatalogEntry.rejected`):
 

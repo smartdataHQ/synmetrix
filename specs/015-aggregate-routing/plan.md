@@ -88,7 +88,7 @@ services/cubejs/test/aggregates/      # engine tests, need the disposable ClickH
 ├── gateway.test.js                   # real Cube gateway: routed, unrouted, mixed, metadata
 ├── refresh.test.js                   # build, re-load, consolidation, rebuild, window rule
 ├── generator.test.js                 # generated aggregates for three real schemas
-└── fixtures/                         # synthetic sources, captured table descriptions
+└── fixtures/                         # synthetic sources and aggregates
 tests/workflows/aggregate-routing/
 └── off-by-default.yml                # StepCI: switch off, behaviour as today
 
@@ -101,7 +101,7 @@ tests/workflows/aggregate-routing/
     └── aggregate-refresh-cronjob.yaml
 ```
 
-**Structure Decision**: one new directory, `services/cubejs/src/utils/aggregates/`, holds the capability. `contract.js` is the single implementation of the column contract and is used by discovery, derivation, generation and refresh, so the convention cannot drift between them. Three existing source files change: `index.js` (two small hooks), `repositoryFactory.js` (one branch) and `routes/index.js` (one header in the response-header hook that is already there). `package.json` gains one test script and `.env` one variable. `queryRewrite.js` is not modified and no route is added.
+**Structure Decision**: one new directory, `services/cubejs/src/utils/aggregates/`, holds the capability. `contract.js` is the single implementation of the column contract and is used by discovery, derivation, generation and refresh, so the convention cannot drift between them. Three existing source files change: `index.js` (two small hooks), `repositoryFactory.js` (one branch) and `routes/index.js` (one header in the response-header hook that is already there). `package.json` gains one test script and `.env.example` one variable. `queryRewrite.js` is not modified and no route is added.
 
 ## Design
 
@@ -147,9 +147,9 @@ Full text in [contracts/aggregate-contract.md](./contracts/aggregate-contract.md
 
 ### 3. Expression classification (`expressions.js`) — FR-008, FR-009, FR-012
 
-- One round trip per cube: `EXPLAIN AST SELECT e1, e2, …`, parsed into a tree of `Function`, `Identifier`, `Literal` nodes.
+- One round trip per cube: `SELECT explain FROM (EXPLAIN AST SELECT tuple(e1), tuple(e2), …)`, parsed into a tree of `Function`, `Identifier`, `Literal` nodes. The `EXPLAIN` is read through a `SELECT` because the driver appends an output format to every statement, which would otherwise apply to the explained query instead of the answer. ClickHouse refuses this form to an account limited to `readonly = 1`; such a data source is never routed (the request fails safe).
 - Classes: **K** reads grouping columns only; **S** is exact when summed over aggregate rows; **X** unsafe.
-- Rules: identifier → its column class (grouping column K, sum column S, anything else X); literal → K; any function whose arguments are all K → K; `arrayElement(summed map, K)` → S; `multiply` with exactly one S argument and the rest K → S; `divide(S, K)` → S; `plus`/`minus` with all-S arguments → S; numeric casts and `negate` of S → S; everything else → X. A read of the aggregate's time column anywhere but the plain time dimension → X.
+- Rules: identifier → its column class (grouping column K, sum column S, anything else X); literal → K; any function whose arguments are all K → K; `arrayElement(summed map, K)` → S; `multiply` with exactly one S argument and the rest K → S; `divide(S, K)` → S; `plus`/`minus` with all-S arguments → S; `negate` of S and a cast of S to `Float64` → S (a cast to an integer or decimal type truncates per row and is not exact); everything else → X, as is any function whose result depends on row order (`runningDifference`, `neighbor` and the like). A read of the aggregate's time column anywhere but the plain time dimension → X.
 - Cube member SQL becomes an expression by resolving `{CUBE}.col` and references to other dimensions recursively. Any other template form (`FILTER_PARAMS`, `SECURITY_CONTEXT`, another cube) makes the member X.
 - Cached per (schema version, cube, structure fingerprint).
 
@@ -161,7 +161,7 @@ Eligibility of a cube (FR-012): defined in YAML with its own `sql` or `sql_table
 
 Derived cube:
 
-- `sql`: the cube's SQL with the source table replaced by the aggregate table (FR-021: the aggregate alone). The `WHERE` predicate and `SETTINGS` are kept verbatim, so the cube's tenant restriction is unchanged (FR-017). A `REPLACE` item whose target the aggregate lacks is removed; an item of class K or S is kept and its target takes that class; an item of class X makes its target unusable.
+- `sql`: the cube's SQL with the source table replaced by the aggregate table (FR-021: the aggregate alone). The `WHERE` predicate and `SETTINGS` are kept verbatim, so the cube's tenant restriction is unchanged (FR-017). A `REPLACE` item whose target the aggregate lacks is removed; an item of class K or S is kept and its target takes that class; an item of class X, or one that reads the target of another item, is removed and makes its target unusable.
 - Dimensions and segments: kept when class K. The time dimension is kept when it is exactly the bound time column.
 - Measures:
 
@@ -169,34 +169,34 @@ Derived cube:
 |---|---|---|
 | `sum` | expression class S | unchanged |
 | `count` | its filters, if any, are class K | `number`: `sum(_rows)`, or `sumIf(_rows, <filters>)` so that no match gives 0 |
-| `avg` | a single sum column with a stored `__count`, or a single key of a summed map | `number`: `sum(x) / nullIf(sum(x__count), 0)`; for a map key the divisor is `sum(_rows)` |
+| `avg` | a single sum column with a stored `__count`, or a single key of a summed map | `number`: `toFloat64(sum(x)) / nullIf(sum(x__count), 0)`; for a map key the divisor is `sum(_rows)`. `toFloat64` because `avg` answers in floating point: a decimal sum divided as it is would be cut to its scale |
 | `min`, `max` | class K, or a single column with a stored `__min`/`__max` | unchanged, or reads the stored field |
 | `count_distinct` | class K | unchanged |
-| `number` | reads only derived measures | unchanged |
+| `number` | reads only derived measures, combined with literals and plain arithmetic | unchanged |
 | anything else | | left out |
 
 - A measure with filters is kept only if every filter is class K (FR-010).
-- Joins are dropped (only single-cube queries are routed). Titles, formats and meta are copied so annotations match.
+- Joins are dropped (only single-cube queries are routed). Titles, formats and meta are copied so annotations match. Of the cube itself only its name, SQL, title, description, meta, visibility, data source, alias and refresh key are carried over.
 - Output: the derived cube as YAML, the set of available members, and a reason for each member left out. Content-addressed by a variant key: hash of schema version, cube, aggregate, structure fingerprint and a derivation version constant.
 
 ### 5. Decision (`suitability.js`, `routing.js`) — FR-006, FR-011, FR-013, FR-014, FR-018, FR-019, FR-021, FR-023, FR-028, FR-029
 
 - Hook: `installAggregateRouting(cubejs)` wraps the gateway's `getNormalizedQueries`, the one place where every query of a request is final (after access policies, `queryRewrite` and normalization, with relative date ranges resolved) and SQL is not yet generated. Every query surface calls it (FR-018). The wrapper recomputes the decision on every call, so a reused context cannot carry a stale decision.
-- Per query, in order: one cube, with at least one aggregate in the catalog; no member expressions, ungrouped rows, or sub-query joins; every member available; time checks; window rule; refresh record.
+- Per query, in order: one cube, with at least one aggregate in the catalog; no member expressions, ungrouped rows, or sub-query joins; every member available; time checks; refresh record; window rule. The refresh record comes before the window rule because the window rule needs the coverage boundary that record holds.
 - Time checks (FR-011): the query's time zone is UTC; the requested granularity is a standard one and a whole multiple of the grain (calendar granularities need the grain to divide a day, which the contract guarantees); range start, and range end plus one millisecond, fall on bucket boundaries. Only `timeDimensions.dateRange` and an `inDateRange` filter on the time dimension are accepted; any other date operator on it keeps the query on the source.
 - Window rule (FR-021): take the query's resolved range on the time dimension. If it ends before the aggregate's coverage boundary, the query qualifies. If it reaches past the boundary, it qualifies only when it has no range at all or its length is at least `min_window`; otherwise it stays on the source with reason `window_too_short`.
 - Refresh record (FR-023): the aggregate has a verified time and its age is within `max_staleness`; otherwise `not_verified` or `stale`.
 - Request rule (FR-014): one aggregate must qualify for every query of the request, which implies they read the same cube; otherwise the whole request runs on the source with reason `request_mixed`.
 - Selection (FR-019): among the aggregates that qualify for every query, coarsest grain, then fewest rows.
 - Effect: `context.securityContext` is replaced by a copy whose `userScope.dataSource.aggregateVariant` is the variant key, or the marker is removed. `context.aggregateRouting` is set to the chosen aggregate and its coverage boundary, or cleared. Derived files are kept in a module-level map keyed by variant key, bounded to 200 variants with the least recently used evicted.
-- Any exception inside the wrapper is logged and the original result is returned unmarked (FR-029).
+- Any exception inside the wrapper is logged and the original result is returned unmarked (FR-029). A chosen variant is compiled before the request is marked; one that the model compiler refuses is not used, then or later (`cube_not_eligible:does_not_compile`).
 - One structured log line per request (FR-028): request id, cube, chosen aggregate or reason code. No values.
 
 ### 6. Switch and answer mark (`index.js`, `repositoryFactory.js`, `routes/index.js`) — FR-015, FR-016, FR-027, FR-030
 
 - `contextToAppId` appends `_AGG_<variantKey>` when the marker is present. `contextToOrchestratorId`, `schemaVersion` and `preAggregationsSchema` are unchanged, so routed queries share the tenant's driver and queue.
 - `repositoryFactory` returns the derived files for a marked context. If the files are no longer in the map, it returns the canonical files, so the query still runs correctly on the source.
-- Installed only when `AGGREGATE_ROUTING_ENABLED=true`. When off, nothing is wrapped and no probe runs.
+- `index.js` always calls `installAggregateRouting`; the function itself does nothing unless `AGGREGATE_ROUTING_ENABLED=true`, so the switch is unit-tested. When off, nothing is wrapped and no probe runs.
 - Answer mark (FR-030, [contracts/answer-mark.md](./contracts/answer-mark.md)): the response-header hook in `routes/index.js`, which already adds `x-synmetrix-authority-revision` to successful `/api/v1/load` responses, also adds `x-synmetrix-aggregate-covered-until` when `req.context.aggregateRouting` is set. The gateway path and the export route both answer from `req.context`, so both carry it. The body is not touched.
 
 ### 7. Generate (`generator.js`, `scripts/aggregates.mjs generate`) — FR-024 to FR-026
@@ -206,7 +206,8 @@ Contract in [contracts/aggregates-cli.md](./contracts/aggregates-cli.md).
 - Inputs: source table, time column, grain, grouping set, `min_age`, `min_window`, `max_staleness`; read-only connection settings from the environment.
 - Reads `system.columns` and `system.tables` of the source. Assigns roles (FR-025): the time column; the requested grouping columns; numeric columns outside the source's sorting key as metrics (four fields each); non-nullable numeric maps as summed maps; numeric `ALIAS` columns of the source as stored metrics; `_rows`. Everything else is left out with a reason.
 - Exact types come from `DESCRIBE (<fill SELECT>)`, so no type mapping is hand-written. The fill `SELECT` is built by `contract.js`, the same builder refresh uses; it qualifies every source column (`src.col`).
-- Declines (FR-026) when there is no usable time column, when the source's partition expression does not involve the time column, or when the grain does not nest inside it.
+- Declines (FR-026) when there is no usable time column, when the source's partition expression does not involve the time column, when the time column is not kept in UTC (buckets are cut in UTC and would then not nest inside the partitions), when the grain does not nest inside the partition expression, or when a column the partition expression reads is not in the grouping set.
+- Sorting key: the partition expression's own columns, then the time bucket, then the other grouping columns as requested. With `--cluster` the engine is `ReplicatedAggregatingMergeTree` without arguments, which uses the server's default replication path.
 - Emits text only: `CREATE TABLE … ON CLUSTER` (replicated `AggregatingMergeTree`, the source's partition expression, every grouping column in the sorting key, binding comment), the list of left-out columns, and, when the source's merges change what a read returns and forced merging of old partitions is not configured on it, the `ALTER TABLE … MODIFY SETTING` statement that configures it (FR-026). It emits no fill statement: an aggregate is filled by refresh.
 
 ### 8. Refresh (`refresh.js`, `scripts/aggregates.mjs refresh`) — FR-020, FR-022
@@ -216,7 +217,7 @@ Contract in [contracts/aggregates-cli.md](./contracts/aggregates-cli.md).
   1. Note the pass start (server clock).
   2. For each source partition read its fingerprint and the oldest and newest value of the time column.
   3. Read the fingerprints recorded in `aggregate_state` and the partitions the aggregate has.
-  4. A source partition belongs in the aggregate when its newest value is older than pass start minus `min_age`. For each such partition that the aggregate lacks, or whose recorded fingerprint differs: fill a staging table with the contract's fill `SELECT` over a plain read of that partition (inserting by column name), swap it in with `REPLACE PARTITION`, then record the fingerprint read in step 2.
+  4. A source partition belongs in the aggregate when its newest value is older than pass start minus `min_age`. For each such partition that the aggregate lacks, or whose recorded fingerprint differs: fill a staging table with the contract's fill `SELECT` over a plain read of that partition (inserting by column name), check that every row landed in that partition, swap it in with `REPLACE PARTITION`, then record the fingerprint read in step 2. The staging table is never replicated: it has the aggregate's columns, keys and storage policy and its own plain engine, so a replicated aggregate's replication path is never copied. The job therefore talks to one replica.
   5. Drop aggregate partitions whose source partition is gone or no longer belongs, and clear their records.
   6. If every step succeeded, record for the aggregate the pass start as its verified time, and its coverage boundary: the oldest time-column value among source partitions it does not hold, or the pass start when it holds all.
   7. Drop the staging table.
@@ -224,8 +225,8 @@ Contract in [contracts/aggregates-cli.md](./contracts/aggregates-cli.md).
 
 ### 9. Testing
 
-- **Unit (node:test)**: contract parsing, roles and the fill `SELECT`; AST parsing and classification from recorded fixtures; derivation tables; time alignment, the window rule and selection; catalog cache behaviour with an injected query function; refresh decisions; fail-safe paths; the answer mark (present on a routed answer, absent otherwise); a guard that the wrapped gateway method exists and runs before SQL generation on the installed Cube version.
-- **Engine tests** (`services/cubejs/test/aggregates/`, disposable ClickHouse 26.8): the reference query shapes from the 2026-11-20 query log on a synthetic source shaped like the first candidate, over windows the aggregate holds, compared cell for cell (NULL equals NULL, not-a-number equals not-a-number, relative tolerance 1e-9); a real Cube gateway exercising routed, unrouted and mixed requests and metadata; refresh through a partition's life (built, re-loaded, consolidated, rebuilt) with long and short windows that reach the present; generated aggregates for three real table descriptions, before and after merging parts.
+- **Unit (node:test)**: contract parsing, roles and the fill `SELECT`; AST parsing and classification from ClickHouse answers recorded once and replayed (`__tests__/fixtures/ast/`); derivation tables; time alignment, the window rule and selection; catalog cache behaviour with an injected query function; refresh decisions; fail-safe paths; the answer mark (present on a routed answer, absent otherwise); a guard that the wrapped gateway method exists and runs before SQL generation on the installed Cube version.
+- **Engine tests** (`services/cubejs/test/aggregates/`, disposable ClickHouse 26.8): the reference query shapes from the 2026-11-20 query log on a synthetic source shaped like the first candidate, over windows the aggregate holds, compared cell for cell (NULL equals NULL, not-a-number equals not-a-number, relative tolerance 1e-9); a real Cube gateway exercising routed, unrouted and mixed requests and metadata; refresh through a partition's life (built, re-loaded, consolidated, rebuilt) with long and short windows that reach the present; generated aggregates for three synthetic tables shaped like three real ones, before and after merging parts (the real definitions are not kept in this public repository; they were checked once, locally); a refresh pass run as an account that holds exactly the documented privileges.
 - **StepCI**: with the switch off, statements and metadata are identical to today.
 
 ## Complexity Tracking

@@ -215,6 +215,24 @@ export function installAggregateRouting(cubejs, deps = {}) {
     return { decision, entry };
   };
 
+  // The last safeguard (FR-029): a derived cube that Cube cannot compile would fail the
+  // request it was meant to speed up. It is compiled here, where a failure still leaves the
+  // source path; Cube keeps the compiled model, so the request itself does not compile again.
+  const compiles = async (context, decision) => {
+    if (typeof cubejs.getCompilerApi !== "function") return true;
+    try {
+      const compilerApi = await cubejs.getCompilerApi(context);
+      await compilerApi.getCompilers({ requestId: context.requestId });
+      return true;
+    } catch {
+      const known = variants.get(decision.variantKey);
+      if (known) {
+        rememberVariant(decision.variantKey, { ...known, files: [], available: new Set(), ineligible: "does_not_compile" });
+      }
+      return false;
+    }
+  };
+
   const original = gateway.getNormalizedQueries.bind(gateway);
   gateway.getNormalizedQueries = async (inputQuery, context, ...rest) => {
     // Row rules and normalization always run on the canonical model, and a
@@ -229,7 +247,13 @@ export function installAggregateRouting(cubejs, deps = {}) {
       const routed = await route(context, result[1], stage);
       decision = routed.decision;
       rejected = routed.entry?.rejected || [];
-      if (decision.aggregate) mark(context, decision);
+      if (decision.aggregate) {
+        mark(context, decision);
+        if (!(await compiles(context, decision))) {
+          unmark(context);
+          decision = { cube: decision.cube, aggregate: null, reason: "cube_not_eligible:does_not_compile" };
+        }
+      }
     } catch (error) {
       unmark(context);
       decision = { cube: null, aggregate: null, reason: "error" };

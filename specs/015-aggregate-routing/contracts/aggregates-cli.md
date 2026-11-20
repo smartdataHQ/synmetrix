@@ -69,12 +69,13 @@ node scripts/aggregates.mjs generate \
 **Declines with a non-zero exit code and a reason** (FR-026) when:
 
 - the source table or a named column does not exist;
-- `--time-column` is not a date-time column;
+- `--time-column` is not a date-time column, or is not kept in UTC;
 - the source's partition expression does not involve the time column;
 - the grain does not divide one day, or does not nest inside the source's partition expression;
-- a `--group-by` column has a type that cannot be a grouping column (map, array, nested, JSON).
+- a `--group-by` column has a type that cannot be a grouping column (map, array, nested, JSON);
+- a column the source's partition expression reads is not listed in `--group-by`.
 
-**Exit codes**: `0` definition written; `2` declined (reason on standard error); `1` connection or unexpected error.
+**Exit codes**: `0` definition written; `2` declined (reason on standard error); `1` connection or unexpected error, including a missing option.
 
 ## `refresh`
 
@@ -89,7 +90,7 @@ node scripts/aggregates.mjs refresh [--only <database.aggregate>]
 1. Note the pass start time (server clock).
 2. For every source partition, read its fingerprint (a hash over the names of its active parts) and the oldest and newest value of the time column in it.
 3. Read the fingerprints recorded in `aggregate_state` and the partitions the aggregate has.
-4. A source partition belongs in the aggregate when its newest value is older than the pass start minus `min_age`. For each such partition that the aggregate lacks, or whose recorded fingerprint differs: fill a staging table with the contract's fill statement over a plain read of that partition, then `ALTER TABLE <aggregate> REPLACE PARTITION ID … FROM <staging>`, then record the fingerprint read in step 2.
+4. A source partition belongs in the aggregate when its newest value is older than the pass start minus `min_age`. For each such partition that the aggregate lacks, or whose recorded fingerprint differs: fill a staging table (`<aggregate>__staging`, never replicated) with the contract's fill statement over a plain read of that partition, check that every row landed in that partition, then `ALTER TABLE <aggregate> REPLACE PARTITION ID … FROM <staging>`, then record the fingerprint read in step 2.
 5. For each aggregate partition whose source partition is gone or no longer belongs: drop it and record fingerprint 0.
 6. If every step succeeded, record for the aggregate the pass start as its verified time, and its coverage boundary: the oldest time-column value among the source partitions it does not hold, or the pass start when it holds all.
 7. Drop the staging table.
@@ -108,4 +109,4 @@ node scripts/aggregates.mjs refresh [--only <database.aggregate>]
 
 **Exit codes**: `0` all aggregates verified; `3` at least one aggregate failed (details on standard error); `1` connection or unexpected error.
 
-**Log output**: one line per aggregate with partitions checked, built and dropped, and the duration. No row values.
+**Log output**: one line per aggregate with partitions checked, built and dropped, and the duration (`refresh  aggregate=…  checked=…  built=…  dropped=…  ms=…`); a failed aggregate and a table whose binding was rejected are reported on standard error. No row values.

@@ -273,6 +273,24 @@ describe("deriveCube: members that stay on the source", () => {
     }
   });
 
+  it("leaves out a measure whose drill members are not all available, and keeps one whose are", async () => {
+    const measure = (drill) => ({ name: "m", sql: "{CUBE}.units", type: "sum", drill_members: drill });
+    const cube = (drill) => ({
+      name: "line_items",
+      sql: "SELECT * FROM agg_test.sales",
+      dimensions: [
+        { name: "timestamp", sql: "{CUBE}.timestamp", type: "time" },
+        { name: "uom", sql: "{CUBE}.uom", type: "string" },
+        { name: "checkout_id", sql: "{CUBE}.checkout_id", type: "string" },
+      ],
+      measures: [measure(drill)],
+    });
+    const kept = await derive(cube(["uom", "CUBE.timestamp", "line_items.uom"]));
+    assert.deepEqual(kept.member("measures", "m"), measure(["uom", "CUBE.timestamp", "line_items.uom"]));
+    const left = await derive(cube(["uom", "checkout_id"]));
+    assert.equal(left.derived.leftOut.get("line_items.m"), "depends_on_unavailable_member");
+  });
+
   it("needs the stored row count for counts and map averages", async () => {
     const { derived } = await derive(CUBE, structure(COLUMNS.filter((column) => column.name !== "_rows")));
     assert.equal(derived.leftOut.get("line_items.count"), "no_stored_field");

@@ -314,6 +314,66 @@ describe("routing: failing safe", () => {
     assert.equal(seen.statements, 2);
   });
 
+  it("does not route to a derived cube that does not compile, and does not try it again", async () => {
+    const seen = { calls: [], lines: [], compiles: 0 };
+    const gateway = {
+      async getNormalizedQueries(input, context) {
+        seen.calls.push(variantOf(context));
+        return ["regularQuery", [input], [input]];
+      },
+    };
+    const cubejs = {
+      apiGateway: () => gateway,
+      // what Cube does with a marked context: compile the variant
+      getCompilerApi: async (context) => ({
+        getCompilers: async () => {
+          seen.compiles += 1;
+          assert.ok(variantOf(context));
+          throw new Error("Member 'gone' not found");
+        },
+      }),
+    };
+    installAggregateRouting(cubejs, {
+      enabled: true,
+      catalog: { lookup: () => ({ loadedAt: 0, serverNowAtLoad: NOW, aggregates: [AGGREGATE()], rejected: [] }) },
+      loadSchemas: async () => [{ id: "f1", name: "line_items.yml", code: MODEL }],
+      driverFor: async () => ({ query: replay }),
+      log: (line) => seen.lines.push(line),
+      now: () => 0,
+    });
+    for (const requestId of ["req-1", "req-2"]) {
+      const context = { securityContext: securityContext(), requestId };
+      await gateway.getNormalizedQueries(SUITABLE, context);
+      assert.equal(variantOf(context), undefined);
+      assert.equal(context.aggregateRouting, undefined);
+    }
+    assert.equal(seen.compiles, 1);
+    assert.deepEqual(seen.lines, [
+      "aggregate routing  requestId=req-1  cube=line_items  reason=cube_not_eligible:does_not_compile",
+      "aggregate routing  requestId=req-2  cube=line_items  reason=cube_not_eligible:does_not_compile",
+    ]);
+  });
+
+  it("compiles the variant before routing to it", async () => {
+    let compiled = 0;
+    const gateway = { async getNormalizedQueries(input) { return ["regularQuery", [input], [input]]; } };
+    installAggregateRouting(
+      { apiGateway: () => gateway, getCompilerApi: async () => ({ getCompilers: async () => { compiled += 1; } }) },
+      {
+        enabled: true,
+        catalog: { lookup: () => ({ loadedAt: 0, serverNowAtLoad: NOW, aggregates: [AGGREGATE()], rejected: [] }) },
+        loadSchemas: async () => [{ id: "f1", name: "line_items.yml", code: MODEL }],
+        driverFor: async () => ({ query: replay }),
+        log: () => {},
+        now: () => 0,
+      },
+    );
+    const context = { securityContext: securityContext(), requestId: "req-1" };
+    await gateway.getNormalizedQueries(SUITABLE, context);
+    assert.ok(variantOf(context));
+    assert.equal(compiled, 1);
+  });
+
   it("lets an error of the gateway itself through, with the context unmarked", async () => {
     const gateway = { async getNormalizedQueries() { throw new Error("queryRewrite failed"); } };
     const { run } = setup({ gateway });

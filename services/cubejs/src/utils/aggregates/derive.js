@@ -193,8 +193,15 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   }
   for (const { member } of waiting) leave(member, "depends_on_unavailable_member"); // they only read each other
 
+  // A measure names the members a drill-down shows; all of them must exist in the derived cube.
+  const dimensionNames = new Set(out.dimensions.map((dimension) => dimension.name));
+  const local = (reference) => String(reference).replace(new RegExp(`^(CUBE|${cube.name})\\.`), "");
   for (const member of cube.measures || []) {
-    if (measureDefinitions.has(member.name)) keep("measures", member, measureDefinitions.get(member.name));
+    if (!measureDefinitions.has(member.name)) continue;
+    const drill = Array.isArray(member.drill_members) ? member.drill_members : [];
+    if (drill.some((reference) => !dimensionNames.has(local(reference)) && !measureDefinitions.has(local(reference)))) {
+      leave(member, "depends_on_unavailable_member");
+    } else keep("measures", member, measureDefinitions.get(member.name));
   }
 
   const definition = { name: cube.name };

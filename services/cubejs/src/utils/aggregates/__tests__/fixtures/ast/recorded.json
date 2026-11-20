@@ -3875,5 +3875,27 @@
    "codec_expression": "",
    "ttl_expression": ""
   }
+ ],
+ "289f8b52f6774dc9d149fca9dc8159a8": [
+  "SelectWithUnionQuery (children 1)",
+  " ExpressionList (children 1)",
+  "  SelectQuery (children 2)",
+  "   ExpressionList (children 4)",
+  "    Function tuple (children 1)",
+  "     ExpressionList (children 1)",
+  "      Identifier timestamp",
+  "    Function tuple (children 1)",
+  "     ExpressionList (children 1)",
+  "      Identifier uom",
+  "    Function tuple (children 1)",
+  "     ExpressionList (children 1)",
+  "      Identifier checkout_id",
+  "    Function tuple (children 1)",
+  "     ExpressionList (children 1)",
+  "      Identifier units",
+  "   TablesInSelectQuery (children 1)",
+  "    TablesInSelectQueryElement (children 1)",
+  "     TableExpression (children 1)",
+  "      TableIdentifier system.one"
  ]
 }

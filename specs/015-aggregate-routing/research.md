@@ -157,9 +157,17 @@ All experiments were throwaway prototypes: Cube-generated SQL from a local cubej
 
 1. The wrapper on Cube 1.8.16 at runtime. **Confirmed on 2026-11-20** against a real 1.8.16 gateway with the Rust planner on: `sql`, the `load` path (`getNormalizedQueries` then `getSqlQueriesInternal`), a compared date range, a mixed request, a relative range (already resolved), a reused context, and `meta` behave as designed. `dryRun` returns no statement text in 1.8.16, so tests assert on its success and the mark, not on a table name. Still to see on the deployed service (T057).
 2. `EXPLAIN AST` through the tenant driver. **Confirmed on 2026-11-20 at account level**: the platform's account on dev runs with `readonly = 2`, and `EXPLAIN AST` (including `SELECT * REPLACE`, map elements and `IN` lists) runs in a stricter `readonly = 1` session on the dev server. The driver path is exercised by the engine tests; the deployed service is checked in T057.
-3. Replicated `AggregatingMergeTree` with `ON CLUSTER`, and `REPLACE PARTITION` from a staging table, on three replicas. The sandbox was single-node.
-4. Removing unknown `REPLACE` targets in derivation. ClickHouse 26.8 ignores them, but the derivation does not rely on that.
-5. The answer mark on Cube 1.8.16: that `req.context` is the object the wrapped gateway method receives, for the gateway path and the export route.
+3. Replicated `AggregatingMergeTree` with `ON CLUSTER`, and `REPLACE PARTITION` from a staging table, on three replicas. Still open: every test ran on one node. The refresh no longer copies the aggregate's engine for its staging table (a copied replicated engine could claim the same replication path); it creates a plain, non-replicated one with the same keys, which a single node accepts. On dev the server's default replication path uses the table's own id, so the generated `ReplicatedAggregatingMergeTree` without arguments is valid there (read from `system.server_settings` on 2026-11-20).
+4. Removing unknown `REPLACE` targets in derivation. **Done**: the derivation removes them itself, and the equivalence suite runs a cube with one.
+5. The answer mark on Cube 1.8.16: that `req.context` is the object the wrapped gateway method receives, for the gateway path and the export route. **Confirmed on 2026-11-20**: the HTTP test on the service's real routes passes on 1.8.16 for JSON and for a CSV export.
+
+## Found while building (2026-11-20)
+
+- **`EXPLAIN` through the driver.** The driver appends `FORMAT JSON` to every statement; on a bare `EXPLAIN AST` that format applies to the explained query and the driver rejects the answer. The statement is therefore `SELECT explain FROM (EXPLAIN AST …)`. ClickHouse refuses that form to an account limited to `readonly = 1` (checked on dev); dev's account has `readonly = 2`. A deployment whose account is limited to `readonly = 1` is never routed.
+- **Averages of decimals.** `sum(x) / count` on a decimal column is cut to the column's scale, while `avg()` answers in floating point. Found by the generator's engine test; the derived average is now `toFloat64(sum(x)) / nullIf(…)`.
+- **The whole engine suite runs on both Cube versions**: 1.7.30 (what is installed locally) and 1.8.16 (the pinned version, through a resolver shim).
+- **This repository is public.** The definitions of the three real tables are not stored in it; the generator tests use three synthetic tables of the same shapes, and the real definitions were run through the same test once, locally: 124, 40 and 306 source columns, no mismatch before or after merging.
+- **Privileges of the refresh account** were found by running a pass as a restricted account and are listed in contracts/aggregates-cli.md; an engine test keeps them honest.
 
 ## Owner direction recorded (2026-11-20)
 

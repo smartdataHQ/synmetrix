@@ -5,7 +5,8 @@ End to end on the first candidate, `cst.sales_lines` on dev. Table and column na
 ## Prerequisites
 
 - The feature is deployed with `AGGREGATE_ROUTING_ENABLED` unset (inert).
-- A ClickHouse account for `generate` (read) and one for `refresh` (write to aggregates and `aggregate_state`).
+- A ClickHouse account for `generate` (read) and one for `refresh` with the privileges listed in [contracts/aggregates-cli.md](./contracts/aggregates-cli.md). Both commands take `AGGREGATES_CLICKHOUSE_URL`, `_USER` and `_PASSWORD`; for `refresh` the URL must address one replica.
+- The account Synmetrix itself queries with must not be limited to `readonly = 1` (it has to read `EXPLAIN` through a `SELECT`); `readonly = 2`, as on dev, is enough.
 - `cst.aggregate_state` exists (from the schema repository).
 
 ## 1. Let the source consolidate its old partitions

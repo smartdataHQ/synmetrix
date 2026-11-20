@@ -251,5 +251,5 @@ An operator points the generator at a source table and chooses a time grain, the
 
 - A place in the schema repository for aggregate definitions, and a scheduled process with write access to run the refresh.
 - Source tables configured so that the database consolidates old periods by itself; this is what makes old periods duplicate-free. Switched on for the first candidate on the development cluster on 2026-11-20.
-- Read access to the database's table and column metadata for the platform's database account (already in place on the test cluster).
+- Read access to the database's table and column metadata for the platform's database account (already in place on the test cluster), and permission for that account to have the database parse an expression. On the first supported database an account limited to its strictest read-only level cannot do the latter and is never routed; the test cluster's account can.
 - A consumer that wants current numbers for recent buckets of a long window reads the answer mark and, if it reaches the endpoint through its own proxy, passes the mark on (the dashboard application, its spec 290).

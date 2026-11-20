@@ -144,9 +144,9 @@ description: "Task list for 015-aggregate-routing"
 - [X] T040 [US4] Implement `services/cubejs/src/utils/aggregates/refresh.js`: `refreshAggregate(queryFn, structure)` and `refreshAll(queryFn, { only })`; make T035 pass
 - [X] T041 [US4] Implement the `refresh` command in `services/cubejs/scripts/aggregates.mjs` (connection from `AGGREGATES_CLICKHOUSE_URL`, `AGGREGATES_CLICKHOUSE_USER`, `AGGREGATES_CLICKHOUSE_PASSWORD` through the existing ClickHouse driver); make T036 and T037 pass
 - [X] T042 [US4] Add the answer mark: set `context.aggregateRouting` in `services/cubejs/src/utils/aggregates/routing.js`, add `x-synmetrix-aggregate-covered-until` in the existing response-header hook of `services/cubejs/src/routes/index.js` when `req.context.aggregateRouting` is set, and document the header in `services/cubejs/src/swagger.yaml`; make T038 and T039 pass
-- [ ] T043 [P] [US4] (cross-repo) Add `../fraios/shared/schemas/clickhouse/aggregate_state.sql`: the refresh-record table from data-model.md for the `cst` database, replicated, `ON CLUSTER fraios`
-- [ ] T044 [P] [US4] (cross-repo) Define the refresh account in `../fraios/infra/k8s/data/clickhouse/base/` following the existing user and secret manifests there: an account that may read sources and system tables, create and drop the staging table, alter aggregate partitions and insert into `aggregate_state` in `cst`, and nothing else; its password in a dedicated secret
-- [ ] T045 [US4] (cross-repo) Add `../fraios/infra/k8s/data/clickhouse/base/aggregate-refresh-cronjob.yaml` and list it in that directory's `kustomization.yaml`: runs `node scripts/aggregates.mjs refresh` from the cubejs image with the T044 secret, concurrent runs forbidden, schedule shorter than the smallest `max_staleness` in use
+- [X] T043 [P] [US4] (cross-repo) Add `../fraios/shared/schemas/clickhouse/aggregate_state.sql`: the refresh-record table from data-model.md for the `cst` database, replicated, `ON CLUSTER fraios` — written, uncommitted in `../fraios`
+- [X] T044 [P] [US4] (cross-repo) Define the refresh account in `../fraios/infra/k8s/data/clickhouse/base/` following the existing user and secret manifests there: an account that may read sources and system tables, create and drop the staging table, alter aggregate partitions and insert into `aggregate_state` in `cst`, and nothing else; its password in a dedicated secret — written as `aggregate-refresh-user.yaml` (same pattern as `sandbox-user.yaml`), uncommitted in `../fraios`
+- [X] T045 [US4] (cross-repo) Add `../fraios/infra/k8s/data/clickhouse/base/aggregate-refresh-cronjob.yaml` and list it in that directory's `kustomization.yaml`: runs `node scripts/aggregates.mjs refresh` from the cubejs image with the T044 secret, concurrent runs forbidden, schedule shorter than the smallest `max_staleness` in use — written, uncommitted in `../fraios`; listed in `kustomization.yaml` as a commented entry, to be enabled by the owner once the tables exist and the image carries the script
 - [X] T046 [US4] (cross-repo) Make old partitions of the first candidate consolidate by themselves: `min_age_to_force_merge_seconds = 604800` and `min_age_to_force_merge_on_partition_only = 1` on `cst.sales_lines`. Applied on the dev cluster on 2026-11-20 at the owner's request and written into `../fraios/shared/schemas/clickhouse/sales_lines.sql` (that file change is not yet committed)
 
 **Checkpoint**: aggregates follow their source; history is exact, long windows are fast, short current windows stay live, and a stopped job cannot keep an old aggregate in use.
@@ -170,7 +170,7 @@ description: "Task list for 015-aggregate-routing"
 
 - [X] T051 [US5] Implement `services/cubejs/src/utils/aggregates/generator.js`: `generate(queryFn, { source, timeColumn, grain, groupBy, minAge, minWindow, maxStaleness, cluster })` returning the definition, the left-out list and the forced-merge statement when applicable, or a decline reason; make T048 pass
 - [X] T052 [US5] Implement the `generate` command in `services/cubejs/scripts/aggregates.mjs`; make T049 and T050 pass
-- [ ] T053 [US5] (cross-repo) Generate the first candidate with the options in quickstart.md and add it as `../fraios/shared/schemas/clickhouse/sales_lines__agg_1day.sql`
+- [X] T053 [US5] (cross-repo) Generate the first candidate with the options in quickstart.md and add it as `../fraios/shared/schemas/clickhouse/sales_lines__agg_1day.sql` — generated from the live table on dev (read-only) on 2026-11-20; uncommitted in `../fraios`
 
 **Checkpoint**: an aggregate for a new table is produced by one command and passes the equivalence check.
 
@@ -179,8 +179,8 @@ description: "Task list for 015-aggregate-routing"
 ## Phase 8: Polish & Cross-Cutting Concerns
 
 - [X] T054 [P] Add a timing test to `services/cubejs/src/utils/aggregates/__tests__/suitability.test.js`: 1,000 decisions against a warm catalog with the first candidate's member count finish with a 95th percentile under 5 ms (SC-005)
-- [ ] T055 [P] Document the feature in `CLAUDE.md`: the `services/cubejs/src/utils/aggregates/` modules and `scripts/aggregates.mjs` under Key File Locations, and `AGGREGATE_ROUTING_ENABLED` under Environment Configuration
-- [ ] T056 Run `yarn test` and `yarn test:aggregates` in `services/cubejs` on the pinned Cube version and `./cli.sh tests stepci`; all green
+- [X] T055 [P] Document the feature in `CLAUDE.md`: the `services/cubejs/src/utils/aggregates/` modules and `scripts/aggregates.mjs` under Key File Locations, and `AGGREGATE_ROUTING_ENABLED` under Environment Configuration
+- [ ] T056 Run `yarn test` and `yarn test:aggregates` in `services/cubejs` on the pinned Cube version and `./cli.sh tests stepci`; all green — partly done on 2026-11-20: the aggregate unit tests (158) and the engine suite (53) are green on Cube 1.7.30 (installed locally) and on 1.8.16 (the pinned version, through a resolver shim); the service's full unit suite shows only failures that exist without this feature (drivers and dependency checks that need the 1.8.16 install); StepCI has not been run, because the local stack is off
 - [ ] T057 Follow `specs/015-aggregate-routing/quickstart.md` on dev and record in `specs/015-aggregate-routing/research.md` ("To verify during implementation"): the wrapper on Cube 1.8.16 at runtime, the answer mark on a routed and an unrouted `/api/v1/load` response, the replicated definition and `REPLACE PARTITION` on three replicas, and the two SC-002 measurements (time for revenue by month over one year; rows read for the store-name list) routed and unrouted
 
 ---
@@ -245,5 +245,5 @@ T015 repositoryFactoryAggregates.test.js
 
 ### Notes
 
-- Cross-repo tasks: T043, T044, T045, T046 (done), T053.
+- Cross-repo tasks: T043, T044, T045, T046, T053: all written or applied, none committed in `../fraios`.
 - Each task cites the requirement it serves; a task that needs something not in spec.md is a signal to stop and revisit the spec, not to widen the task.

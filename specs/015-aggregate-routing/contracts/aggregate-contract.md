@@ -26,7 +26,7 @@ A JSON object with exactly these six fields:
 | `min_window` | `"<n> <unit>"` | a query that reaches past what the aggregate holds uses it only if its window is at least this long |
 | `max_staleness` | `"<n> <unit>"`, greater than zero | the aggregate is not used when no complete refresh pass ran within this time |
 
-Buckets are cut in UTC: the aggregate's time column holds `toStartOfInterval(<time_column>, INTERVAL <grain>)`.
+Buckets are cut in UTC: the aggregate's time column holds `toDateTime(toStartOfInterval(<time_column>, INTERVAL <grain>, 'UTC'), 'UTC')`. The source's time column must itself be kept in UTC, or a bucket could fall outside the partition of the rows it summarises.
 
 Choosing `min_age`:
 
@@ -67,13 +67,13 @@ Only by the refresh process, one partition at a time, from a plain read of the s
 ```sql
 INSERT INTO <staging> (<columns in SELECT order>)
 SELECT src.<grouping columns…>,
-       toStartOfInterval(src.<time_column>, INTERVAL <grain>) AS <time_column>,
+       toDateTime(toStartOfInterval(src.<time_column>, INTERVAL <grain>, 'UTC'), 'UTC') AS <time_column>,
        sum(src.<m>) AS <m>, count(src.<m>) AS <m>__count, min(src.<m>) AS <m>__min, max(src.<m>) AS <m>__max,
        sumMap(src.<map>) AS <map>,
        count() AS _rows
 FROM <source> AS src
 WHERE src._partition_id = '<partition id>'
-GROUP BY <grouping columns…>, toStartOfInterval(src.<time_column>, INTERVAL <grain>)
+GROUP BY <grouping columns…>, toDateTime(toStartOfInterval(src.<time_column>, INTERVAL <grain>, 'UTC'), 'UTC')
 ```
 
 followed by `ALTER TABLE <aggregate> REPLACE PARTITION ID '<partition id>' FROM <staging>`.
