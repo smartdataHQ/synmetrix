@@ -23,6 +23,7 @@ const AGGREGATE = (patch = {}) => structure(COLUMNS, "sales__agg_1day", { minAge
 const STAGING = "`agg_test`.`sales__agg_1day__staging`";
 const TARGET = "`agg_test`.`sales__agg_1day`";
 const STATE = "`agg_test`.`aggregate_state`";
+const EVERYWHERE = "SETTINGS alter_sync = 2, replication_wait_for_inactive_replica_timeout = 0";
 
 /** A fake database: answers the reads of a pass from `world` and records every other statement. */
 function database(world) {
@@ -84,7 +85,7 @@ describe("refreshAggregate", () => {
         "SETTINGS allow_nullable_key = 1, allow_suspicious_low_cardinality_types = 1",
       `ALTER TABLE ${STAGING} MODIFY COMMENT ''`,
       `INSERT INTO ${STAGING} (${fill.columns.map((name) => `\`${name}\``).join(", ")}) ${fill.sql}`,
-      `ALTER TABLE ${TARGET} REPLACE PARTITION ID 'p09' FROM ${STAGING}`,
+      `ALTER TABLE ${TARGET} REPLACE PARTITION ID 'p09' FROM ${STAGING} ${EVERYWHERE}`,
       `TRUNCATE TABLE ${STAGING}`,
       `INSERT INTO ${STATE} (aggregate, partition_id, fingerprint, verified_at, covered_until, updated_at) ` +
         "VALUES ('sales__agg_1day', 'p09', 109, now(), 0, now64(3))",
@@ -135,8 +136,8 @@ describe("refreshAggregate", () => {
     });
     const result = await refreshAggregate(queryFn, AGGREGATE());
     assert.deepEqual([result.built, result.dropped], [[], ["p08", "p11"]]);
-    assert.ok(writes.includes(`ALTER TABLE ${TARGET} DROP PARTITION ID 'p08'`));
-    assert.ok(writes.includes(`ALTER TABLE ${TARGET} DROP PARTITION ID 'p11'`));
+    assert.ok(writes.includes(`ALTER TABLE ${TARGET} DROP PARTITION ID 'p08' ${EVERYWHERE}`));
+    assert.ok(writes.includes(`ALTER TABLE ${TARGET} DROP PARTITION ID 'p11' ${EVERYWHERE}`));
     assert.match(recordOf(writes, "p08")[0], /'p08', 0, /);
     assert.match(recordOf(writes, "p11")[0], /'p11', 0, /);
     assert.ok(!writes.some((sql) => /staging/.test(sql))); // nothing was built, so no staging table
@@ -173,6 +174,26 @@ describe("refreshAggregate", () => {
       const created = writes.some((sql) => sql.startsWith("CREATE TABLE"));
       assert.equal(writes.at(-1) === `DROP TABLE IF EXISTS ${STAGING} SYNC`, created, String(failOn));
     }
+  });
+
+  it("goes on when a replica that is down has not applied a swap yet, and fails on any other error", async () => {
+    const down = (failWith) => {
+      const fake = database({ source: [SEPTEMBER, NOVEMBER], recorded: { p11: 111 }, held: ["p11"] });
+      const queryFn = async (sql) => {
+        const rows = await fake.queryFn(sql); // recorded first: the statement did run where it could
+        if (/ALTER TABLE .* (REPLACE|DROP) PARTITION/.test(sql)) throw new Error(failWith);
+        return rows;
+      };
+      return { ...fake, queryFn };
+    };
+    const unfinished = down("Code: 341. DB::Exception: Timeout exceeded while waiting for replicas r3 to process entry log-0000000002. Probably some replicas are inactive. (UNFINISHED)");
+    const result = await refreshAggregate(unfinished.queryFn, AGGREGATE());
+    assert.deepEqual([result.built, result.dropped], [["p09"], ["p11"]]);
+    assert.ok(passRecord(unfinished.writes));
+
+    const broken = down("Code: 243. DB::Exception: Cannot reserve 1.00 MiB, not enough space. (NOT_ENOUGH_SPACE)");
+    await assert.rejects(refreshAggregate(broken.queryFn, AGGREGATE()), /NOT_ENOUGH_SPACE/);
+    assert.equal(passRecord(broken.writes), undefined);
   });
 
   it("does not swap in a build whose buckets fall outside the partition", async () => {

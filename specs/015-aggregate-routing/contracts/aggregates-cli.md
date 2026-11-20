@@ -100,6 +100,7 @@ node scripts/aggregates.mjs refresh [--only <database.aggregate>]
 **Guarantees**:
 
 - A reader sees a partition's old content or its new content, never a mixture (atomic swap).
+- A swap or a drop returns only once every replica that is up has applied it, so the refresh record, which is replicated on its own, never describes a partition a live replica does not have yet. A replica that is down applies the change when it returns; the pass does not wait for it.
 - A partition whose source changed, including by a merge that removes duplicates, is rebuilt by the next pass.
 - If the source changes during a build, the recorded fingerprint is the older one, so the next pass rebuilds again.
 - If any step fails, no verified time is recorded for that aggregate; routing stops by itself once `max_staleness` elapses.
