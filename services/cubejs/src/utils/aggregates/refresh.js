@@ -38,6 +38,7 @@ const ALLOWED_INSERT_SETTINGS = [
   "max_insert_threads",
   "max_memory_usage",
   "max_bytes_before_external_group_by",
+  "max_bytes_before_external_sort",
   "priority",
 ];
 

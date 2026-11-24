@@ -296,7 +296,12 @@ describe("refreshAggregate: throttling, batching, and active completed-day cover
       maxPartitions: 1,
       order: "desc",
       includeCompletedDays: true,
-      settings: { max_threads: 2, max_memory_usage: 4000000000, priority: 10 },
+      settings: {
+        max_threads: 2,
+        max_memory_usage: 4000000000,
+        max_bytes_before_external_sort: 2000000000,
+        priority: 10,
+      },
     });
     assert.equal(first.partial, true);
     assert.equal(first.remaining, 1);
@@ -304,7 +309,7 @@ describe("refreshAggregate: throttling, batching, and active completed-day cover
     assert.equal(first.verifiedAt, null);
     const insertNov = writes.find((s) => s.startsWith("INSERT INTO `agg_test`.`sales__agg_1day__staging`"));
     assert.match(insertNov, /AS src FINAL WHERE src\._partition_id = 'p11' AND \(src\.`timestamp` < fromUnixTimestamp64Milli\(toInt64\(1795478400000\), 'UTC'\)\)/);
-    assert.match(insertNov, /SETTINGS max_threads = 2, max_memory_usage = 4000000000, priority = 10$/);
+    assert.match(insertNov, /SETTINGS max_threads = 2, max_memory_usage = 4000000000, max_bytes_before_external_sort = 2000000000, priority = 10$/);
     assert.equal(writes.filter((s) => s.includes("VALUES ('sales__agg_1day', '', ")).length, 0);
 
     // Complete pass -> builds both and sets coveredUntil = startOfTodayUtc (2026-11-24T00:00:00Z)
