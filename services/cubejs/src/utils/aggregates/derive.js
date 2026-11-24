@@ -8,13 +8,15 @@
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 
-import { IDENTIFIER, ROWS_COLUMN, SUFFIX } from "./contract.js";
-import { classify, memberExpression } from "./expressions.js";
+import { IDENTIFIER, ROWS_COLUMN, SUFFIX, quote } from "./contract.js";
+import { JOINED_KEY_PLACEHOLDER, classify, memberExpression } from "./expressions.js";
 
 /** Bump when the derivation rules change, so variants compiled under old rules are not reused. */
-export const DERIVE_VERSION = 1;
+export const DERIVE_VERSION = 2;
 
 const CUBE_KEYS = ["title", "description", "meta", "public", "shown", "data_source", "sql_alias", "refresh_key"];
+const SAFE_JOIN_RELATIONSHIPS = new Set(["many_to_one", "one_to_one", "belongsTo", "hasOne"]);
+const SAFE_SPLIT_SETTINGS = new Set(["asterisk_include_alias_columns", "do_not_merge_across_partitions_select_final"]);
 const UNSUPPORTED_MEASURE_KEYS = ["rolling_window", "multi_stage", "time_shift", "add_group_by", "reduce_by", "group_by", "case"];
 const NOT_IN_A_PLAIN_READ = new Set([
   "group", "order", "limit", "having", "union", "join", "final", "prewhere", "sample", "window", "qualify",
@@ -46,9 +48,9 @@ export function sourceTableOf(cube, defaultDatabase) {
  * @param {object} structure the aggregate (catalog.js)
  * @param {(expressions: Array<string|null>, columns: Map<string, string>) => Promise<object[]>} classifyBatch
  * @param {string} schemaVersion
- * @param {{defaultDatabase?: string}} [options]
+ * @param {{defaultDatabase?: string, availableCubes?: Map<string, {cube: object, fileName: string, content: string}>}} [options]
  */
-export async function deriveCube(cube, structure, classifyBatch, schemaVersion, { defaultDatabase } = {}) {
+export async function deriveCube(cube, structure, classifyBatch, schemaVersion, { defaultDatabase, availableCubes } = {}) {
   const derived = {
     variantKey: variantKey(schemaVersion, cube?.name, structure),
     cube: cube?.name,
@@ -68,22 +70,39 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   }
   const read = readOf(cube);
   if (!read || sourceTableOf(cube, defaultDatabase) !== structure.source) return notEligible("not_plain_read");
+  if (read.splitTimeColumn && read.splitTimeColumn !== structure.timeColumn) return notEligible("not_plain_read");
+
+  // Candidate non-fan-out joins (many_to_one / one_to_one) whose target cube is
+  // available in the same schema. Validated below against the aggregate's grouping keys.
+  const joinCandidates = availableCubes?.size ? normalizedJoins(cube.joins).filter((join) =>
+    SAFE_JOIN_RELATIONSHIPS.has(join.relationship) && availableCubes.has(join.name) && typeof join.sql === "string",
+  ) : [];
+  const candidateJoinNames = new Set(joinCandidates.map((join) => join.name));
 
   // Everything ClickHouse has to parse, in one statement.
   const expressions = [];
   const ask = (expression) => expressions.push(expression) - 1;
   const replaceAt = read.replaces.map((item) => ask(item.expression));
   const predicateAt = read.where ? ask(read.where) : null;
+  const joinPlans = joinCandidates.map((join) => ({
+    join,
+    at: ask(memberExpression(join.sql, cube, new Set(), new Set([join.name]))),
+  }));
   const plans = {
-    dimensions: (cube.dimensions || []).map((member) => planDimension(member, cube, ask)),
-    segments: (cube.segments || []).map((member) => ({ member, at: [ask(memberExpression(member.sql, cube))] })),
-    measures: (cube.measures || []).map((member) => planMeasure(member, cube, ask)),
+    dimensions: (cube.dimensions || []).map((member) => planDimension(member, cube, ask, candidateJoinNames)),
+    segments: (cube.segments || []).map((member) => ({
+      member,
+      at: [ask(memberExpression(member.sql, cube, new Set(), candidateJoinNames))],
+      referencedJoins: referencedJoinCubes(member.sql, candidateJoinNames),
+    })),
+    measures: (cube.measures || []).map((member) => planMeasure(member, cube, ask, candidateJoinNames)),
   };
 
   const base = new Map();
   for (const [name, { role }] of structure.columns) {
     base.set(name, { group: "K", sum: "S", sumMap: "M", time: "T" }[role] || "X");
   }
+  if (candidateJoinNames.size) base.set(JOINED_KEY_PLACEHOLDER, "K");
   const parsed = expressions.length ? await classifyBatch(expressions, base) : [];
   const judge = (at, columns) =>
     parsed[at]?.node ? classify(parsed[at].node, columns) : { cls: "X", detail: "unsupported_member" };
@@ -114,6 +133,17 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
     if (judge(predicateAt, strict).cls !== "K") return notEligible("predicate_not_grouping");
   }
 
+  // Keep only non-fan-out joins whose local key expression depends solely on grouping columns.
+  const keptJoins = [];
+  const keptJoinNames = new Set();
+  for (const { join, at } of joinPlans) {
+    if (judge(at, effective).cls === "K") {
+      keptJoins.push(join.raw);
+      keptJoinNames.add(join.name);
+    }
+  }
+  const missingJoin = (refs) => refs && [...refs].some((name) => !keptJoinNames.has(name));
+
   const has = (name, role) => structure.columns.get(name)?.role === role;
   const stored = (name) => has(name, "sum") && !targets.has(name); // the column itself, not a rewritten value
   const needs = (at, wanted) => {
@@ -132,9 +162,9 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   };
   const leave = (member, detail) => derived.leftOut.set(full(member), detail);
 
-  for (const { member, at, unsupported } of plans.dimensions) {
-    if (unsupported) {
-      leave(member, "unsupported_member");
+  for (const { member, at, unsupported, referencedJoins } of plans.dimensions) {
+    if (unsupported || missingJoin(referencedJoins)) {
+      leave(member, missingJoin(referencedJoins) ? "column_not_in_aggregate" : "unsupported_member");
       continue;
     }
     const node = at.length === 1 ? parsed[at[0]]?.node : null;
@@ -151,7 +181,11 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
     else keep("dimensions", member);
   }
 
-  for (const { member, at } of plans.segments) {
+  for (const { member, at, referencedJoins } of plans.segments) {
+    if (missingJoin(referencedJoins)) {
+      leave(member, "column_not_in_aggregate");
+      continue;
+    }
     const problem = firstProblem(at, "K");
     if (problem) leave(member, problem);
     else keep("segments", member);
@@ -160,8 +194,9 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   const measureDefinitions = new Map();
   const calculations = [];
   for (const plan of plans.measures) {
-    const { member } = plan;
+    const { member, referencedJoins } = plan;
     if (plan.unsupported) leave(member, "unsupported_member");
+    else if (missingJoin(referencedJoins)) leave(member, "column_not_in_aggregate");
     else if (member.type === "number") calculations.push(plan);
     else {
       const result = deriveMeasure(plan, { judge, needs, firstProblem, effective, has, stored, parsed });
@@ -212,26 +247,107 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
       `${read.where ? ` WHERE ${read.where}` : ""}${read.settings ? ` SETTINGS ${read.settings}` : ""}`;
   }
   for (const key of CUBE_KEYS) if (cube[key] !== undefined) definition[key] = cube[key];
+  if (keptJoins.length) {
+    definition.joins = keptJoins;
+    if (!out.dimensions.some((dimension) => dimension.primary_key === true)) {
+      const pkCols = [...structure.columns.entries()]
+        .filter(([, { role }]) => role === "group" || role === "time")
+        .map(([name]) => `ifNull(toString({CUBE}.${quote(name)}), '')`);
+      if (pkCols.length) {
+        out.dimensions.push({
+          name: "__agg_pk",
+          sql: `concatWithSeparator('|', ${pkCols.join(", ")})`,
+          type: "string",
+          primary_key: true,
+          public: false,
+        });
+      }
+    }
+  }
   for (const kind of ["dimensions", "segments", "measures"]) if (out[kind].length) definition[kind] = out[kind];
 
-  derived.files = [{ fileName: `${cube.name}__aggregate.yml`, content: YAML.stringify({ cubes: [definition] }) }];
+  // Quote string scalars so Cube's YAML 1.1 loader (js-yaml) never coerces
+  // ISO date strings like origin: "2020-01-01" into Date objects.
+  const stringifyYaml = (doc) => YAML.stringify(doc, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN" });
+  const files = [{ fileName: `${cube.name}__aggregate.yml`, content: stringifyYaml({ cubes: [definition] }) }];
+  if (keptJoinNames.size && availableCubes?.size) {
+    const added = new Set();
+    for (const joinName of keptJoinNames) {
+      const entry = availableCubes.get(joinName);
+      if (!entry || added.has(joinName)) continue;
+      added.add(joinName);
+      files.push({
+        fileName: `${joinName}__joined.yml`,
+        content: stringifyYaml({ cubes: [entry.cube] }),
+      });
+    }
+  }
+  derived.files = files;
   return derived;
 }
 
-function planDimension(member, cube, ask) {
+function normalizedJoins(joins) {
+  if (Array.isArray(joins)) {
+    return joins
+      .filter((join) => join && typeof join === "object" && typeof join.name === "string")
+      .map((join) => ({ name: join.name, relationship: join.relationship, sql: join.sql, raw: join }));
+  }
+  if (joins && typeof joins === "object") {
+    return Object.entries(joins)
+      .filter(([, join]) => join && typeof join === "object")
+      .map(([name, join]) => ({ name, relationship: join.relationship, sql: join.sql, raw: { name, ...join } }));
+  }
+  return [];
+}
+
+function referencedJoinCubes(sql, candidateJoinNames) {
+  const found = new Set();
+  if (typeof sql !== "string" || !candidateJoinNames?.size) return found;
+  const re = /\{([^{}]*)\}(?:\.([A-Za-z_][A-Za-z0-9_]*))?/g;
+  let match;
+  while ((match = re.exec(sql)) !== null) {
+    const reference = match[1].trim();
+    const dotIdent = match[2];
+    if (dotIdent && candidateJoinNames.has(reference)) {
+      found.add(reference);
+      continue;
+    }
+    const dotted = /^([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*$/.exec(reference);
+    if (!dotIdent && dotted && candidateJoinNames.has(dotted[1])) found.add(dotted[1]);
+  }
+  return found;
+}
+
+function planDimension(member, cube, ask, candidateJoinNames) {
   if (member.sub_query || member.type === "geo" || member.latitude || member.longitude) return { member, unsupported: true };
   if (member.case) {
     const conditions = Array.isArray(member.case.when) ? member.case.when : [];
     if (conditions.length === 0) return { member, unsupported: true };
-    return { member, at: conditions.map((condition) => ask(memberExpression(condition.sql, cube))) };
+    const referencedJoins = new Set();
+    for (const condition of conditions) {
+      for (const name of referencedJoinCubes(condition.sql, candidateJoinNames)) referencedJoins.add(name);
+    }
+    return {
+      member,
+      at: conditions.map((condition) => ask(memberExpression(condition.sql, cube, new Set(), candidateJoinNames))),
+      referencedJoins,
+    };
   }
-  return { member, at: [ask(memberExpression(member.sql, cube))] };
+  return {
+    member,
+    at: [ask(memberExpression(member.sql, cube, new Set(), candidateJoinNames))],
+    referencedJoins: referencedJoinCubes(member.sql, candidateJoinNames),
+  };
 }
 
-function planMeasure(member, cube, ask) {
+function planMeasure(member, cube, ask, candidateJoinNames) {
   if (UNSUPPORTED_MEASURE_KEYS.some((key) => member[key] !== undefined)) return { member, unsupported: true };
   const filters = Array.isArray(member.filters) ? member.filters : [];
-  const filterAt = filters.map((filter) => ask(memberExpression(filter.sql, cube)));
+  const referencedJoins = new Set();
+  for (const filter of filters) {
+    for (const name of referencedJoinCubes(filter.sql, candidateJoinNames)) referencedJoins.add(name);
+  }
+  const filterAt = filters.map((filter) => ask(memberExpression(filter.sql, cube, new Set(), candidateJoinNames)));
   if (member.type === "number") {
     // Every reference must be a measure of this cube; the rest must be plain arithmetic.
     const references = [];
@@ -249,10 +365,11 @@ function planMeasure(member, cube, ask) {
     return { member, references, at: ask(arithmetic) };
   }
   if (member.type === "count") {
-    return member.sql === undefined ? { member, filters, filterAt } : { member, unsupported: true };
+    return member.sql === undefined ? { member, filters, filterAt, referencedJoins } : { member, unsupported: true };
   }
   if (!["sum", "avg", "min", "max", "count_distinct"].includes(member.type)) return { member, unsupported: true };
-  return { member, filters, filterAt, at: ask(memberExpression(member.sql, cube)) };
+  for (const name of referencedJoinCubes(member.sql, candidateJoinNames)) referencedJoins.add(name);
+  return { member, filters, filterAt, at: ask(memberExpression(member.sql, cube, new Set(), candidateJoinNames)), referencedJoins };
 }
 
 function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstProblem, effective, has, stored, parsed }) {
@@ -331,9 +448,11 @@ function identifiersOf(node, found = new Set()) {
 }
 
 /**
- * Reads a cube's table access: `sql_table`, or a `sql` that is exactly
- * `SELECT * [REPLACE (…)] FROM table [WHERE …] [SETTINGS …]`. Anything else is
- * not a single plain read.
+ * Reads a cube's table access: `sql_table`, a plain
+ * `SELECT * [REPLACE (…)] FROM table [WHERE …] [SETTINGS …]`, or a
+ * time-partitioned two-branch `UNION ALL` over the same table (used by
+ * ReplacingMergeTree cubes that apply `FINAL` only to recent months while old
+ * partitions are already force-merged). Anything else is not a plain read.
  */
 function readOf(cube) {
   if (!cube || typeof cube !== "object") return null;
@@ -350,6 +469,11 @@ function readOf(cube) {
   const word = (token, text) => token?.kind === "word" && token.text.toLowerCase() === text;
   if (!word(tokens[at++], "select")) return null;
   if (!(tokens[at]?.kind === "symbol" && tokens[at++].text === "*")) return null;
+
+  // Two-branch time-split UNION ALL: SELECT * FROM ( <branch1> UNION ALL <branch2> )
+  if (word(tokens[at], "from") && tokens[at + 1]?.kind === "group" && tokens[at + 1].text.startsWith("(") && at + 2 === tokens.length) {
+    return splitUnionReadOf(tokens[at + 1].inner);
+  }
 
   let replaces = [];
   if (word(tokens[at], "replace")) {
@@ -383,6 +507,104 @@ function readOf(cube) {
     at = tokens.length;
   }
   return at === tokens.length ? { ...table, sqlTable: false, replaces, where, settings } : null;
+}
+
+function splitUnionReadOf(inner) {
+  const tokens = tokenize(inner);
+  if (!tokens) return null;
+  const word = (token, text) => token?.kind === "word" && token.text.toLowerCase() === text;
+  const unionAt = [];
+  for (let i = 0; i < tokens.length - 1; i += 1) {
+    if (word(tokens[i], "union") && word(tokens[i + 1], "all")) unionAt.push(i);
+  }
+  if (unionAt.length !== 1) return null;
+  const splitIdx = unionAt[0];
+  const left = parseSplitBranch(inner.slice(0, tokens[splitIdx].start).trim());
+  const right = parseSplitBranch(inner.slice(tokens[splitIdx + 1].end).trim());
+  if (!left || !right) return null;
+  if (left.database !== right.database || left.table !== right.table) return null;
+
+  // Match the complementary time-range split (< vs >=, or <= vs >) and identical tenant predicates.
+  const pair = matchTimeSplit(left.conjuncts, right.conjuncts);
+  if (!pair) return null;
+  return {
+    database: left.database,
+    table: left.table,
+    sqlTable: false,
+    replaces: [],
+    where: pair.shared.length ? pair.shared.join(" AND ") : null,
+    settings: null,
+    splitTimeColumn: pair.timeColumn,
+  };
+}
+
+function parseSplitBranch(sql) {
+  const tokens = tokenize(sql);
+  if (!tokens) return null;
+  const word = (token, text) => token?.kind === "word" && token.text.toLowerCase() === text;
+  let at = 0;
+  if (!word(tokens[at++], "select")) return null;
+  if (!(tokens[at]?.kind === "symbol" && tokens[at++].text === "*")) return null;
+  if (!word(tokens[at++], "from")) return null;
+  const table = tokens[at]?.kind === "word" ? tableOf(tokens[at].text) : null;
+  if (!table) return null;
+  at += 1;
+  if (word(tokens[at], "final")) at += 1;
+  if (!word(tokens[at++], "where")) return null;
+  const from = at;
+  while (at < tokens.length && !word(tokens[at], "settings")) at += 1;
+  const predicate = tokens.slice(from, at);
+  if (predicate.length === 0) return null;
+  if (predicate.some((token) => token.kind === "word" && (NOT_IN_A_PLAIN_READ.has(token.text.toLowerCase()) || token.text.toLowerCase() === "or"))) {
+    return null;
+  }
+  if (word(tokens[at], "settings")) {
+    const rest = sql.slice(tokens[at + 1]?.start ?? sql.length).trim();
+    if (!rest) return null;
+    for (const part of rest.split(",")) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\d+\s*$/.exec(part);
+      if (!m || !SAFE_SPLIT_SETTINGS.has(m[1].toLowerCase())) return null;
+    }
+  } else if (at !== tokens.length) return null;
+
+  // Split top-level AND conjuncts.
+  const conjuncts = [];
+  let start = 0;
+  for (let i = 0; i <= predicate.length; i += 1) {
+    if (i === predicate.length || word(predicate[i], "and")) {
+      if (i === start) return null;
+      conjuncts.push(sql.slice(predicate[start].start, predicate[i - 1].end).trim());
+      start = i + 1;
+    }
+  }
+  return { ...table, conjuncts };
+}
+
+function parseTimeBound(conjunct) {
+  const m = /^`?([A-Za-z_][A-Za-z0-9_]*)`?\s*(<=|>=|<|>)\s*(.+)$/s.exec(conjunct);
+  if (!m) return null;
+  return { column: m[1], op: m[2], bound: m[3].replace(/\s+/g, " ").trim() };
+}
+
+function matchTimeSplit(leftConjuncts, rightConjuncts) {
+  const norm = (s) => s.replace(/\s+/g, " ").trim();
+  const complements = new Map([["<", ">="], [">=", "<"], ["<=", ">"], [">", "<="]]);
+  for (let i = 0; i < leftConjuncts.length; i += 1) {
+    const lb = parseTimeBound(leftConjuncts[i]);
+    if (!lb) continue;
+    for (let j = 0; j < rightConjuncts.length; j += 1) {
+      const rb = parseTimeBound(rightConjuncts[j]);
+      if (!rb || rb.column !== lb.column || rb.bound !== lb.bound || complements.get(lb.op) !== rb.op) continue;
+      const leftRest = leftConjuncts.filter((_, k) => k !== i);
+      const rightRest = rightConjuncts.filter((_, k) => k !== j);
+      if (leftRest.length !== rightRest.length) continue;
+      const rightNorm = new Set(rightRest.map(norm));
+      if (leftRest.every((c) => rightNorm.has(norm(c)))) {
+        return { timeColumn: lb.column, shared: leftRest };
+      }
+    }
+  }
+  return null;
 }
 
 function tableOf(text) {

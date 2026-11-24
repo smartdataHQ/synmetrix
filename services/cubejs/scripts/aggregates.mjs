@@ -57,8 +57,19 @@ export async function main(argv, { env = process.env, connect: open = connect, o
       args: rest,
       options:
         command === "generate"
-          ? Object.fromEntries([...GENERATE_OPTIONS, "cluster"].map((name) => [name, { type: "string" }]))
-          : { only: { type: "string" } },
+          ? Object.fromEntries([...GENERATE_OPTIONS, "cluster", "name"].map((name) => [name, { type: "string" }]))
+          : {
+              only: { type: "string" },
+              "max-partitions": { type: "string" },
+              "sleep-ms": { type: "string" },
+              order: { type: "string" },
+              "max-threads": { type: "string" },
+              "max-insert-threads": { type: "string" },
+              "max-memory-bytes": { type: "string" },
+              "max-external-group-by-bytes": { type: "string" },
+              priority: { type: "string" },
+              "include-completed-days": { type: "boolean" },
+            },
     });
     if (command === "generate") {
       const missing = GENERATE_OPTIONS.find((name) => values[name] === undefined);
@@ -76,6 +87,7 @@ export async function main(argv, { env = process.env, connect: open = connect, o
         minWindow: values["min-window"],
         maxStaleness: values["max-staleness"],
         cluster: values.cluster,
+        name: values.name,
       });
       if (result.declined) {
         err(`declined: ${result.declined}`);
@@ -85,12 +97,30 @@ export async function main(argv, { env = process.env, connect: open = connect, o
       return 0;
     }
 
-    const { results, rejected } = await refreshAll(connection.queryFn, { only: values.only });
+    const settings = {};
+    const optNum = (flag, key) => {
+      if (values[flag] !== undefined) settings[key] = Number(values[flag]);
+    };
+    optNum("max-threads", "max_threads");
+    optNum("max-insert-threads", "max_insert_threads");
+    optNum("max-memory-bytes", "max_memory_usage");
+    optNum("max-external-group-by-bytes", "max_bytes_before_external_group_by");
+    optNum("priority", "priority");
+
+    const { results, rejected } = await refreshAll(connection.queryFn, {
+      only: values.only,
+      ...(Object.keys(settings).length ? { settings } : {}),
+      ...(values["sleep-ms"] !== undefined ? { sleepMs: Number(values["sleep-ms"]) } : {}),
+      ...(values["max-partitions"] !== undefined ? { maxPartitions: Number(values["max-partitions"]) } : {}),
+      ...(values.order !== undefined ? { order: values.order } : {}),
+      ...(values["include-completed-days"] !== undefined ? { includeCompletedDays: values["include-completed-days"] } : {}),
+    });
     for (const { table, reason } of rejected) err(`refresh  ignored=${table}  reason=${reason}`);
     for (const result of results) {
       // Names, counts and durations only: no row values.
       if (result.ok) {
-        out(`refresh  aggregate=${result.aggregate}  checked=${result.checked}  built=${result.built.length}  dropped=${result.dropped.length}  ms=${result.durationMs}`);
+        const extra = result.partial ? `  remaining=${result.remaining}  partial=true` : "";
+        out(`refresh  aggregate=${result.aggregate}  checked=${result.checked}  built=${result.built.length}  dropped=${result.dropped.length}${extra}  ms=${result.durationMs}`);
       } else err(`refresh  aggregate=${result.aggregate}  failed  ms=${result.durationMs}  ${result.error}`);
     }
     return results.some((result) => !result.ok) ? 3 : 0;

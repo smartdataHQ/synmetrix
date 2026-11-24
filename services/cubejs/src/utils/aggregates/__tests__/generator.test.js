@@ -232,7 +232,11 @@ describe("generate: when it declines", () => {
 
   it("needs a grain that divides one day and nests inside the source's partitions", async () => {
     assert.equal(await declined({ grain: "7 hour" }), "the grain does not divide one day");
-    assert.equal(await declined({ grain: "1 week" }), "--grain must be \"<n> <unit>\" with unit second, minute, hour or day");
+    assert.equal(await declined({ grain: "1 week" }), '--grain must be "<n> <unit>" with unit second, minute, hour or day or "1 month"');
+    assert.equal(
+      await declined({ grain: "1 month" }, { partition_key: "(partition, toDate(timestamp))" }),
+      "a grain of 1 month does not nest inside the source's partition expression",
+    );
     assert.equal(
       await declined({}, { partition_key: "(partition, toStartOfHour(timestamp))" }),
       "a grain of 1 day does not nest inside the source's partition expression",

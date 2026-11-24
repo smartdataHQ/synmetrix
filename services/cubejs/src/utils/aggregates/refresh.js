@@ -33,23 +33,62 @@ function stagingEngine({ partitionKey, sortingKey, primaryKey, storagePolicy }) 
   );
 }
 
+const ALLOWED_INSERT_SETTINGS = [
+  "max_threads",
+  "max_insert_threads",
+  "max_memory_usage",
+  "max_bytes_before_external_group_by",
+  "priority",
+];
+
+function insertSettingsClause(settings) {
+  if (!settings || typeof settings !== "object") return "";
+  const parts = [];
+  for (const key of ALLOWED_INSERT_SETTINGS) {
+    const value = settings[key];
+    if (value === undefined || value === null || value === "") continue;
+    const numeric = Number(value);
+    if (!Number.isInteger(numeric) || numeric < 0) {
+      throw new Error(`invalid refresh setting ${key}`);
+    }
+    parts.push(`${key} = ${numeric}`);
+  }
+  return parts.length ? ` SETTINGS ${parts.join(", ")}` : "";
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * One pass over one aggregate.
  *
  * @param {(sql: string) => Promise<object[]>} queryFn runs any statement; rows for a read
  * @param {object} structure the aggregate, as the catalog describes it
- * @returns {Promise<{checked: number, built: string[], dropped: string[], verifiedAt: number, coveredUntil: number}>}
+ * @param {{
+ *   settings?: Record<string, number>,
+ *   sleepMs?: number,
+ *   maxPartitions?: number,
+ *   order?: "asc"|"desc",
+ *   includeCompletedDays?: boolean,
+ * }} [options]
+ * @returns {Promise<{checked: number, built: string[], dropped: string[], remaining: number, partial: boolean, verifiedAt: number|null, coveredUntil: number|null}>}
  */
-export async function refreshAggregate(queryFn, structure) {
+export async function refreshAggregate(queryFn, structure, options = {}) {
   const { database, name, sourceTable, timeColumn } = structure;
   const target = `${quote(database)}.${quote(name)}`;
   const staging = `${quote(database)}.${quote(`${name}__staging`)}`;
   const state = `${quote(database)}.${quote("aggregate_state")}`;
   const time = `src.${quote(timeColumn)}`;
+  const insertSettings = insertSettingsClause(options.settings);
+  const sleepMs = Number(options.sleepMs) > 0 ? Number(options.sleepMs) : 0;
+  const maxPartitions = Number(options.maxPartitions) > 0 ? Math.floor(Number(options.maxPartitions)) : Infinity;
+  const order = options.order === "desc" ? "desc" : "asc";
+  const includeCompletedDays = Boolean(options.includeCompletedDays) && structure.grain === "1 day";
 
   // 1. The pass start, on the server's clock.
   const [{ now_ms: nowMs }] = await queryFn("SELECT toUnixTimestamp64Milli(now64(3)) AS now_ms");
   const passStart = Number(nowMs);
+  const startOfTodayUtc = Math.floor(passStart / 86400_000) * 86400_000;
+  const startOfMonthUtc = Date.UTC(new Date(passStart).getUTCFullYear(), new Date(passStart).getUTCMonth(), 1);
 
   // 2. Every source partition: its fingerprint, then its oldest and newest time.
   //    A fingerprint read before a change makes the next pass rebuild; never the other way round.
@@ -90,8 +129,25 @@ export async function refreshAggregate(queryFn, structure) {
   for (const id of held) if (!PARTITION_ID.test(id)) throw new Error("a partition id of the aggregate is not plain");
 
   // 4. A partition belongs once its newest row is older than min_age.
-  const cutoff = passStart - structure.minAgeSeconds * 1000;
-  const belongs = (partition) => structure.minAgeSeconds === 0 || partition.newest < cutoff;
+  //    For 1-month aggregates with min_age > 0, never include the current open UTC month.
+  //    When includeCompletedDays is enabled on a 1-day aggregate, an active partition spanning
+  //    today also belongs up to startOfTodayUtc (using FINAL on that active partition so
+  //    unmerged ReplacingMergeTree parts are deduplicated).
+  const isMonthGrain = structure.grainKind === "month" || structure.grain === "1 month";
+  const cutoff = isMonthGrain && structure.minAgeSeconds > 0
+    ? Math.min(passStart - structure.minAgeSeconds * 1000, startOfMonthUtc)
+    : passStart - structure.minAgeSeconds * 1000;
+  const isActiveDayPartition = (partition) =>
+    includeCompletedDays && partition.oldest < startOfTodayUtc && partition.newest >= startOfTodayUtc;
+  const belongs = (partition) => {
+    if (isActiveDayPartition(partition)) return true;
+    if (includeCompletedDays) return partition.newest < startOfTodayUtc;
+    return structure.minAgeSeconds === 0 || partition.newest < cutoff;
+  };
+  const effectiveFingerprint = (partition) =>
+    isActiveDayPartition(partition)
+      ? (BigInt(partition.fingerprint) ^ BigInt(startOfTodayUtc)).toString()
+      : partition.fingerprint;
   const record = (partitionId, fingerprint) =>
     queryFn(`INSERT INTO ${state} ${STATE_COLUMNS} VALUES ('${name}', '${partitionId}', ${fingerprint}, now(), 0, now64(3))`);
 
@@ -105,13 +161,20 @@ export async function refreshAggregate(queryFn, structure) {
     }
   };
 
+  const ordered = order === "desc" ? [...source].sort((a, b) => b.newest - a.newest) : source;
+  const stalePartitions = ordered.filter((partition) => {
+    if (!belongs(partition)) return false;
+    return !(held.includes(partition.id) && recorded.get(partition.id) === effectiveFingerprint(partition));
+  });
+
   const built = [];
   const dropped = [];
+  let remaining = stalePartitions.length;
   let stagingCreated = false;
   try {
-    for (const partition of source) {
-      if (!belongs(partition)) continue;
-      if (held.includes(partition.id) && recorded.get(partition.id) === partition.fingerprint) continue;
+    for (const partition of stalePartitions) {
+      if (built.length >= maxPartitions) break;
+      if (built.length > 0 && sleepMs > 0) await sleep(sleepMs);
       if (!stagingCreated) {
         await queryFn(`DROP TABLE IF EXISTS ${staging} SYNC`);
         await queryFn(`CREATE TABLE ${staging} AS ${target} ${stagingEngine(structure)}`);
@@ -119,8 +182,13 @@ export async function refreshAggregate(queryFn, structure) {
         // The copy carries the binding comment; without it nothing takes the staging table for an aggregate.
         await queryFn(`ALTER TABLE ${staging} MODIFY COMMENT ''`);
       }
-      const fill = fillSelect(structure, partition.id);
-      await queryFn(`INSERT INTO ${staging} (${fill.columns.map(quote).join(", ")}) ${fill.sql}`);
+      const activePartial = isActiveDayPartition(partition);
+      const recentlyWritten = includeCompletedDays && passStart - partition.newest < 8 * 86400_000;
+      const fill = fillSelect(structure, partition.id, {
+        final: activePartial || recentlyWritten,
+        whereExtra: activePartial ? `${time} < ${stamp(startOfTodayUtc)}` : null,
+      });
+      await queryFn(`INSERT INTO ${staging} (${fill.columns.map(quote).join(", ")}) ${fill.sql}${insertSettings}`);
       // Every bucket of a source partition must fall into the aggregate partition of the same id.
       // If one does not (a grain or a time zone that does not nest), swapping would lose it.
       const [{ strays }] = await queryFn(
@@ -131,8 +199,15 @@ export async function refreshAggregate(queryFn, structure) {
       // One step: a reader sees the partition's old content or its new content.
       await alterPartition(`ALTER TABLE ${target} REPLACE PARTITION ID '${partition.id}' FROM ${staging}`);
       await queryFn(`TRUNCATE TABLE ${staging}`);
-      await record(partition.id, partition.fingerprint);
+      await record(partition.id, effectiveFingerprint(partition));
       built.push(partition.id);
+      remaining -= 1;
+    }
+
+    if (remaining > 0) {
+      // Partial batch (--max-partitions): never mark the aggregate verified until all belonging
+      // partitions are built, so queries are never routed to an incomplete aggregate.
+      return { checked: source.length, built, dropped, remaining, partial: true, verifiedAt: null, coveredUntil: null };
     }
 
     // 5. Partitions whose source is gone, or that no longer belong.
@@ -145,13 +220,18 @@ export async function refreshAggregate(queryFn, structure) {
     }
 
     // 6. Every step succeeded: the aggregate is verified as of the pass start,
-    //    and holds everything before the oldest row of a partition it does not hold.
-    const notHeld = source.filter((partition) => !belonging.has(partition.id));
-    const coveredUntil = notHeld.length ? Math.min(...notHeld.map((partition) => partition.oldest)) : passStart;
+    //    and holds everything before the oldest row of a partition it does not hold
+    //    (and before startOfTodayUtc when an active-day partition was trimmed to today).
+    const bounds = [];
+    for (const partition of source) {
+      if (!belonging.has(partition.id)) bounds.push(partition.oldest);
+      else if (isActiveDayPartition(partition)) bounds.push(startOfTodayUtc);
+    }
+    const coveredUntil = bounds.length ? Math.min(...bounds) : passStart;
     await queryFn(
       `INSERT INTO ${state} ${STATE_COLUMNS} VALUES ('${name}', '', 0, toDateTime(${stamp(passStart)}), ${stamp(coveredUntil)}, now64(3))`,
     );
-    return { checked: source.length, built, dropped, verifiedAt: passStart, coveredUntil };
+    return { checked: source.length, built, dropped, remaining: 0, partial: false, verifiedAt: passStart, coveredUntil };
   } finally {
     // 7.
     if (stagingCreated) {
@@ -169,9 +249,16 @@ export async function refreshAggregate(queryFn, structure) {
  * failure in one does not stop the others.
  *
  * @param {(sql: string) => Promise<object[]>} queryFn
- * @param {{only?: string}} [options] `only`: "database.aggregate"
+ * @param {{
+ *   only?: string,
+ *   settings?: Record<string, number>,
+ *   sleepMs?: number,
+ *   maxPartitions?: number,
+ *   order?: "asc"|"desc",
+ *   includeCompletedDays?: boolean,
+ * }} [options] `only`: "database.aggregate"
  */
-export async function refreshAll(queryFn, { only } = {}) {
+export async function refreshAll(queryFn, { only, ...refreshOptions } = {}) {
   const entry = await probeAggregates(queryFn);
   const targets = entry.aggregates.filter((aggregate) => !only || aggregate.table === only);
   const results = [];
@@ -181,7 +268,13 @@ export async function refreshAll(queryFn, { only } = {}) {
   for (const structure of targets) {
     const started = performance.now();
     try {
-      const outcome = await refreshAggregate(queryFn, structure);
+      const perAggOptions = {
+        ...refreshOptions,
+        includeCompletedDays:
+          refreshOptions.includeCompletedDays ??
+          (structure.grain === "1 day" && structure.minAgeSeconds === 86400),
+      };
+      const outcome = await refreshAggregate(queryFn, structure, perAggOptions);
       results.push({ aggregate: structure.table, ok: true, ...outcome, durationMs: Math.round(performance.now() - started) });
     } catch (error) {
       results.push({

@@ -103,26 +103,38 @@ export function classify(node, columns) {
   return result === M ? x("not_exact_when_summed") : result;
 }
 
+export const JOINED_KEY_PLACEHOLDER = "__agg_joined_k__";
+
 /**
  * A cube member's SQL as a plain expression: `{CUBE}.col` becomes `col`, and a
  * reference to another dimension of the cube is replaced by that dimension's
- * expression. Any other template form has no fixed meaning here: null.
+ * expression. When `joinedCubes` is provided, references to a kept many_to_one
+ * / one_to_one joined cube (`{other.member}` or `{other}.col`) become a K-class
+ * placeholder so the surrounding expression can still be parsed and checked.
+ * Any other template form has no fixed meaning here: null.
  */
-export function memberExpression(sql, cube, seen = new Set()) {
+export function memberExpression(sql, cube, seen = new Set(), joinedCubes = null) {
   if (typeof sql !== "string") return null;
   let failed = false;
-  const resolved = sql.replace(/\{([^{}]*)\}(\.)?/g, (whole, inner, dot) => {
+  const resolved = sql.replace(/\{([^{}]*)\}(?:\.([A-Za-z_][A-Za-z0-9_]*))?/g, (whole, inner, dotIdent) => {
     const reference = inner.trim();
     if (reference === "CUBE" || reference === cube.name) {
-      if (dot) return "";
+      if (dotIdent) return dotIdent;
       failed = true;
       return whole;
+    }
+    if (joinedCubes?.size) {
+      // `{bonus_products}.product_id`
+      if (dotIdent && joinedCubes.has(reference)) return JOINED_KEY_PLACEHOLDER;
+      // `{bonus_products.supplier}`
+      const dotted = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(reference);
+      if (!dotIdent && dotted && joinedCubes.has(dotted[1])) return JOINED_KEY_PLACEHOLDER;
     }
     const name = reference.replace(new RegExp(`^(CUBE|${cube.name})\\.`), "");
     const dimension = (cube.dimensions || []).find((candidate) => candidate.name === name);
     const expression =
-      !dot && IDENTIFIER.test(name) && dimension && !dimension.case && !seen.has(name)
-        ? memberExpression(dimension.sql, cube, new Set([...seen, name]))
+      !dotIdent && IDENTIFIER.test(name) && dimension && !dimension.case && !seen.has(name)
+        ? memberExpression(dimension.sql, cube, new Set([...seen, name]), joinedCubes)
         : null;
     if (expression === null) {
       failed = true;

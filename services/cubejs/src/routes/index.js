@@ -68,6 +68,15 @@ const hasAdminSecret = (req) => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
+const parseBooleanFlag = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "on") return true;
+  if (normalized === "false" || normalized === "0" || normalized === "off") return false;
+  return undefined;
+};
+
 export default ({ basePath, cubejs }) => {
   router.use(basePath, (req, res, next) => {
     if (
@@ -79,6 +88,25 @@ export default ({ basePath, cubejs }) => {
     }
     // read here: the path is relative to the mount point only inside this middleware
     const isLoad = req.path.replace(/\/$/, "") === "/v1/load";
+    if (isLoad) {
+      // Per-request aggregate routing toggle (query param, body field, or header).
+      // Stripped from query/body before Cube's Joi schema validator sees the payload.
+      let pref;
+      if (req.query && "useAggregates" in req.query) {
+        pref = parseBooleanFlag(Array.isArray(req.query.useAggregates) ? req.query.useAggregates[0] : req.query.useAggregates);
+        delete req.query.useAggregates;
+      }
+      if (req.body && typeof req.body === "object" && !Array.isArray(req.body) && "useAggregates" in req.body) {
+        if (pref === undefined) pref = parseBooleanFlag(req.body.useAggregates);
+        delete req.body.useAggregates;
+      }
+      if (pref === undefined && req.headers?.["x-synmetrix-use-aggregates"] !== undefined) {
+        pref = parseBooleanFlag(String(req.headers["x-synmetrix-use-aggregates"]));
+      }
+      if (typeof pref === "boolean") {
+        req.useAggregates = pref;
+      }
+    }
     const writeHead = res.writeHead;
     res.writeHead = function (...args) {
       const revision = req.securityContext?.authorityRevision;
@@ -102,6 +130,13 @@ export default ({ basePath, cubejs }) => {
           "x-synmetrix-aggregate-covered-until",
           new Date(covered).toISOString(),
         );
+      }
+      const decision = isLoad ? req.context?.aggregateDecision : undefined;
+      if (decision && status >= 200 && status < 300) {
+        this.setHeader("x-synmetrix-aggregate-used", decision.aggregate || "none");
+        if (!decision.aggregate && decision.reason) {
+          this.setHeader("x-synmetrix-aggregate-reason", decision.reason);
+        }
       }
       return writeHead.apply(this, args);
     };
