@@ -213,6 +213,18 @@ describe("refreshAggregate", () => {
     assert.doesNotMatch(create, /Replicated/);
   });
 
+  it("ignores 0-row TRUNCATE tombstone parts when checking staging for stray partitions", async () => {
+    const queries = [];
+    const world = database({ source: [SEPTEMBER], recorded: {}, held: [] });
+    await refreshAggregate(async (sql) => {
+      queries.push(sql);
+      return world.queryFn(sql);
+    }, AGGREGATE());
+    const straysSql = queries.find((sql) => sql.includes("AS strays"));
+    assert.ok(straysSql);
+    assert.match(straysSql, /\bAND active AND rows > 0 AND partition_id != 'p09'/);
+  });
+
   it("refuses a partition id or fingerprint that is not plain", async () => {
     const bad = database({ source: [{ ...SEPTEMBER, partition_id: "x' OR '1" }], recorded: {}, held: [] });
     await assert.rejects(refreshAggregate(bad.queryFn, AGGREGATE()));

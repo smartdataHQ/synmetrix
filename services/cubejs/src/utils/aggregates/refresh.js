@@ -192,9 +192,10 @@ export async function refreshAggregate(queryFn, structure, options = {}) {
       await queryFn(`INSERT INTO ${staging} (${fill.columns.map(quote).join(", ")}) ${fill.sql}${insertSettings}`);
       // Every bucket of a source partition must fall into the aggregate partition of the same id.
       // If one does not (a grain or a time zone that does not nest), swapping would lose it.
+      // Ignore 0-row empty tombstone parts left behind by ClickHouse TRUNCATE TABLE on prior iterations.
       const [{ strays }] = await queryFn(
         `SELECT count() AS strays FROM system.parts WHERE database = '${database}' AND table = '${name}__staging' ` +
-          `AND active AND partition_id != '${partition.id}'`,
+          `AND active AND rows > 0 AND partition_id != '${partition.id}'`,
       );
       if (Number(strays) > 0) throw new Error("the aggregate's buckets do not nest inside the source's partitions");
       // One step: a reader sees the partition's old content or its new content.
