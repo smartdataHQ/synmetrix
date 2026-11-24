@@ -23,7 +23,7 @@ import { refreshAll } from "../src/utils/aggregates/refresh.js";
 const READS = /^\s*(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b/i;
 const USAGE = "usage: aggregates.mjs generate|refresh [options]";
 const GENERATE_REQUIRED = ["source", "time-column", "grain", "min-age", "min-window", "max-staleness"];
-const GENERATE_OPTIONAL = ["group-by", "exclude", "cluster"];
+const GENERATE_OPTIONAL = ["group-by", "exclude", "uniq", "cluster"];
 
 /** A connection through the service's own ClickHouse driver. */
 export async function connect(env) {
@@ -93,6 +93,7 @@ export async function main(argv, { env = process.env, connect: open = connect, o
         grain: values.grain,
         ...(values["group-by"] !== undefined ? { groupBy: splitList(values["group-by"]) } : {}),
         ...(values.exclude !== undefined ? { exclude: splitList(values.exclude) } : {}),
+        ...(values.uniq !== undefined ? { uniq: splitList(values.uniq) } : {}),
         minAge: values["min-age"],
         minWindow: values["min-window"],
         maxStaleness: values["max-staleness"],

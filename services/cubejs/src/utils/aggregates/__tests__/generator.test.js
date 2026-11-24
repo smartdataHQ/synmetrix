@@ -169,6 +169,51 @@ describe("generate: a definition that follows the contract", () => {
     assert.match(definition, /`amount` SimpleAggregateFunction\(sum, Decimal\(38, 4\)\)/);
     assert.match(definition, /\nSETTINGS allow_nullable_key = 1\n/); // is_bot is nullable
   });
+
+  it("emits AggregateFunction(uniq, ...) sketch columns for --uniq in both --group-by and --exclude modes", async () => {
+    const queryWithDescribe = async (sql) => {
+      if (sql.startsWith("DESCRIBE (SELECT ") && sql.includes("uniqState(")) {
+        const selectBody = sql.slice("DESCRIBE (SELECT ".length, sql.indexOf(" FROM "));
+        const rows = [];
+        for (const [, expr, name] of selectBody.matchAll(/(?:^|, )(.+?) AS `([^`]+)`(?=, |$)/g)) {
+          if (expr.startsWith("uniqState(")) rows.push({ name, type: "AggregateFunction(uniq, String)" });
+          else if (expr.startsWith("sumMap(")) rows.push({ name, type: "Map(String, Float64)" });
+          else if (expr.startsWith("count(")) rows.push({ name, type: "UInt64" });
+          else rows.push({ name, type: "Float64" });
+        }
+        return rows;
+      }
+      return replay(sql);
+    };
+
+    const grouped = await generate(queryWithDescribe, { ...RETAIL, uniq: ["checkout_id", "customer_id"] });
+    assert.equal(grouped.declined, undefined);
+    const groupedRoles = rolesOf(grouped.definition);
+    assert.equal(groupedRoles.checkout_id__uniq, "uniq");
+    assert.equal(groupedRoles.customer_id__uniq, "uniq");
+    assert.equal(groupedRoles.checkout_id, undefined);
+    assert.match(grouped.definition, /`checkout_id__uniq` AggregateFunction\(uniq, String\)/);
+    assert.match(grouped.definition, /`customer_id__uniq` AggregateFunction\(uniq, String\)/);
+    assert.ok(!grouped.leftOut.some(({ name }) => name === "checkout_id" || name === "customer_id"));
+
+    const optOut = await generate(queryWithDescribe, {
+      source: RETAIL.source,
+      timeColumn: RETAIL.timeColumn,
+      grain: RETAIL.grain,
+      exclude: ["entity_gid", "event_gid", "checkout_id"],
+      uniq: ["checkout_id", "customer_id"],
+      minAge: RETAIL.minAge,
+      minWindow: RETAIL.minWindow,
+      maxStaleness: RETAIL.maxStaleness,
+    });
+    assert.equal(optOut.declined, undefined);
+    const optOutRoles = rolesOf(optOut.definition);
+    assert.equal(optOutRoles.checkout_id__uniq, "uniq");
+    assert.equal(optOutRoles.customer_id__uniq, "uniq");
+    assert.equal(optOutRoles.checkout_id, undefined);
+    assert.equal(optOutRoles.customer_id, undefined);
+    assert.ok(!optOut.leftOut.some(({ name }) => name === "checkout_id" || name === "customer_id"));
+  });
 });
 
 describe("generate: what it prints besides the definition", () => {
@@ -270,5 +315,15 @@ describe("generate: when it declines", () => {
     assert.equal(await declined({ maxStaleness: "0 second" }), "--max-staleness must be greater than zero");
     assert.equal(await declined({ cluster: "main; DROP" }), "--cluster must be a plain name");
     assert.equal(await declined({ groupBy: ["partition", "bad name"] }), "--group-by must be a list of plain column names");
+    assert.equal(await declined({ uniq: ["bad name"] }), "--uniq must be a list of plain column names");
+    assert.equal(await declined({ uniq: ["nowhere"] }), "the source has no column `nowhere`");
+    assert.equal(await declined({ uniq: ["timestamp"] }), "`timestamp` is the time column and cannot also be in --uniq");
+    assert.equal(await declined({ uniq: ["partition"] }), "the source's partition expression reads `partition`, which cannot be in --uniq");
+    assert.equal(await declined({ uniq: ["store"] }), "`store` is already in --group-by and does not need --uniq");
+    assert.equal(await declined({ uniq: ["properties"] }), "`properties` (JSON) cannot be summarised with --uniq");
+    assert.equal(
+      await declined({ uniq: ["is_bulk"] }),
+      "`is_bulk` is declared UInt8 while its expression can be NULL: reading it fails on a row with a missing value",
+    );
   });
 });

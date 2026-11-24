@@ -12,7 +12,7 @@ import { IDENTIFIER, ROWS_COLUMN, SUFFIX, quote } from "./contract.js";
 import { JOINED_KEY_PLACEHOLDER, classify, memberExpression } from "./expressions.js";
 
 /** Bump when the derivation rules change, so variants compiled under old rules are not reused. */
-export const DERIVE_VERSION = 3;
+export const DERIVE_VERSION = 4;
 
 const CUBE_KEYS = ["title", "description", "meta", "public", "shown", "data_source", "sql_alias", "refresh_key"];
 const SAFE_JOIN_RELATIONSHIPS = new Set(["many_to_one", "one_to_one", "belongsTo", "hasOne"]);
@@ -147,6 +147,7 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
 
   const has = (name, role) => structure.columns.get(name)?.role === role;
   const stored = (name) => has(name, "sum") && !targets.has(name); // the column itself, not a rewritten value
+  const storedUniq = (name) => has(`${name}${SUFFIX.uniq}`, "uniq") && !targets.has(name);
   const needs = (at, wanted, options) => {
     const result = judge(at, effective, options);
     if (result.cls === wanted) return null;
@@ -200,7 +201,7 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
     else if (missingJoin(referencedJoins)) leave(member, "column_not_in_aggregate");
     else if (member.type === "number") calculations.push(plan);
     else {
-      const result = deriveMeasure(plan, { judge, needs, firstProblem, effective, has, stored, parsed, grain });
+      const result = deriveMeasure(plan, { judge, needs, firstProblem, effective, has, stored, storedUniq, parsed, grain });
       if (result.detail) leave(member, result.detail);
       else measureDefinitions.set(member.name, result.definition);
     }
@@ -368,12 +369,12 @@ function planMeasure(member, cube, ask, candidateJoinNames) {
   if (member.type === "count") {
     return member.sql === undefined ? { member, filters, filterAt, referencedJoins } : { member, unsupported: true };
   }
-  if (!["sum", "avg", "min", "max", "count_distinct"].includes(member.type)) return { member, unsupported: true };
+  if (!["sum", "avg", "min", "max", "count_distinct", "count_distinct_approx"].includes(member.type)) return { member, unsupported: true };
   for (const name of referencedJoinCubes(member.sql, candidateJoinNames)) referencedJoins.add(name);
   return { member, filters, filterAt, at: ask(memberExpression(member.sql, cube, new Set(), candidateJoinNames)), referencedJoins };
 }
 
-function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstProblem, effective, has, stored, parsed, grain }) {
+function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstProblem, effective, has, stored, storedUniq, parsed, grain }) {
   const filterProblem = firstProblem(filterAt, "K", { grain });
   if (filterProblem) return { detail: filterProblem };
   const condition = filters.map((filter) => `(${String(filter.sql).trim()})`).join(" AND ");
@@ -400,6 +401,16 @@ function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstP
     case "count_distinct": {
       const problem = needs(at, "K");
       return problem ? { detail: problem } : { definition: member };
+    }
+    case "count_distinct_approx": {
+      if (result.cls === "K") return { definition: member };
+      if (node?.type === "Identifier" && storedUniq(node.name)) {
+        const sketch = `{CUBE}.${node.name}${SUFFIX.uniq}`;
+        const sql = condition ? `uniqMergeIf(${sketch}, ${condition})` : `uniqMerge(${sketch})`;
+        return { definition: { ...unfiltered, sql, type: "number" } };
+      }
+      if (missing) return { detail: missing };
+      return { detail: "not_grouping_column" };
     }
     case "avg": {
       if (missing) return { detail: missing };

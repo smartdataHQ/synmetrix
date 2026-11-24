@@ -143,6 +143,12 @@ describe("aggregates.mjs generate", () => {
     assert.ok(out.trimEnd().endsWith("--   ALTER TABLE gen_test.retail_lines ON CLUSTER main MODIFY SETTING min_age_to_force_merge_seconds = 604800, min_age_to_force_merge_on_partition_only = 1;"));
   });
 
+  it("forwards --uniq to the generator", async () => {
+    const { queryFn } = recorded();
+    const { code, out, err } = await cli(["generate", ...OPTIONS, "--uniq", "store"], { queryFn });
+    assert.deepEqual([code, out, err], [2, "", "declined: `store` is already in --group-by and does not need --uniq"]);
+  });
+
   it("exits 2 with the reason on standard error when it declines", async () => {
     const { queryFn } = recorded();
     const args = OPTIONS.map((value) => (value === "1 day" ? "7 hour" : value));

@@ -98,6 +98,7 @@ describe("classifyColumns", () => {
         col("units__min", saf("min", "Float32")),
         col("units__max", saf("max", "Float32")),
         col("metrics", saf("sumMap", "Map(String, Float64)")),
+        col("checkout_id__uniq", "AggregateFunction(uniq, String)"),
         col("_rows", saf("sum", "UInt64")),
       ]),
       {
@@ -109,17 +110,28 @@ describe("classifyColumns", () => {
         units__min: "min",
         units__max: "max",
         metrics: "sumMap",
+        checkout_id__uniq: "uniq",
         _rows: "rows",
       },
     );
   });
 
-  it("links a suffixed column to its sum column", () => {
+  it("links a suffixed column to its sum or source column", () => {
     const columns = classifyColumns(
-      [col("units", saf("sum", "Float64")), col("units__count", saf("sum", "UInt64"))],
+      [
+        col("units", saf("sum", "Float64")),
+        col("units__count", saf("sum", "UInt64")),
+        col("checkout_id__uniq", "AggregateFunction(uniq, String)"),
+        col("external_order_id__uniq", "AggregateFunction(1, uniq, String)"),
+        col("customer_id__uniq", "AggregateFunction(uniq, Nullable(String))"),
+      ],
       binding,
     );
     assert.equal(columns.get("units__count").of, "units");
+    assert.equal(columns.get("checkout_id__uniq").of, "checkout_id");
+    assert.equal(columns.get("external_order_id__uniq").role, "uniq");
+    assert.equal(columns.get("external_order_id__uniq").of, "external_order_id");
+    assert.equal(columns.get("customer_id__uniq").of, "customer_id");
   });
 
   it("marks what fits no role as unusable, without rejecting anything", () => {
@@ -130,7 +142,9 @@ describe("classifyColumns", () => {
         col("price__count", saf("sum", "UInt64")), // no sum column `price`
         col("price__min", saf("min", "Float64")),
         col("latest", saf("max", "Float64")), // not a sum under a bare name
-        col("buyers", "AggregateFunction(uniq, String)"),
+        col("buyers", "AggregateFunction(uniq, String)"), // no __uniq suffix
+        col("__uniq", "AggregateFunction(uniq, String)"), // empty source column name
+        col("buyers__uniq", "AggregateFunction(uniqExact, String)"), // wrong aggregate function
         col("units", saf("sum", "Float64")),
         col("units__count", saf("sum", "UInt32")), // count must be UInt64
         col("units__min", saf("max", "Float64")), // wrong function for the suffix
@@ -146,6 +160,8 @@ describe("classifyColumns", () => {
         price__min: "unusable",
         latest: "unusable",
         buyers: "unusable",
+        __uniq: "unusable",
+        buyers__uniq: "unusable",
         units: "sum",
         units__count: "unusable",
         units__min: "unusable",
@@ -228,6 +244,31 @@ describe("fillSelect", () => {
 
   it("never removes duplicates while reading", () => {
     assert.doesNotMatch(sql, /\bFINAL\b/i);
+  });
+
+  it("fills uniq sketch columns with uniqState", () => {
+    const withUniq = {
+      ...binding,
+      columns: classifyColumns(
+        [
+          col("partition", "LowCardinality(String)", 1),
+          col("timestamp", "DateTime64(3)", 1),
+          col("external_order_id__uniq", "AggregateFunction(uniq, String)"),
+          col("_rows", saf("sum", "UInt64")),
+        ],
+        binding,
+      ),
+    };
+    const out = fillSelect(withUniq, "a1b2c3");
+    assert.deepEqual(out.columns, ["partition", "timestamp", "external_order_id__uniq", "_rows"]);
+    assert.equal(
+      out.sql,
+      "SELECT src.`partition` AS `partition`, " +
+        `${bucket} AS \`timestamp\`, ` +
+        "uniqState(src.`external_order_id`) AS `external_order_id__uniq`, count() AS `_rows` " +
+        "FROM `cst`.`sales_lines` AS src WHERE src._partition_id = 'a1b2c3' " +
+        `GROUP BY src.\`partition\`, ${bucket}`,
+    );
   });
 
   it("refuses a partition id that is not a plain identifier", () => {
