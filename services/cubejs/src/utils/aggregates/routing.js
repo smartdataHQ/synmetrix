@@ -179,6 +179,25 @@ export function installAggregateRouting(cubejs, deps = {}) {
       let driver;
       const classify = async (expressions, columns) => {
         driver ??= await driverFor(securityContext);
+        if (typeof driver?.client?.exec === "function") {
+          return classifyBatch(
+            async (sql) => {
+              const { stream } = await driver.client.exec({
+                query: sql,
+                http_headers: { "X-ClickHouse-Format": "JSON" },
+              });
+              const chunks = [];
+              for await (const chunk of stream) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+              }
+              const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              return parsed.data || [];
+            },
+            expressions,
+            columns,
+            { directExplain: true },
+          );
+        }
         return classifyBatch((sql) => driver.query(sql), expressions, columns);
       };
       try {
