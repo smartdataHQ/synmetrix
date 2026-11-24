@@ -155,8 +155,11 @@ describe("aggregates.mjs generate", () => {
       const at = OPTIONS.indexOf(option);
       const args = [...OPTIONS.slice(0, at), ...OPTIONS.slice(at + 2)];
       const { code, err, out } = await cli(["generate", ...args], { queryFn: async () => [] });
-      assert.deepEqual([code, out, err], [1, "", `error: missing option ${option}`], option);
+      const expected = option === "--group-by" ? "error: missing option --group-by or --exclude" : `error: missing option ${option}`;
+      assert.deepEqual([code, out, err], [1, "", expected], option);
     }
+    const both = await cli(["generate", ...OPTIONS, "--exclude", "checkout_id"], { queryFn: async () => [] });
+    assert.deepEqual([both.code, both.out, both.err], [1, "", "error: use either --group-by or --exclude, not both"]);
   });
 
   it("exits 1 on a connection error, an unknown option or an unknown command", async () => {

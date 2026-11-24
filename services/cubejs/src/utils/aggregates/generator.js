@@ -35,26 +35,30 @@ const withoutLowCardinality = (type) => type.replace(/^LowCardinality\((.*)\)$/s
 
 /**
  * @param {(sql: string) => Promise<object[]>} queryFn reads only
- * @param {{source: string, timeColumn: string, grain: string, groupBy: string[], minAge: string,
- *   minWindow: string, maxStaleness: string, cluster?: string}} options
+ * @param {{source: string, timeColumn: string, grain: string, groupBy?: string[], exclude?: string[],
+ *   minAge: string, minWindow: string, maxStaleness: string, cluster?: string}} options
  * @returns {Promise<{table: string, definition: string, leftOut: Array<{name: string, reason: string}>,
  *   forcedMerge: string|null} | {declined: string}>}
  */
 export async function generate(queryFn, options) {
   const decline = (reason) => ({ declined: reason });
-  const { source, timeColumn, groupBy, cluster, name: customName } = options;
+  const { source, timeColumn, groupBy, exclude, cluster } = options;
 
   const sourceName = typeof source === "string" && /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source);
   if (!sourceName) return decline("--source must be <database>.<table>");
   const [, database, table] = sourceName;
   if (typeof timeColumn !== "string" || !IDENTIFIER.test(timeColumn)) return decline("--time-column must be a plain column name");
-  if (!Array.isArray(groupBy) || groupBy.some((name) => typeof name !== "string" || !IDENTIFIER.test(name))) {
+  const hasGroupBy = groupBy !== undefined;
+  const hasExclude = exclude !== undefined;
+  if (hasGroupBy && hasExclude) return decline("use either --group-by or --exclude, not both");
+  if (!hasGroupBy && !hasExclude) return decline("--group-by or --exclude is required");
+  if (hasGroupBy && (!Array.isArray(groupBy) || groupBy.some((name) => typeof name !== "string" || !IDENTIFIER.test(name)))) {
     return decline("--group-by must be a list of plain column names");
   }
-  if (cluster !== undefined && !(typeof cluster === "string" && IDENTIFIER.test(cluster))) return decline("--cluster must be a plain name");
-  if (customName !== undefined && !(typeof customName === "string" && IDENTIFIER.test(customName))) {
-    return decline("--name must be a plain table name");
+  if (hasExclude && (!Array.isArray(exclude) || exclude.some((name) => typeof name !== "string" || !IDENTIFIER.test(name)))) {
+    return decline("--exclude must be a list of plain column names");
   }
+  if (cluster !== undefined && !(typeof cluster === "string" && IDENTIFIER.test(cluster))) return decline("--cluster must be a plain name");
   const grain = parseGrain(options.grain);
   if (!grain) {
     const rawGrain = parseInterval(options.grain);
@@ -77,7 +81,7 @@ export async function generate(queryFn, options) {
       `WHERE database = '${database}' AND table = '${table}' ORDER BY position`,
   );
   const byName = new Map(columns.map((column) => [column.name, column]));
-  for (const name of [timeColumn, ...groupBy]) {
+  for (const name of [timeColumn, ...(groupBy || []), ...(exclude || [])]) {
     if (!byName.has(name)) return decline(`the source has no column ${quote(name)}`);
   }
 
@@ -103,11 +107,24 @@ export async function generate(queryFn, options) {
     return decline(`a grain of ${grain.text} does not nest inside the source's partition expression`);
   }
 
+  const excludeSet = new Set(exclude || []);
+  if (hasExclude) {
+    if (excludeSet.has(timeColumn)) return decline(`${quote(timeColumn)} is the time column and cannot be excluded`);
+    for (const column of columns) {
+      if (Number(column.is_in_partition_key) === 1 && column.name !== timeColumn && excludeSet.has(column.name)) {
+        return decline(`the source's partition expression reads ${quote(column.name)}, which cannot be excluded`);
+      }
+    }
+  }
+
   // A derived (ALIAS) column declared non-nullable over an expression that can be NULL fails
   // when it is read on a row with a missing value. One such row would stop every build.
   const derived = columns.filter(
     ({ name, type, default_kind: kind }) =>
-      kind === "ALIAS" && name !== timeColumn && !/Nullable\(/.test(type) && (groupBy.includes(name) || NUMERIC.test(unwrapped(type))),
+      kind === "ALIAS" &&
+      name !== timeColumn &&
+      !/Nullable\(/.test(type) &&
+      (hasExclude ? !excludeSet.has(name) : groupBy.includes(name) || NUMERIC.test(unwrapped(type))),
   );
   const canFail = new Map();
   if (derived.length) {
@@ -122,41 +139,63 @@ export async function generate(queryFn, options) {
     });
   }
 
-  // Grouping columns: what the partition expression reads, plus the requested ones.
-  for (const column of columns) {
-    if (Number(column.is_in_partition_key) === 1 && column.name !== timeColumn && !groupBy.includes(column.name)) {
-      return decline(`the source's partition expression reads ${quote(column.name)}, which must be listed in --group-by`);
-    }
-  }
-  for (const name of groupBy) {
-    if (name === timeColumn) return decline(`${quote(name)} is the time column and cannot also be a grouping column`);
-    const { type } = byName.get(name);
-    if (NOT_A_KEY.test(unwrapped(type))) return decline(`${quote(name)} (${type}) cannot be a grouping column`);
-    if (canFail.has(name)) return decline(`${quote(name)} is ${canFail.get(name)}`);
-  }
-
-  // Every other column: a metric, a summed map, or left out with a reason.
+  // Classify every column: either explicit --group-by (opt-in) or --exclude (opt-out: keep all
+  // non-numeric groupable dimensions except those explicitly excluded).
+  const effectiveGroupBy = [];
   const metrics = [];
   const maps = [];
   const leftOut = [];
-  for (const { name, type, default_kind: kind, is_in_sorting_key: inKey } of columns) {
-    if (name === timeColumn || groupBy.includes(name)) continue;
-    const inner = unwrapped(type);
-    const mapValue = NUMERIC_MAP.exec(type);
-    const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
-    if (reserved) leftOut.push({ name, reason: "its name is reserved by the aggregate contract" });
-    else if (canFail.has(name)) leftOut.push({ name, reason: canFail.get(name) });
-    else if (NUMERIC.test(inner) && kind !== "ALIAS" && Number(inKey) === 1) {
-      leftOut.push({ name, reason: "numeric column in the source's sorting key: an identifier, not a metric" });
-    } else if (NUMERIC.test(inner)) metrics.push(name);
-    else if (mapValue && NUMERIC.test(mapValue[1])) maps.push(name);
-    else if (NOT_A_KEY.test(inner)) leftOut.push({ name, reason: `type cannot be summarised (${type})` });
-    else leftOut.push({ name, reason: "not numeric and not in --group-by" });
+
+  if (hasGroupBy) {
+    for (const column of columns) {
+      if (Number(column.is_in_partition_key) === 1 && column.name !== timeColumn && !groupBy.includes(column.name)) {
+        return decline(`the source's partition expression reads ${quote(column.name)}, which must be listed in --group-by`);
+      }
+    }
+    for (const name of groupBy) {
+      if (name === timeColumn) return decline(`${quote(name)} is the time column and cannot also be a grouping column`);
+      const { type } = byName.get(name);
+      if (NOT_A_KEY.test(unwrapped(type))) return decline(`${quote(name)} (${type}) cannot be a grouping column`);
+      if (canFail.has(name)) return decline(`${quote(name)} is ${canFail.get(name)}`);
+    }
+    effectiveGroupBy.push(...groupBy);
+
+    for (const { name, type, default_kind: kind, is_in_sorting_key: inKey } of columns) {
+      if (name === timeColumn || groupBy.includes(name)) continue;
+      const inner = unwrapped(type);
+      const mapValue = NUMERIC_MAP.exec(type);
+      const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
+      if (reserved) leftOut.push({ name, reason: "its name is reserved by the aggregate contract" });
+      else if (canFail.has(name)) leftOut.push({ name, reason: canFail.get(name) });
+      else if (NUMERIC.test(inner) && kind !== "ALIAS" && Number(inKey) === 1) {
+        leftOut.push({ name, reason: "numeric column in the source's sorting key: an identifier, not a metric" });
+      } else if (NUMERIC.test(inner)) metrics.push(name);
+      else if (mapValue && NUMERIC.test(mapValue[1])) maps.push(name);
+      else if (NOT_A_KEY.test(inner)) leftOut.push({ name, reason: `type cannot be summarised (${type})` });
+      else leftOut.push({ name, reason: "not numeric and not in --group-by" });
+    }
+  } else {
+    // Opt-out mode: keep every non-numeric groupable column unless listed in --exclude.
+    for (const { name, type, default_kind: kind, is_in_sorting_key: inKey } of columns) {
+      if (name === timeColumn) continue;
+      const inner = unwrapped(type);
+      const mapValue = NUMERIC_MAP.exec(type);
+      const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
+      if (excludeSet.has(name)) leftOut.push({ name, reason: "excluded by --exclude" });
+      else if (reserved) leftOut.push({ name, reason: "its name is reserved by the aggregate contract" });
+      else if (canFail.has(name)) leftOut.push({ name, reason: canFail.get(name) });
+      else if (NUMERIC.test(inner) && kind !== "ALIAS" && Number(inKey) === 1) {
+        leftOut.push({ name, reason: "numeric column in the source's sorting key: an identifier, not a metric" });
+      } else if (NUMERIC.test(inner)) metrics.push(name);
+      else if (mapValue && NUMERIC.test(mapValue[1])) maps.push(name);
+      else if (NOT_A_KEY.test(inner)) leftOut.push({ name, reason: `type cannot be summarised (${type})` });
+      else effectiveGroupBy.push(name);
+    }
   }
 
-  // The partition expression's own columns first, then the time bucket, then the rest as requested.
+  // The partition expression's own columns first, then the time bucket, then the rest.
   const partitionColumns = columns.filter((column) => Number(column.is_in_partition_key) === 1 && column.name !== timeColumn).map((column) => column.name);
-  const sortingKey = [...partitionColumns, timeColumn, ...groupBy.filter((name) => !partitionColumns.includes(name))];
+  const sortingKey = [...partitionColumns, timeColumn, ...effectiveGroupBy.filter((name) => !partitionColumns.includes(name))];
 
   const roles = new Map();
   for (const name of sortingKey) roles.set(name, { role: name === timeColumn ? "time" : "group" });
@@ -187,8 +226,11 @@ export async function generate(queryFn, options) {
   const binding =
     `{"aggregate_of": "${source}", "time_column": "${timeColumn}", "grain": "${grain.text}", ` +
     `"min_age": "${intervals.minAge.text}", "min_window": "${intervals.minWindow.text}", "max_staleness": "${intervals.maxStaleness.text}"}`;
-  const name = customName || `${table}__agg_${grain.text.replace(" ", "")}`;
+  const name = `${table}__agg_${grain.text.replace(" ", "")}`;
   const onCluster = cluster ? ` ON CLUSTER ${cluster}` : "";
+  // For wide opt-out tables (>16 grouping keys), keep the in-memory primary index
+  // compact (partition + time bucket) while every grouping column remains in ORDER BY.
+  const primaryKeyCols = sortingKey.length > 16 ? [...partitionColumns, timeColumn] : null;
   const definition = [
     `CREATE TABLE IF NOT EXISTS ${database}.${name}${onCluster}`,
     "(",
@@ -196,6 +238,7 @@ export async function generate(queryFn, options) {
     ")",
     `ENGINE = ${cluster ? "Replicated" : ""}AggregatingMergeTree`,
     `PARTITION BY ${partitionKey}`,
+    ...(primaryKeyCols ? [`PRIMARY KEY (${primaryKeyCols.map(quote).join(", ")})`] : []),
     `ORDER BY (${sortingKey.map(quote).join(", ")})`,
     ...(settings.length ? [`SETTINGS ${settings.join(", ")}`] : []),
     `COMMENT '${binding}';`,
