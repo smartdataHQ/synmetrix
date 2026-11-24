@@ -152,7 +152,7 @@ export function memberExpression(sql, cube, seen = new Set(), joinedCubes = null
  * @param {(sql: string) => Promise<Array<{explain: string}>>} queryFn
  * @returns {Promise<Array<{cls: string, detail?: string, node?: object}>>} aligned with `expressions`
  */
-export async function classifyBatch(queryFn, expressions, columns) {
+export async function classifyBatch(queryFn, expressions, columns, { directExplain = false } = {}) {
   const results = expressions.map(() => UNSUPPORTED);
   const sent = [];
   expressions.forEach((expression, index) => {
@@ -161,9 +161,12 @@ export async function classifyBatch(queryFn, expressions, columns) {
   if (sent.length === 0) return results;
 
   // Each expression on its own lines, so a trailing line comment cannot swallow the next one.
-  // EXPLAIN is read through a SELECT: a driver that appends an output format to the
-  // statement would otherwise have it apply to the explained query, not to the answer.
-  const sql = `SELECT explain FROM (EXPLAIN AST SELECT ${sent.map((index) => `tuple(\n${expressions[index]}\n)`).join(", ")})`;
+  // When the caller runs `client.exec()` with `X-ClickHouse-Format: JSON` (`directExplain: true`),
+  // ClickHouse executes `EXPLAIN AST` directly without needing `CREATE TEMPORARY TABLE` (required
+  // by ClickHouse 26.10 for `FROM (EXPLAIN ...)`). Otherwise wrap in a SELECT so drivers that
+  // append `FORMAT JSON` to the SQL string apply it to the EXPLAIN answer rather than the inner query.
+  const explain = `EXPLAIN AST SELECT ${sent.map((index) => `tuple(\n${expressions[index]}\n)`).join(", ")}`;
+  const sql = directExplain ? explain : `SELECT explain FROM (${explain})`;
   const rows = await queryFn(sql);
   const roots = expressionRoots(parseAst(rows.map((row) => row.explain).join("\n")), sent.length);
   sent.forEach((index, position) => {

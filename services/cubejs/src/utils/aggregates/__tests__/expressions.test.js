@@ -175,6 +175,30 @@ describe("classify", () => {
       cls: "X", detail: "column_not_in_aggregate",
     });
   });
+
+  it("emits bare EXPLAIN AST when directExplain is true (avoids ClickHouse 26.10 CREATE TEMPORARY TABLE)", async () => {
+    const statements = [];
+    const results = await classifyBatch(
+      async (sql) => {
+        statements.push(sql);
+        return [
+          "SelectWithUnionQuery (children 1)",
+          " ExpressionList (children 1)",
+          "  SelectQuery (children 1)",
+          "   ExpressionList (children 1)",
+          "    Function tuple (children 1)",
+          "     ExpressionList (children 1)",
+          "      Identifier units",
+        ].map((explain) => ({ explain }));
+      },
+      ["units"],
+      COLUMNS,
+      { directExplain: true },
+    );
+    assert.equal(statements.length, 1);
+    assert.match(statements[0], /^EXPLAIN AST SELECT tuple\(\nunits\n\)$/);
+    assert.equal(results[0].cls, "S");
+  });
 });
 
 describe("memberExpression", () => {
