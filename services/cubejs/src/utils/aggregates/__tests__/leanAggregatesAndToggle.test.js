@@ -108,11 +108,43 @@ describe("1-month grain contract & suitability", () => {
       minWindow: "90 day",
       maxStaleness: "1 day",
       cluster: "fraios",
-      name: "sales_lines__agg_1month",
     });
     assert.equal(gen.declined, undefined);
     assert.equal(gen.table, "cst.sales_lines__agg_1month");
     assert.match(gen.definition, /"grain": "1 month"/);
+
+    // Opt-out --exclude mode keeps all non-numeric groupable columns except those excluded
+    const optOutQueryFn = async (sql) => {
+      if (/FROM system\.columns/.test(sql)) {
+        return [
+          { name: "partition", type: "LowCardinality(String)", default_kind: "", default_expression: "", is_in_sorting_key: 1, is_in_partition_key: 1 },
+          { name: "timestamp", type: "DateTime64(3, 'UTC')", default_kind: "", default_expression: "", is_in_sorting_key: 1, is_in_partition_key: 1 },
+          { name: "checkout_id", type: "String", default_kind: "", default_expression: "", is_in_sorting_key: 1, is_in_partition_key: 0 },
+          { name: "sold_location", type: "LowCardinality(String)", default_kind: "", default_expression: "", is_in_sorting_key: 0, is_in_partition_key: 0 },
+          { name: "product_id", type: "LowCardinality(String)", default_kind: "", default_expression: "", is_in_sorting_key: 1, is_in_partition_key: 0 },
+          { name: "units", type: "Float64", default_kind: "", default_expression: "", is_in_sorting_key: 0, is_in_partition_key: 0 },
+        ];
+      }
+      return queryFn(sql);
+    };
+    const genOptOut = await generate(optOutQueryFn, {
+      source: "cst.sales_lines",
+      timeColumn: "timestamp",
+      grain: "1 day",
+      exclude: ["checkout_id"],
+      minAge: "1 day",
+      minWindow: "60 day",
+      maxStaleness: "1 day",
+      cluster: "fraios",
+    });
+    assert.equal(genOptOut.declined, undefined);
+    assert.equal(genOptOut.table, "cst.sales_lines__agg_1day");
+    assert.match(genOptOut.definition, /ORDER BY \(`partition`, `timestamp`, `sold_location`, `product_id`\)/);
+    assert.ok(genOptOut.leftOut.some((c) => c.name === "checkout_id" && c.reason === "excluded by --exclude"));
+
+    // Declines excluding partition or time column, or passing both --group-by and --exclude
+    assert.match((await generate(optOutQueryFn, { source: "cst.sales_lines", timeColumn: "timestamp", grain: "1 day", exclude: ["partition"], minAge: "1 day", minWindow: "60 day", maxStaleness: "1 day" })).declined, /cannot be excluded/);
+    assert.match((await generate(optOutQueryFn, { source: "cst.sales_lines", timeColumn: "timestamp", grain: "1 day", groupBy: ["partition"], exclude: ["checkout_id"], minAge: "1 day", minWindow: "60 day", maxStaleness: "1 day" })).declined, /not both/);
   });
 
   it("routes whole-month queries to 1-month aggregate and falls back to 1-day for partial-month or daily/weekly queries", () => {

@@ -3,7 +3,7 @@
  * Aggregate tables for query routing (015):
  *
  *   node scripts/aggregates.mjs generate --source db.table --time-column col --grain "1 day" \
- *        --group-by a,b --min-age "7 day" --min-window "60 day" --max-staleness "1 day" [--cluster name]
+ *        (--group-by a,b | --exclude x,y) --min-age "7 day" --min-window "60 day" --max-staleness "1 day" [--cluster name]
  *   node scripts/aggregates.mjs refresh [--only db.aggregate]
  *
  * `generate` prints a definition and executes nothing that changes data.
@@ -22,7 +22,8 @@ import { refreshAll } from "../src/utils/aggregates/refresh.js";
 
 const READS = /^\s*(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b/i;
 const USAGE = "usage: aggregates.mjs generate|refresh [options]";
-const GENERATE_OPTIONS = ["source", "time-column", "grain", "group-by", "min-age", "min-window", "max-staleness"];
+const GENERATE_REQUIRED = ["source", "time-column", "grain", "min-age", "min-window", "max-staleness"];
+const GENERATE_OPTIONAL = ["group-by", "exclude", "cluster"];
 
 /** A connection through the service's own ClickHouse driver. */
 export async function connect(env) {
@@ -57,7 +58,7 @@ export async function main(argv, { env = process.env, connect: open = connect, o
       args: rest,
       options:
         command === "generate"
-          ? Object.fromEntries([...GENERATE_OPTIONS, "cluster", "name"].map((name) => [name, { type: "string" }]))
+          ? Object.fromEntries([...GENERATE_REQUIRED, ...GENERATE_OPTIONAL].map((name) => [name, { type: "string" }]))
           : {
               only: { type: "string" },
               "max-partitions": { type: "string" },
@@ -72,22 +73,29 @@ export async function main(argv, { env = process.env, connect: open = connect, o
             },
     });
     if (command === "generate") {
-      const missing = GENERATE_OPTIONS.find((name) => values[name] === undefined);
+      const missing = GENERATE_REQUIRED.find((name) => values[name] === undefined);
       if (missing) throw new Error(`missing option --${missing}`);
+      if (values["group-by"] === undefined && values.exclude === undefined) {
+        throw new Error("missing option --group-by or --exclude");
+      }
+      if (values["group-by"] !== undefined && values.exclude !== undefined) {
+        throw new Error("use either --group-by or --exclude, not both");
+      }
     }
 
     connection = await open(env);
     if (command === "generate") {
+      const splitList = (raw) => raw.split(",").map((name) => name.trim()).filter(Boolean);
       const result = await generate(connection.queryFn, {
         source: values.source,
         timeColumn: values["time-column"],
         grain: values.grain,
-        groupBy: values["group-by"].split(",").map((name) => name.trim()).filter(Boolean),
+        ...(values["group-by"] !== undefined ? { groupBy: splitList(values["group-by"]) } : {}),
+        ...(values.exclude !== undefined ? { exclude: splitList(values.exclude) } : {}),
         minAge: values["min-age"],
         minWindow: values["min-window"],
         maxStaleness: values["max-staleness"],
         cluster: values.cluster,
-        name: values.name,
       });
       if (result.declined) {
         err(`declined: ${result.declined}`);
