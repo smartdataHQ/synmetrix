@@ -284,6 +284,30 @@ describe("decide: the best available aggregate", () => {
     const decision = decideWith([over("day", "2026-01-01", "2026-01-31")], [halfHour(), aggregate({ verifiedAt: null, coveredUntil: null })]);
     assert.equal(routed(decision), "30minute");
   });
+
+  it("accepts aligned afterOrOnDate time filters meeting min_window and rejects unaligned or short ones", () => {
+    const month = aggregate({ table: "cst.sales_lines__agg_1month", grainKind: "month", grainSeconds: 2592000, totalRows: 50 });
+    const after = (values) => query({ filters: [{ member: m("timestamp"), operator: "afterOrOnDate", values }] });
+
+    // 2-year window starting mid-month: routes to 1day (not 1month because 24th != 1st of month)
+    assert.equal(routed(decideWith([after(["2024-11-24"])], [month, aggregate()])), "1day");
+    assert.equal(routed(decideWith([after(["2024-11-24T00:00:00.000"])], [month, aggregate()])), "1day");
+    assert.equal(routed(decideWith([after(["2024-11-24T00:00:00.000Z"])], [month, aggregate()])), "1day");
+    assert.equal(routed(decideWith([after(["2024-11-24 00:00:00"])], [month, aggregate()])), "1day");
+    // 1st-of-month start ≥ min_window: routes to coarser 1month aggregate
+    assert.equal(routed(decideWith([after(["2025-01-01"])], [month, aggregate()])), "1month");
+    // Unaligned timestamp -> range_not_aligned
+    assert.equal(routed(decideWith([after(["2024-11-24T06:00:00.000"])], [aggregate()])), "range_not_aligned");
+    // Recent start (< 60 day min_window relative to NOW=2026-11-20T12:00Z) -> window_too_short
+    assert.equal(routed(decideWith([after(["2026-10-15"])], [aggregate()])), "window_too_short");
+    // Inside OR or malformed values -> time_filter
+    assert.equal(
+      routed(decideWith([query({ filters: [{ or: [{ member: m("timestamp"), operator: "afterOrOnDate", values: ["2024-11-24"] }, { member: m("sold_location"), operator: "set" }] }] })], [aggregate()])),
+      "time_filter",
+    );
+    assert.equal(routed(decideWith([after(["2024-11-24", "2025-11-24"])], [aggregate()])), "time_filter");
+    assert.equal(routed(decideWith([after(["last 2 years"])], [aggregate()])), "time_filter");
+  });
 });
 
 describe("cubeOfRequest", () => {

@@ -199,6 +199,117 @@ describe("classify", () => {
     assert.match(statements[0], /^EXPLAIN AST SELECT tuple\(\nunits\n\)$/);
     assert.equal(results[0].cls, "S");
   });
+
+  const lit = (name) => ({ type: "Literal", name, children: [] });
+  const DAY_GRAIN = { grainKind: "day", grainSeconds: 86400 };
+  const MONTH_GRAIN = { grainKind: "month", grainSeconds: 2592000 };
+
+  it("classifies linear conditional sums (if / multiIf) over K predicates and S or 0/NULL branches as S", () => {
+    assert.equal(classify(fn("if", identifier("is_volume_pack"), identifier("units"), lit("UInt64_0")), COLUMNS).cls, "S");
+    assert.equal(classify(fn("multiIf", fn("equals", identifier("uom"), lit("'kg'")), identifier("units"), lit("NULL")), COLUMNS).cls, "S");
+    assert.equal(
+      classify(
+        fn("multiIf", fn("equals", identifier("uom"), lit("'kg'")), identifier("units"), fn("equals", identifier("uom"), lit("'l'")), identifier("net"), lit("Float64_0")),
+        COLUMNS,
+      ).cls,
+      "S",
+    );
+    // A non-zero constant branch would sum once per aggregate row instead of per raw row.
+    assert.deepEqual(
+      classify(fn("if", identifier("is_volume_pack"), identifier("units"), lit("UInt64_1")), COLUMNS),
+      { cls: "X", detail: "not_exact_when_summed" },
+    );
+    // A condition reading a summed column is not constant per bucket.
+    assert.deepEqual(
+      classify(fn("if", fn("greater", identifier("units"), lit("UInt64_0")), identifier("net"), lit("UInt64_0")), COLUMNS),
+      { cls: "X", detail: "not_exact_when_summed" },
+    );
+  });
+
+  it("classifies half-open grain-aligned time predicates in conditional sums as S only on compatible grains", () => {
+    // CASE WHEN timestamp >= toStartOfYear(yesterday()) AND timestamp < toStartOfDay(now()) THEN units END
+    const ytdDay = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("greaterOrEquals", identifier("timestamp"), fn("toStartOfYear", fn("yesterday"))),
+        fn("less", identifier("timestamp"), fn("toStartOfDay", fn("now"))),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+    // CASE WHEN timestamp >= subtractYears(toStartOfYear(yesterday()), 1) AND timestamp < subtractYears(toStartOfDay(now()), 1) THEN units END
+    const priorYtdDay = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("greaterOrEquals", identifier("timestamp"), fn("subtractYears", fn("toStartOfYear", fn("yesterday")), lit("UInt64_1"))),
+        fn("less", identifier("timestamp"), fn("subtractYears", fn("toStartOfDay", fn("now")), lit("UInt64_1"))),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+    // Month-aligned: timestamp >= toStartOfYear(now()) AND timestamp < toStartOfMonth(now())
+    const ytdMonth = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("greaterOrEquals", identifier("timestamp"), fn("toStartOfYear", fn("now"))),
+        fn("less", identifier("timestamp"), fn("toStartOfMonth", fn("now"))),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+
+    assert.equal(classify(ytdDay, COLUMNS, DAY_GRAIN).cls, "S");
+    assert.equal(classify(priorYtdDay, COLUMNS, DAY_GRAIN).cls, "S");
+    assert.deepEqual(classify(ytdDay, COLUMNS, MONTH_GRAIN), { cls: "X", detail: "reads_time_column" });
+    assert.deepEqual(classify(priorYtdDay, COLUMNS, MONTH_GRAIN), { cls: "X", detail: "reads_time_column" });
+    assert.equal(classify(ytdMonth, COLUMNS, DAY_GRAIN).cls, "S");
+    assert.equal(classify(ytdMonth, COLUMNS, MONTH_GRAIN).cls, "S");
+    // Without grain context, time reads remain rejected.
+    assert.deepEqual(classify(ytdDay, COLUMNS), { cls: "X", detail: "reads_time_column" });
+
+    // Symmetric forms: bound <= timestamp AND bound > timestamp
+    const symmetric = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("lessOrEquals", lit("'2026-01-01'"), identifier("timestamp")),
+        fn("greater", lit("'2026-02-01'"), identifier("timestamp")),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+    assert.equal(classify(symmetric, COLUMNS, DAY_GRAIN).cls, "S");
+    assert.equal(classify(symmetric, COLUMNS, MONTH_GRAIN).cls, "S");
+  });
+
+  it("rejects intra-day, non-UTC, and boundary-splitting time predicates", () => {
+    // Intra-day <= now()
+    const intraday = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("greaterOrEquals", identifier("timestamp"), fn("toStartOfYear", fn("now"))),
+        fn("lessOrEquals", identifier("timestamp"), fn("now")),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+    // T <= midnight splits bucket at 00:00:00.000
+    const inclusiveEnd = fn("multiIf", fn("lessOrEquals", identifier("timestamp"), fn("toStartOfDay", fn("now"))), identifier("units"), lit("NULL"));
+    // T > midnight splits bucket at 00:00:00.000
+    const strictStart = fn("multiIf", fn("greater", identifier("timestamp"), fn("toStartOfDay", fn("now"))), identifier("units"), lit("NULL"));
+    // Non-UTC timezone truncation
+    const nonUtc = fn("multiIf", fn("less", identifier("timestamp"), fn("toStartOfDay", fn("now"), lit("'America/New_York'"))), identifier("units"), lit("NULL"));
+    // Mid-day literal
+    const midDayLit = fn("multiIf", fn("greaterOrEquals", identifier("timestamp"), lit("'2026-01-01 12:00:00'")), identifier("units"), lit("NULL"));
+
+    for (const expr of [intraday, inclusiveEnd, strictStart, nonUtc, midDayLit]) {
+      assert.deepEqual(classify(expr, COLUMNS, DAY_GRAIN), { cls: "X", detail: "reads_time_column" });
+    }
+  });
 });
 
 describe("memberExpression", () => {

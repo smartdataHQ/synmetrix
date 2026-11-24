@@ -7,6 +7,7 @@ const SUB_DAY_SECONDS = { second: 1, minute: 60, hour: 3600 };
 const WHOLE_DAYS = new Set(["day", "week", "month", "quarter", "year"]); // unions of whole UTC days
 const WHOLE_MONTHS = new Set(["month", "quarter", "year"]); // unions of whole UTC months (weeks excluded)
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/;
+const START_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const isStartOfUtcMonth = (ms) => {
@@ -82,6 +83,21 @@ function rangeOf(values, { datesAllowed }) {
   return Number.isNaN(start) || Number.isNaN(end) ? null : [start, end];
 }
 
+/** Start millisecond of a single-value `afterOrOnDate` filter, or null when malformed. */
+function startBoundOf(values) {
+  if (!Array.isArray(values) || values.length !== 1) return null;
+  const [from] = values;
+  if (typeof from !== "string") return null;
+  let start = NaN;
+  if (DATE.test(from)) {
+    start = toMs(`${from}T00:00:00.000`);
+  } else if (START_TIMESTAMP.test(from)) {
+    const iso = from.replace(" ", "T");
+    start = iso.endsWith("Z") ? Date.parse(iso) : toMs(iso);
+  }
+  return Number.isNaN(start) ? null : start;
+}
+
 /** Why `query` cannot be answered from this aggregate, or null when it can. */
 function qualify(query, members, derived, structure, now) {
   for (const member of members) {
@@ -95,6 +111,8 @@ function qualify(query, members, derived, structure, now) {
   const grain = structure.grainSeconds;
   const grainMs = grain * 1000;
   const ranges = [];
+  const lowerBounds = [];
+  const startAligned = isMonthGrain ? isStartOfUtcMonth : (start) => start % grainMs === 0;
   const aligned = isMonthGrain
     ? ([start, end]) => isStartOfUtcMonth(start) && isStartOfUtcMonth(end + 1)
     : ([start, end]) => start % grainMs === 0 && (end + 1) % grainMs === 0;
@@ -116,7 +134,8 @@ function qualify(query, members, derived, structure, now) {
     ranges.push(range);
   }
 
-  // The time dimension may be filtered by a plain date range only, and not inside an OR.
+  // The time dimension may be filtered by a plain date range or an aligned lower bound
+  // (`afterOrOnDate`), and never inside an OR.
   const timeFilters = (filters, insideOr) => {
     for (const filter of filters || []) {
       const group = filter?.and || filter?.or;
@@ -124,11 +143,20 @@ function qualify(query, members, derived, structure, now) {
         const problem = timeFilters(group, insideOr || Boolean(filter.or));
         if (problem) return problem;
       } else if (derived.timeMembers.has(filter?.member ?? filter?.dimension)) {
-        if (insideOr || filter.operator !== "inDateRange") return "time_filter";
-        const range = rangeOf(filter.values, { datesAllowed: true });
-        if (!range) return "time_filter";
-        if (!aligned(range)) return "range_not_aligned";
-        ranges.push(range);
+        if (insideOr) return "time_filter";
+        if (filter.operator === "inDateRange") {
+          const range = rangeOf(filter.values, { datesAllowed: true });
+          if (!range) return "time_filter";
+          if (!aligned(range)) return "range_not_aligned";
+          ranges.push(range);
+        } else if (filter.operator === "afterOrOnDate") {
+          const start = startBoundOf(filter.values);
+          if (start === null) return "time_filter";
+          if (!startAligned(start)) return "range_not_aligned";
+          lowerBounds.push(start);
+        } else {
+          return "time_filter";
+        }
       }
     }
     return null;
@@ -140,11 +168,17 @@ function qualify(query, members, derived, structure, now) {
   if (now - structure.verifiedAt > structure.maxStalenessSeconds * 1000) return "stale";
 
   // Window rule: inside what the aggregate holds, or long enough that its newest part may lag.
-  if (ranges.length > 0) {
-    const start = Math.max(...ranges.map((range) => range[0]));
-    const end = Math.min(...ranges.map((range) => range[1])) + 1;
-    const inside = structure.coveredUntil != null && end <= structure.coveredUntil;
-    if (!inside && end - start < structure.minWindowSeconds * 1000) return "window_too_short";
+  if (ranges.length > 0 || lowerBounds.length > 0) {
+    const start = Math.max(...ranges.map((range) => range[0]), ...lowerBounds);
+    if (ranges.length > 0) {
+      const end = Math.min(...ranges.map((range) => range[1])) + 1;
+      const inside = structure.coveredUntil != null && end <= structure.coveredUntil;
+      if (!inside && end - start < structure.minWindowSeconds * 1000) return "window_too_short";
+    } else {
+      // Open-ended lower bound (`afterOrOnDate`): reaches through `now`, so never
+      // strictly inside `coveredUntil`; enforce `minWindowSeconds` against `now - start`.
+      if (now - start < structure.minWindowSeconds * 1000) return "window_too_short";
+    }
   }
   return null;
 }

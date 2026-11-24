@@ -47,7 +47,134 @@ export function parseAst(text) {
   return root.children[0];
 }
 
-function walk(node, columns) {
+const ZERO_LITERAL = /^(?:(?:U?Int\d+|Float\d+)_)?0+(?:\.0+)?$/;
+const INT_LITERAL = /^(?:U?Int\d+_)?\d+$/;
+const DAY_LITERAL = /^'(\d{4}-\d{2}-\d{2})(?:[ T]00:00:00(?:\.000)?Z?)?'$/;
+const MONTH_LITERAL = /^'(\d{4}-\d{2}-01)(?:[ T]00:00:00(?:\.000)?Z?)?'$/;
+const UTC_LITERAL = /^'UTC'$/i;
+
+const ZERO_ARG_TIME_FUNCTIONS = new Set(["now", "today", "yesterday"]);
+const MONTH_TRUNC_FUNCTIONS = new Set(["toStartOfMonth", "toStartOfQuarter", "toStartOfYear"]);
+const DAY_TRUNC_FUNCTIONS = new Set(["toStartOfDay", "toDate", ...MONTH_TRUNC_FUNCTIONS]);
+const MONTH_SHIFT_FUNCTIONS = new Set([
+  "subtractYears", "addYears", "subtractQuarters", "addQuarters", "subtractMonths", "addMonths",
+]);
+const DAY_SHIFT_FUNCTIONS = new Set(["subtractWeeks", "addWeeks", "subtractDays", "addDays", ...MONTH_SHIFT_FUNCTIONS]);
+const MONTH_INTERVAL_FUNCTIONS = new Set(["toIntervalYear", "toIntervalQuarter", "toIntervalMonth"]);
+const DAY_INTERVAL_FUNCTIONS = new Set(["toIntervalWeek", "toIntervalDay", ...MONTH_INTERVAL_FUNCTIONS]);
+const DATETIME_CAST_FUNCTIONS = new Set(["toDateTime", "toDateTime64", "parseDateTimeBestEffort"]);
+
+function functionArgs(node) {
+  if (node?.type !== "Function") return null;
+  const list = node.children[0];
+  if (node.children.length > 1 || (list && list.type !== "ExpressionList")) return null;
+  return list ? list.children : [];
+}
+
+const ZERO_CAST_FUNCTIONS = new Set(["CAST", "_CAST", "cast", "toFloat64", "toFloat32", "toInt64", "toInt32", "toNullable"]);
+
+function isZeroOrNullLiteral(node) {
+  if (!node) return false;
+  if (node.type === "Literal") {
+    return node.name === "NULL" || ZERO_LITERAL.test(String(node.name ?? ""));
+  }
+  const args = functionArgs(node);
+  if (args && ZERO_CAST_FUNCTIONS.has(node.name) && args.length >= 1 && args.length <= 2) {
+    return isZeroOrNullLiteral(args[0]);
+  }
+  return false;
+}
+
+function isIntegerLiteral(node) {
+  return node?.type === "Literal" && INT_LITERAL.test(String(node.name ?? ""));
+}
+
+/** True when a ClickHouse date/time expression has no table column references and no non-UTC timezone arg. */
+function isConstantTimeExpr(node) {
+  if (!node) return false;
+  if (node.type === "Literal") return true;
+  const args = functionArgs(node);
+  if (!args) return false;
+  if (ZERO_ARG_TIME_FUNCTIONS.has(node.name)) {
+    return args.length === 0 || (node.name === "now" && args.length === 1 && UTC_LITERAL.test(String(args[0]?.name ?? "")));
+  }
+  if (DAY_TRUNC_FUNCTIONS.has(node.name)) {
+    if (args.length === 2 && !UTC_LITERAL.test(String(args[1]?.name ?? ""))) return false;
+    return (args.length === 1 || args.length === 2) && isConstantTimeExpr(args[0]);
+  }
+  if (DAY_SHIFT_FUNCTIONS.has(node.name)) {
+    return args.length === 2 && isConstantTimeExpr(args[0]) && isIntegerLiteral(args[1]);
+  }
+  if (DAY_INTERVAL_FUNCTIONS.has(node.name)) {
+    return args.length === 1 && isIntegerLiteral(args[0]);
+  }
+  if (DATETIME_CAST_FUNCTIONS.has(node.name)) {
+    if (node.name === "toDateTime64") {
+      if (args.length === 3 && !UTC_LITERAL.test(String(args[2]?.name ?? ""))) return false;
+      return (args.length === 2 || args.length === 3) && isConstantTimeExpr(args[0]) && isIntegerLiteral(args[1]);
+    }
+    if (args.length === 2 && !UTC_LITERAL.test(String(args[1]?.name ?? ""))) return false;
+    return (args.length === 1 || args.length === 2) && isConstantTimeExpr(args[0]);
+  }
+  if (node.name === "plus" || node.name === "minus") {
+    return args.length === 2 && isConstantTimeExpr(args[0]) && isConstantTimeExpr(args[1]);
+  }
+  return false;
+}
+
+/**
+ * True when `node` evaluates to a query-constant UTC timestamp aligned to `grain`'s
+ * bucket boundaries, so `timestamp >= bound` and `timestamp < bound` are constant
+ * across every raw row merged into a bucket of `grain`.
+ */
+function isAlignedTimeBound(node, grain) {
+  if (!node || !grain) return false;
+  const isMonth = grain.grainKind === "month" || grain.grain === "1 month";
+  const isDayOrFiner = !isMonth && Number.isFinite(grain.grainSeconds) && grain.grainSeconds > 0 && 86400 % grain.grainSeconds === 0;
+  if (!isMonth && !isDayOrFiner) return false;
+
+  if (node.type === "Literal") {
+    const match = (isMonth ? MONTH_LITERAL : DAY_LITERAL).exec(String(node.name ?? ""));
+    return Boolean(match && !Number.isNaN(Date.parse(`${match[1]}T00:00:00.000Z`)));
+  }
+
+  const args = functionArgs(node);
+  if (!args) return false;
+  if (node.name === "today" || node.name === "yesterday") {
+    return isDayOrFiner && args.length === 0;
+  }
+  if (MONTH_TRUNC_FUNCTIONS.has(node.name)) {
+    if (args.length === 2 && !UTC_LITERAL.test(String(args[1]?.name ?? ""))) return false;
+    return (args.length === 1 || args.length === 2) && isConstantTimeExpr(args[0]);
+  }
+  if (node.name === "toStartOfDay" || node.name === "toDate") {
+    if (args.length === 2 && !UTC_LITERAL.test(String(args[1]?.name ?? ""))) return false;
+    if (args.length !== 1 && args.length !== 2) return false;
+    return isDayOrFiner ? isConstantTimeExpr(args[0]) : isAlignedTimeBound(args[0], grain);
+  }
+  if (DATETIME_CAST_FUNCTIONS.has(node.name)) {
+    if (node.name === "toDateTime64") {
+      if (args.length === 3 && !UTC_LITERAL.test(String(args[2]?.name ?? ""))) return false;
+      return (args.length === 2 || args.length === 3) && isAlignedTimeBound(args[0], grain) && isIntegerLiteral(args[1]);
+    }
+    if (args.length === 2 && !UTC_LITERAL.test(String(args[1]?.name ?? ""))) return false;
+    return (args.length === 1 || args.length === 2) && isAlignedTimeBound(args[0], grain);
+  }
+  if ((isMonth ? MONTH_SHIFT_FUNCTIONS : DAY_SHIFT_FUNCTIONS).has(node.name)) {
+    return args.length === 2 && isAlignedTimeBound(args[0], grain) && isIntegerLiteral(args[1]);
+  }
+  if ((node.name === "plus" || node.name === "minus") && args.length === 2) {
+    const intervalArgs = functionArgs(args[1]);
+    const allowedIntervals = isMonth ? MONTH_INTERVAL_FUNCTIONS : DAY_INTERVAL_FUNCTIONS;
+    return (
+      isAlignedTimeBound(args[0], grain) &&
+      Boolean(intervalArgs && allowedIntervals.has(args[1].name) && intervalArgs.length === 1 && isIntegerLiteral(intervalArgs[0]))
+    );
+  }
+  return false;
+}
+
+function walk(node, columns, grain) {
   if (node.type === "Literal") return K;
   if (node.type === "Identifier") {
     const cls = columns.get(node.name);
@@ -62,7 +189,22 @@ function walk(node, columns) {
   if (ROW_ORDER_FUNCTIONS.has(node.name)) return UNSUPPORTED;
 
   const args = list ? list.children : [];
-  const classes = args.map((arg) => walk(arg, columns));
+
+  // Bucket-invariant half-open time comparisons (`T >= B` or `T < B`, and their
+  // symmetric forms `B <= T` / `B > T`) evaluate identically for every raw row
+  // inside a bucket of `grain`. `T <= B` and `T > B` are intentionally excluded
+  // because they split the bucket at its exact boundary timestamp `00:00:00.000`.
+  if (grain && args.length === 2) {
+    const isTimeId = (candidate) => candidate?.type === "Identifier" && columns.get(candidate.name) === "T";
+    if ((node.name === "greaterOrEquals" || node.name === "less") && isTimeId(args[0]) && isAlignedTimeBound(args[1], grain)) {
+      return K;
+    }
+    if ((node.name === "lessOrEquals" || node.name === "greater") && isAlignedTimeBound(args[0], grain) && isTimeId(args[1])) {
+      return K;
+    }
+  }
+
+  const classes = args.map((arg) => walk(arg, columns, grain));
   const unsafe = classes.find((result) => result.cls === "X");
   if (unsafe) return unsafe;
   if (classes.every((result) => result === K)) return K;
@@ -92,14 +234,45 @@ function walk(node, columns) {
     case "cast":
       if (is(S, K) && args[1].type === "Literal" && args[1].name === "'Float64'") return S;
       break;
+    case "if":
+      // `if(cond, thenVal, elseVal)` is exact when summed iff `cond` is constant per
+      // bucket (`K`) and every branch is either linear summed (`S`) or 0 / NULL
+      // (a non-zero constant would be summed once per aggregate row instead of per raw row).
+      if (
+        args.length === 3 &&
+        classes[0] === K &&
+        (classes[1] === S || isZeroOrNullLiteral(args[1])) &&
+        (classes[2] === S || isZeroOrNullLiteral(args[2])) &&
+        (classes[1] === S || classes[2] === S)
+      ) {
+        return S;
+      }
+      break;
+    case "multiIf":
+      // ClickHouse parses `CASE WHEN c1 THEN v1 ... [ELSE vN] END` into `multiIf`.
+      if (args.length >= 3 && args.length % 2 === 1) {
+        let allConditionsK = true;
+        let allValuesSumOrZero = true;
+        let hasSumValue = false;
+        for (let i = 0; i < args.length - 1; i += 2) {
+          if (classes[i] !== K) allConditionsK = false;
+          if (classes[i + 1] === S) hasSumValue = true;
+          else if (!isZeroOrNullLiteral(args[i + 1])) allValuesSumOrZero = false;
+        }
+        const elseIdx = args.length - 1;
+        if (classes[elseIdx] === S) hasSumValue = true;
+        else if (!isZeroOrNullLiteral(args[elseIdx])) allValuesSumOrZero = false;
+        if (allConditionsK && allValuesSumOrZero && hasSumValue) return S;
+      }
+      break;
     default:
   }
   return x("not_exact_when_summed");
 }
 
 /** Class of one parsed expression. `columns` maps a column name to K, S, M (summed map), T (time) or X. */
-export function classify(node, columns) {
-  const result = walk(node, columns);
+export function classify(node, columns, grain = null) {
+  const result = walk(node, columns, grain);
   return result === M ? x("not_exact_when_summed") : result;
 }
 
