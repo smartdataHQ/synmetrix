@@ -3,7 +3,7 @@
  * table, from the table's own metadata, a grain and a grouping set. Text only:
  * it reads, and creates nothing (FR-024). The aggregate is filled by refresh.
  */
-import { IDENTIFIER, ROWS_COLUMN, SUFFIX, fillSelect, parseInterval, quote } from "./contract.js";
+import { IDENTIFIER, ROWS_COLUMN, SUFFIX, fillSelect, parseGrain, parseInterval, quote } from "./contract.js";
 
 const DAY = 86400;
 const INTERVAL_FORM = '"<n> <unit>" with unit second, minute, hour or day';
@@ -20,6 +20,8 @@ const PARTITION_PERIOD = {
   toDate: DAY, toDate32: DAY, toStartOfDay: DAY, toYYYYMMDD: DAY,
   toMonday: DAY, toStartOfWeek: DAY, toYYYYMM: DAY, toStartOfMonth: DAY, toStartOfQuarter: DAY, toYear: DAY, toStartOfYear: DAY,
 };
+// Partition functions whose buckets are whole UTC months (so "1 month" nests cleanly inside them).
+const MONTH_NESTING_PARTITIONS = new Set(["toYYYYMM", "toStartOfMonth", "toStartOfQuarter", "toYear", "toStartOfYear"]);
 
 const unwrapped = (type) => {
   let inner = type;
@@ -40,7 +42,7 @@ const withoutLowCardinality = (type) => type.replace(/^LowCardinality\((.*)\)$/s
  */
 export async function generate(queryFn, options) {
   const decline = (reason) => ({ declined: reason });
-  const { source, timeColumn, groupBy, cluster } = options;
+  const { source, timeColumn, groupBy, cluster, name: customName } = options;
 
   const sourceName = typeof source === "string" && /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source);
   if (!sourceName) return decline("--source must be <database>.<table>");
@@ -50,13 +52,19 @@ export async function generate(queryFn, options) {
     return decline("--group-by must be a list of plain column names");
   }
   if (cluster !== undefined && !(typeof cluster === "string" && IDENTIFIER.test(cluster))) return decline("--cluster must be a plain name");
-  const intervals = {};
-  for (const [option, flag] of [["grain", "--grain"], ["minAge", "--min-age"], ["minWindow", "--min-window"], ["maxStaleness", "--max-staleness"]]) {
+  if (customName !== undefined && !(typeof customName === "string" && IDENTIFIER.test(customName))) {
+    return decline("--name must be a plain table name");
+  }
+  const grain = parseGrain(options.grain);
+  if (!grain) {
+    const rawGrain = parseInterval(options.grain);
+    return decline(rawGrain ? "the grain does not divide one day" : `--grain must be ${INTERVAL_FORM} or "1 month"`);
+  }
+  const intervals = { grain };
+  for (const [option, flag] of [["minAge", "--min-age"], ["minWindow", "--min-window"], ["maxStaleness", "--max-staleness"]]) {
     intervals[option] = parseInterval(options[option]);
     if (!intervals[option]) return decline(`${flag} must be ${INTERVAL_FORM}`);
   }
-  const grain = intervals.grain;
-  if (grain.seconds === 0 || DAY % grain.seconds !== 0) return decline("the grain does not divide one day");
   if (intervals.maxStaleness.seconds === 0) return decline("--max-staleness must be greater than zero");
 
   const [sourceTable] = await queryFn(
@@ -87,7 +95,11 @@ export async function generate(queryFn, options) {
   if (wrapped.length !== uses.length || wrapped.some((name) => !PARTITION_PERIOD[name])) {
     return decline("cannot tell whether the grain nests inside the source's partition expression");
   }
-  if (wrapped.some((name) => PARTITION_PERIOD[name] % grain.seconds !== 0)) {
+  if (
+    grain.kind === "month"
+      ? wrapped.some((name) => !MONTH_NESTING_PARTITIONS.has(name))
+      : wrapped.some((name) => PARTITION_PERIOD[name] % grain.seconds !== 0)
+  ) {
     return decline(`a grain of ${grain.text} does not nest inside the source's partition expression`);
   }
 
@@ -175,7 +187,7 @@ export async function generate(queryFn, options) {
   const binding =
     `{"aggregate_of": "${source}", "time_column": "${timeColumn}", "grain": "${grain.text}", ` +
     `"min_age": "${intervals.minAge.text}", "min_window": "${intervals.minWindow.text}", "max_staleness": "${intervals.maxStaleness.text}"}`;
-  const name = `${table}__agg_${grain.text.replace(" ", "")}`;
+  const name = customName || `${table}__agg_${grain.text.replace(" ", "")}`;
   const onCluster = cluster ? ` ON CLUSTER ${cluster}` : "";
   const definition = [
     `CREATE TABLE IF NOT EXISTS ${database}.${name}${onCluster}`,

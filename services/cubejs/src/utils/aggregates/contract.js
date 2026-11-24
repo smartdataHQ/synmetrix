@@ -14,6 +14,7 @@ const QUALIFIED = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/;
 export const PARTITION_ID = /^[A-Za-z0-9_-]+$/;
 const UNIT_SECONDS = { second: 1, minute: 60, hour: 3600, day: 86400 };
 const DAY = 86400;
+const MONTH_ORDER_SECONDS = 31 * DAY;
 const BINDING_FIELDS = ["aggregate_of", "time_column", "grain", "min_age", "min_window", "max_staleness"];
 
 export const quote = (identifier) => `\`${identifier}\``;
@@ -24,6 +25,18 @@ export function parseInterval(text) {
   const match = typeof text === "string" && /^(\d+) (second|minute|hour|day)$/.exec(text);
   if (!match) return null;
   return { text, seconds: Number(match[1]) * UNIT_SECONDS[match[2]] };
+}
+
+/**
+ * A bucket grain: either a fixed UTC interval dividing one day, or the
+ * calendar grain "1 month". Weeks are intentionally not supported because
+ * they do not align naturally across month/quarter/year boundaries.
+ */
+export function parseGrain(text) {
+  if (text === "1 month") return { text: "1 month", kind: "month", seconds: MONTH_ORDER_SECONDS };
+  const interval = parseInterval(text);
+  if (!interval || interval.seconds === 0 || DAY % interval.seconds !== 0) return null;
+  return { ...interval, kind: "fixed" };
 }
 
 /** The binding an aggregate declares in its table comment, or why it is not one. */
@@ -41,7 +54,8 @@ export function parseBinding(comment) {
     return invalid;
   }
   const source = typeof declared.aggregate_of === "string" && QUALIFIED.exec(declared.aggregate_of);
-  const [grain, minAge, minWindow, maxStaleness] = ["grain", "min_age", "min_window", "max_staleness"].map(
+  const grain = parseGrain(declared.grain);
+  const [minAge, minWindow, maxStaleness] = ["min_age", "min_window", "max_staleness"].map(
     (field) => parseInterval(declared[field]),
   );
   if (
@@ -52,8 +66,6 @@ export function parseBinding(comment) {
     !minAge ||
     !minWindow ||
     !maxStaleness ||
-    grain.seconds === 0 ||
-    DAY % grain.seconds !== 0 ||
     maxStaleness.seconds === 0
   ) {
     return invalid;
@@ -149,18 +161,22 @@ export function structureFingerprint(binding, columns) {
 
 /** The time bucket an aggregate row belongs to. Buckets are cut in UTC. */
 export const bucketExpression = (timeColumn, grain) =>
-  `toDateTime(toStartOfInterval(src.${quote(timeColumn)}, INTERVAL ${grain}, 'UTC'), 'UTC')`;
+  grain === "1 month"
+    ? `toDateTime(toStartOfMonth(src.${quote(timeColumn)}, 'UTC'), 'UTC')`
+    : `toDateTime(toStartOfInterval(src.${quote(timeColumn)}, INTERVAL ${grain}, 'UTC'), 'UTC')`;
 
 /**
  * The one statement that summarises a source partition into aggregate rows:
- * a plain read, every source column qualified with `src.` because an output
- * alias would otherwise shadow the column it is built from.
+ * a plain read by default, every source column qualified with `src.` because
+ * an output alias would otherwise shadow the column it is built from.
  *
  * @param {{database: string, sourceTable: string, timeColumn: string, grain: string,
  *   columns: Map<string, {role: string, of?: string}>}} structure
+ * @param {string} partitionId
+ * @param {{final?: boolean, whereExtra?: string|null}} [options]
  * @returns {{sql: string, columns: string[]}} columns in SELECT order, for inserting by name
  */
-export function fillSelect(structure, partitionId) {
+export function fillSelect(structure, partitionId, { final = false, whereExtra = null } = {}) {
   if (typeof partitionId !== "string" || !PARTITION_ID.test(partitionId)) {
     throw new Error("partition id is not a plain identifier");
   }
@@ -187,10 +203,10 @@ export function fillSelect(structure, partitionId) {
     select.push(`${expression} AS ${quote(name)}`);
     names.push(name);
   }
+  const from = `${tableRef(structure.database, structure.sourceTable)} AS src${final ? " FINAL" : ""}`;
+  const where = `src._partition_id = '${partitionId}'${whereExtra ? ` AND (${whereExtra})` : ""}`;
   return {
-    sql:
-      `SELECT ${select.join(", ")} FROM ${tableRef(structure.database, structure.sourceTable)} AS src ` +
-      `WHERE src._partition_id = '${partitionId}' GROUP BY ${groupBy.join(", ")}`,
+    sql: `SELECT ${select.join(", ")} FROM ${from} WHERE ${where} GROUP BY ${groupBy.join(", ")}`,
     columns: names,
   };
 }

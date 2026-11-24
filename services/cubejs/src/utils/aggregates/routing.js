@@ -73,6 +73,7 @@ function unmark(context) {
     context.securityContext = { ...securityContext, userScope: { ...securityContext.userScope, dataSource: plain } };
   }
   delete context.aggregateRouting;
+  delete context.aggregateDecision;
 }
 
 // A copy: the security context object is shared with whoever built it.
@@ -90,15 +91,23 @@ function mark(context, decision) {
 }
 
 /**
- * Does nothing unless AGGREGATE_ROUTING_ENABLED is "true" (FR-027): nothing is
- * wrapped and no data source is probed.
+ * Does nothing unless AGGREGATE_ROUTING_ENABLED is "true" or "opt-in" (FR-027):
+ * nothing is wrapped and no data source is probed when off.
+ *
+ * - "true":   aggregate routing is on by default; a request may pass
+ *             useAggregates=false (or x-synmetrix-use-aggregates: false) to force source.
+ * - "opt-in": aggregate routing is off by default; a request may pass
+ *             useAggregates=true (or x-synmetrix-use-aggregates: true) to opt in.
  *
  * @param {object} cubejs the ServerCore instance, after `initApp`
  * @param {object} [deps] replaceable parts, for tests
  * @returns {boolean} whether the hook is in place
  */
 export function installAggregateRouting(cubejs, deps = {}) {
-  if (!(deps.enabled ?? process.env.AGGREGATE_ROUTING_ENABLED === "true")) return false;
+  const rawEnv = process.env.AGGREGATE_ROUTING_ENABLED;
+  const mode = deps.mode ?? (deps.enabled === true ? "true" : deps.enabled === false ? "false" : rawEnv);
+  if (mode !== "true" && mode !== "opt-in") return false;
+  const defaultEnabled = mode === "true";
   const {
     driverFor = (securityContext) => tenantDriverFactory(cubejs)({ securityContext }),
     loadSchemas = findDataSchemasByIds,
@@ -111,6 +120,19 @@ export function installAggregateRouting(cubejs, deps = {}) {
   if (typeof gateway?.getNormalizedQueries !== "function") {
     log("aggregate routing not installed: this Cube version has no gateway.getNormalizedQueries");
     return false;
+  }
+
+  // Propagate per-request useAggregates preference from Express req into Cube context
+  // for both standard /v1/load JSON requests and loadExport streaming requests.
+  if (typeof gateway.contextByReq === "function") {
+    const originalContextByReq = gateway.contextByReq.bind(gateway);
+    gateway.contextByReq = async (req, securityContext, requestId) => {
+      const context = await originalContextByReq(req, securityContext, requestId);
+      if (context && req && typeof req.useAggregates === "boolean") {
+        context.useAggregates = req.useAggregates;
+      }
+      return context;
+    };
   }
 
   // The cubes of a tenant's YAML model files, parsed once per schema version.
@@ -127,7 +149,9 @@ export function installAggregateRouting(cubejs, deps = {}) {
           if (!/\.ya?ml$/i.test(file?.name || "")) continue;
           try {
             for (const cube of YAML.parse(file.code)?.cubes || []) {
-              if (cube && typeof cube.name === "string") cubes.set(cube.name, cube);
+              if (cube && typeof cube.name === "string") {
+                cubes.set(cube.name, { cube, fileName: file.name, content: file.code });
+              }
             }
           } catch {
             // a file that does not parse defines no cube to derive
@@ -143,7 +167,7 @@ export function installAggregateRouting(cubejs, deps = {}) {
   };
 
   const deriving = new Map();
-  const derivedFor = (cube, structure, securityContext) => {
+  const derivedFor = (cube, structure, securityContext, availableCubes) => {
     const dataSource = securityContext.userScope.dataSource;
     const key = variantKey(dataSource.schemaVersion, cube.name, structure);
     const known = recall(key);
@@ -160,6 +184,7 @@ export function installAggregateRouting(cubejs, deps = {}) {
       try {
         const derived = await deriveCube(cube, structure, classify, dataSource.schemaVersion, {
           defaultDatabase: dataSource.dbParams?.database,
+          availableCubes,
         });
         rememberVariant(key, derived);
         return derived;
@@ -188,14 +213,17 @@ export function installAggregateRouting(cubejs, deps = {}) {
     if (request.cube && entry.aggregates.length > 0) {
       const dataSource = securityContext.userScope.dataSource;
       stage.name = "model";
-      const cube = (await cubesOf(dataSource)).get(request.cube) || null;
+      const availableCubes = await cubesOf(dataSource);
+      const cube = availableCubes.get(request.cube)?.cube || null;
       const source = cube ? sourceTableOf(cube, dataSource.dbParams?.database) : null;
       if (!source) {
         derived.set("", { cube: request.cube, ineligible: cube ? "not_plain_read" : "not_yaml" });
       } else {
         stage.name = "derivation";
         for (const structure of entry.aggregates) {
-          if (structure.source === source) derived.set(structure.table, await derivedFor(cube, structure, securityContext));
+          if (structure.source === source) {
+            derived.set(structure.table, await derivedFor(cube, structure, securityContext, availableCubes));
+          }
         }
       }
     }
@@ -229,6 +257,14 @@ export function installAggregateRouting(cubejs, deps = {}) {
     unmark(context);
     const result = await original(inputQuery, context, ...rest);
 
+    const useAggregates = typeof context?.useAggregates === "boolean" ? context.useAggregates : defaultEnabled;
+    if (!useAggregates) {
+      const reason = context?.useAggregates === false ? "disabled_by_request" : "opt_in_required";
+      if (context) context.aggregateDecision = { aggregate: null, reason };
+      log(`aggregate routing  requestId=${context?.requestId ?? "-"}  cube=-  reason=${reason}`);
+      return result;
+    }
+
     let decision = { cube: null, aggregate: null, reason: "error" };
     let rejected = [];
     const stage = { name: "start" };
@@ -248,6 +284,9 @@ export function installAggregateRouting(cubejs, deps = {}) {
       decision = { cube: null, aggregate: null, reason: "error" };
       // The stage and the kind of error only: a database message can quote model text.
       log(`aggregate routing failed: ${stage.name} (${error?.name || "Error"})`);
+    }
+    if (context) {
+      context.aggregateDecision = { aggregate: decision.aggregate, reason: decision.reason };
     }
 
     // One line per request (FR-028): names and reason codes, never query values.

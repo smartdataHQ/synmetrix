@@ -5,8 +5,14 @@
  */
 const SUB_DAY_SECONDS = { second: 1, minute: 60, hour: 3600 };
 const WHOLE_DAYS = new Set(["day", "week", "month", "quarter", "year"]); // unions of whole UTC days
+const WHOLE_MONTHS = new Set(["month", "quarter", "year"]); // unions of whole UTC months (weeks excluded)
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+const isStartOfUtcMonth = (ms) => {
+  if (ms % 86400_000 !== 0) return false;
+  return new Date(ms).getUTCDate() === 1;
+};
 
 const cubeOf = (member) => {
   const parts = String(member).split(".");
@@ -85,17 +91,24 @@ function qualify(query, members, derived, structure, now) {
   }
   if (query.timezone && query.timezone !== "UTC") return "timezone";
 
+  const isMonthGrain = structure.grainKind === "month" || structure.grain === "1 month";
   const grain = structure.grainSeconds;
   const grainMs = grain * 1000;
   const ranges = [];
-  const aligned = ([start, end]) => start % grainMs === 0 && (end + 1) % grainMs === 0;
+  const aligned = isMonthGrain
+    ? ([start, end]) => isStartOfUtcMonth(start) && isStartOfUtcMonth(end + 1)
+    : ([start, end]) => start % grainMs === 0 && (end + 1) % grainMs === 0;
 
   for (const entry of query.timeDimensions || []) {
     if (!derived.timeMembers.has(entry.dimension)) continue; // an ordinary grouping column
     const { granularity } = entry;
-    if (granularity && !WHOLE_DAYS.has(granularity)) {
-      const seconds = SUB_DAY_SECONDS[granularity];
-      if (!seconds || seconds % grain !== 0) return "granularity";
+    if (granularity) {
+      if (isMonthGrain) {
+        if (!WHOLE_MONTHS.has(granularity)) return "granularity";
+      } else if (!WHOLE_DAYS.has(granularity)) {
+        const seconds = SUB_DAY_SECONDS[granularity];
+        if (!seconds || seconds % grain !== 0) return "granularity";
+      }
     }
     if (entry.dateRange === undefined || entry.dateRange === null) continue;
     const range = rangeOf(entry.dateRange, { datesAllowed: false });
