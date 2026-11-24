@@ -12,7 +12,7 @@ import { IDENTIFIER, ROWS_COLUMN, SUFFIX, quote } from "./contract.js";
 import { JOINED_KEY_PLACEHOLDER, classify, memberExpression } from "./expressions.js";
 
 /** Bump when the derivation rules change, so variants compiled under old rules are not reused. */
-export const DERIVE_VERSION = 2;
+export const DERIVE_VERSION = 3;
 
 const CUBE_KEYS = ["title", "description", "meta", "public", "shown", "data_source", "sql_alias", "refresh_key"];
 const SAFE_JOIN_RELATIONSHIPS = new Set(["many_to_one", "one_to_one", "belongsTo", "hasOne"]);
@@ -104,8 +104,9 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   }
   if (candidateJoinNames.size) base.set(JOINED_KEY_PLACEHOLDER, "K");
   const parsed = expressions.length ? await classifyBatch(expressions, base) : [];
-  const judge = (at, columns) =>
-    parsed[at]?.node ? classify(parsed[at].node, columns) : { cls: "X", detail: "unsupported_member" };
+  const grain = { grainKind: structure.grainKind, grain: structure.grain, grainSeconds: structure.grainSeconds };
+  const judge = (at, columns, options) =>
+    parsed[at]?.node ? classify(parsed[at].node, columns, options?.grain ?? null) : { cls: "X", detail: "unsupported_member" };
 
   // REPLACE items: what each target becomes.
   const targets = new Set(read.replaces.map((item) => item.target));
@@ -146,13 +147,13 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
 
   const has = (name, role) => structure.columns.get(name)?.role === role;
   const stored = (name) => has(name, "sum") && !targets.has(name); // the column itself, not a rewritten value
-  const needs = (at, wanted) => {
-    const result = judge(at, effective);
+  const needs = (at, wanted, options) => {
+    const result = judge(at, effective, options);
     if (result.cls === wanted) return null;
     if (result.cls === "X" && result.detail !== "not_exact_when_summed") return result.detail;
     return wanted === "K" ? "not_grouping_column" : "not_exact_when_summed";
   };
-  const firstProblem = (ats, wanted) => ats.map((at) => needs(at, wanted)).find(Boolean) || null;
+  const firstProblem = (ats, wanted, options) => ats.map((at) => needs(at, wanted, options)).find(Boolean) || null;
 
   const out = { dimensions: [], segments: [], measures: [] };
   const full = (member) => `${cube.name}.${member.name}`;
@@ -199,7 +200,7 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
     else if (missingJoin(referencedJoins)) leave(member, "column_not_in_aggregate");
     else if (member.type === "number") calculations.push(plan);
     else {
-      const result = deriveMeasure(plan, { judge, needs, firstProblem, effective, has, stored, parsed });
+      const result = deriveMeasure(plan, { judge, needs, firstProblem, effective, has, stored, parsed, grain });
       if (result.detail) leave(member, result.detail);
       else measureDefinitions.set(member.name, result.definition);
     }
@@ -372,8 +373,8 @@ function planMeasure(member, cube, ask, candidateJoinNames) {
   return { member, filters, filterAt, at: ask(memberExpression(member.sql, cube, new Set(), candidateJoinNames)), referencedJoins };
 }
 
-function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstProblem, effective, has, stored, parsed }) {
-  const filterProblem = firstProblem(filterAt, "K");
+function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstProblem, effective, has, stored, parsed, grain }) {
+  const filterProblem = firstProblem(filterAt, "K", { grain });
   if (filterProblem) return { detail: filterProblem };
   const condition = filters.map((filter) => `(${String(filter.sql).trim()})`).join(" AND ");
   const total = (expression) => (condition ? `sumIf(${expression}, ${condition})` : `sum(${expression})`);
@@ -393,7 +394,7 @@ function deriveMeasure({ member, at, filters, filterAt }, { judge, needs, firstP
 
   switch (member.type) {
     case "sum": {
-      const problem = needs(at, "S");
+      const problem = needs(at, "S", { grain });
       return problem ? { detail: problem } : { definition: member };
     }
     case "count_distinct": {

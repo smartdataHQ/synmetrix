@@ -77,7 +77,7 @@ describe("deriveCube: an eligible cube", () => {
 
   it("keeps a sum whose expression is exact when summed, with its title, format and meta", async () => {
     const { member } = await derive(CUBE);
-    for (const name of ["units", "quantity", "gross_revenue", "weight", "store0_units"]) {
+    for (const name of ["units", "quantity", "gross_revenue", "weight", "store0_units", "units_this_year"]) {
       assert.deepEqual(member("measures", name), canonical("measures", name), name);
     }
   });
@@ -135,7 +135,7 @@ describe("deriveCube: an eligible cube", () => {
     for (const name of ["sold_location", "timestamp", "store0", "units", "avg_units", "count", "store0_share"]) {
       assert.ok(derived.available.has(`line_items.${name}`), name);
     }
-    assert.equal(derived.available.size, 9 + 1 + 16);
+    assert.equal(derived.available.size, 9 + 1 + 17);
   });
 
   it("derives a cube that names its table with sql_table", async () => {
@@ -238,7 +238,6 @@ describe("deriveCube: members that stay on the source", () => {
       "line_items.big_line_count": "not_grouping_column",
       "line_items.avg_quantity": "no_stored_field",
       "line_items.min_weight": "no_stored_field",
-      "line_items.units_this_year": "reads_time_column",
       "line_items.rolling_units": "unsupported_member",
       "line_items.units_per_transaction": "depends_on_unavailable_member",
       "line_items.raw_ratio": "unsupported_member",
@@ -322,5 +321,114 @@ describe("deriveCube: members that stay on the source", () => {
     const { derived } = await derive(cube);
     assert.equal(derived.leftOut.get("line_items.timestamp"), "reads_time_column");
     assert.deepEqual([...derived.timeMembers], []);
+  });
+
+  it("derives day-aligned YoY conditional sums and their ratio on 1-day aggregates, but rejects them on 1-month or when intra-day", async () => {
+    const ytdAst = () => [
+      "SelectWithUnionQuery (children 1)",
+      " ExpressionList (children 1)",
+      "  SelectQuery (children 1)",
+      "   ExpressionList (children 5)",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier timestamp",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function multiIf (children 1)",
+      "       ExpressionList (children 3)",
+      "        Function and (children 1)",
+      "         ExpressionList (children 2)",
+      "          Function greaterOrEquals (children 1)",
+      "           ExpressionList (children 2)",
+      "            Identifier timestamp",
+      "            Function toStartOfYear (children 1)",
+      "             ExpressionList (children 1)",
+      "              Function yesterday (children 1)",
+      "               ExpressionList",
+      "          Function less (children 1)",
+      "           ExpressionList (children 2)",
+      "            Identifier timestamp",
+      "            Function toStartOfDay (children 1)",
+      "             ExpressionList (children 1)",
+      "              Function now (children 1)",
+      "               ExpressionList",
+      "        Identifier units",
+      "        Literal NULL",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function multiIf (children 1)",
+      "       ExpressionList (children 3)",
+      "        Function and (children 1)",
+      "         ExpressionList (children 2)",
+      "          Function greaterOrEquals (children 1)",
+      "           ExpressionList (children 2)",
+      "            Identifier timestamp",
+      "            Function subtractYears (children 1)",
+      "             ExpressionList (children 2)",
+      "              Function toStartOfYear (children 1)",
+      "               ExpressionList (children 1)",
+      "                Function yesterday (children 1)",
+      "                 ExpressionList",
+      "              Literal UInt64_1",
+      "          Function less (children 1)",
+      "           ExpressionList (children 2)",
+      "            Identifier timestamp",
+      "            Function subtractYears (children 1)",
+      "             ExpressionList (children 2)",
+      "              Function toStartOfDay (children 1)",
+      "               ExpressionList (children 1)",
+      "                Function now (children 1)",
+      "                 ExpressionList",
+      "              Literal UInt64_1",
+      "        Identifier units",
+      "        Literal NULL",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function divide (children 1)",
+      "       ExpressionList (children 2)",
+      "        Function minus (children 1)",
+      "         ExpressionList (children 2)",
+      "          Literal UInt64_1",
+      "          Literal UInt64_1",
+      "        Function nullIf (children 1)",
+      "         ExpressionList (children 2)",
+      "          Literal UInt64_1",
+      "          Literal UInt64_0",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function multiIf (children 1)",
+      "       ExpressionList (children 3)",
+      "        Function lessOrEquals (children 1)",
+      "         ExpressionList (children 2)",
+      "          Identifier timestamp",
+      "          Function now (children 1)",
+      "           ExpressionList",
+      "        Identifier units",
+      "        Literal NULL",
+    ].map((explain) => ({ explain }));
+    const yoyCube = {
+      name: "line_items",
+      sql: "SELECT * FROM agg_test.sales",
+      dimensions: [{ name: "timestamp", sql: "{CUBE}.timestamp", type: "time" }],
+      measures: [
+        { name: "ytd", sql: "CASE WHEN {CUBE}.timestamp >= toStartOfYear(yesterday()) AND {CUBE}.timestamp < toStartOfDay(now()) THEN {CUBE}.units END", type: "sum" },
+        { name: "prior_ytd", sql: "CASE WHEN {CUBE}.timestamp >= subtractYears(toStartOfYear(yesterday()), 1) AND {CUBE}.timestamp < subtractYears(toStartOfDay(now()), 1) THEN {CUBE}.units END", type: "sum" },
+        { name: "yoy_pct", sql: "({ytd} - {prior_ytd}) / nullIf({prior_ytd}, 0)", type: "number" },
+        { name: "intraday_ytd", sql: "CASE WHEN {CUBE}.timestamp <= now() THEN {CUBE}.units END", type: "sum" },
+      ],
+    };
+    const classify = (expressions, columns) => classifyBatch(async () => ytdAst(), expressions, columns);
+
+    const dayDerived = await deriveCube(yoyCube, structure(), classify, "sv1");
+    assert.ok(dayDerived.available.has("line_items.ytd"));
+    assert.ok(dayDerived.available.has("line_items.prior_ytd"));
+    assert.ok(dayDerived.available.has("line_items.yoy_pct"));
+    assert.equal(dayDerived.leftOut.get("line_items.intraday_ytd"), "reads_time_column");
+
+    const monthStructure = { ...structure(COLUMNS, "sales__agg_1month"), grain: "1 month", grainKind: "month", grainSeconds: 2592000 };
+    const monthDerived = await deriveCube(yoyCube, monthStructure, classify, "sv1");
+    assert.equal(monthDerived.leftOut.get("line_items.ytd"), "reads_time_column");
+    assert.equal(monthDerived.leftOut.get("line_items.prior_ytd"), "reads_time_column");
+    assert.equal(monthDerived.leftOut.get("line_items.yoy_pct"), "depends_on_unavailable_member");
   });
 });
