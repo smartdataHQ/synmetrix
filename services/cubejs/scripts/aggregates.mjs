@@ -68,6 +68,7 @@ export async function main(argv, { env = process.env, connect: open = connect, o
               "max-insert-threads": { type: "string" },
               "max-memory-bytes": { type: "string" },
               "max-external-group-by-bytes": { type: "string" },
+              "max-external-sort-bytes": { type: "string" },
               priority: { type: "string" },
               "include-completed-days": { type: "boolean" },
             },
@@ -113,6 +114,7 @@ export async function main(argv, { env = process.env, connect: open = connect, o
     optNum("max-insert-threads", "max_insert_threads");
     optNum("max-memory-bytes", "max_memory_usage");
     optNum("max-external-group-by-bytes", "max_bytes_before_external_group_by");
+    optNum("max-external-sort-bytes", "max_bytes_before_external_sort");
     optNum("priority", "priority");
 
     const { results, rejected } = await refreshAll(connection.queryFn, {
