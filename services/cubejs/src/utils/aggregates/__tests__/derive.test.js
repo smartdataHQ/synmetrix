@@ -124,18 +124,19 @@ describe("deriveCube: an eligible cube", () => {
     assert.deepEqual(member("measures", "max_price"), canonical("measures", "max_price"));
   });
 
-  it("keeps a distinct count over grouping columns and a calculation over derived measures", async () => {
+  it("keeps distinct counts over grouping columns and a calculation over derived measures", async () => {
     const { member } = await derive(CUBE);
     assert.deepEqual(member("measures", "unique_products"), canonical("measures", "unique_products"));
+    assert.deepEqual(member("measures", "approx_products"), canonical("measures", "approx_products"));
     assert.deepEqual(member("measures", "store0_share"), canonical("measures", "store0_share"));
   });
 
   it("lists what is available under the cube's own member names", async () => {
     const { derived } = await derive(CUBE);
-    for (const name of ["sold_location", "timestamp", "store0", "units", "avg_units", "count", "store0_share"]) {
+    for (const name of ["sold_location", "timestamp", "store0", "units", "avg_units", "count", "approx_products", "store0_share"]) {
       assert.ok(derived.available.has(`line_items.${name}`), name);
     }
-    assert.equal(derived.available.size, 9 + 1 + 17);
+    assert.equal(derived.available.size, 9 + 1 + 18);
   });
 
   it("derives a cube that names its table with sql_table", async () => {
@@ -241,7 +242,6 @@ describe("deriveCube: members that stay on the source", () => {
       "line_items.rolling_units": "unsupported_member",
       "line_items.units_per_transaction": "depends_on_unavailable_member",
       "line_items.raw_ratio": "unsupported_member",
-      "line_items.approx_products": "unsupported_member",
       "line_items.non_null_discounts": "unsupported_member",
     });
     for (const member of derived.leftOut.keys()) assert.ok(!derived.available.has(member), member);
@@ -430,5 +430,152 @@ describe("deriveCube: members that stay on the source", () => {
     assert.equal(monthDerived.leftOut.get("line_items.ytd"), "reads_time_column");
     assert.equal(monthDerived.leftOut.get("line_items.prior_ytd"), "reads_time_column");
     assert.equal(monthDerived.leftOut.get("line_items.yoy_pct"), "depends_on_unavailable_member");
+  });
+
+  it("derives count_distinct_approx from stored uniq sketches (plain, filtered, and derived calculations) and respects REPLACE", async () => {
+    const withSketches = structure([
+      ...COLUMNS,
+      { name: "external_order_id__uniq", type: "AggregateFunction(uniq, String)", is_in_sorting_key: 0 },
+      { name: "checkout_id__uniq", type: "AggregateFunction(uniq, String)", is_in_sorting_key: 0 },
+    ]);
+    const sketchAst = () => [
+      "SelectWithUnionQuery (children 1)",
+      " ExpressionList (children 1)",
+      "  SelectQuery (children 1)",
+      "   ExpressionList (children 11)",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier timestamp",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier units",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier external_order_id",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function equals (children 1)",
+      "       ExpressionList (children 2)",
+      "        Identifier sold_location",
+      "        Literal 'store0'",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier external_order_id",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier checkout_id",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function divide (children 1)",
+      "       ExpressionList (children 2)",
+      "        Literal UInt64_1",
+      "        Function nullIf (children 1)",
+      "         ExpressionList (children 2)",
+      "          Literal UInt64_1",
+      "          Literal UInt64_0",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier customer_id",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier units",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function greater (children 1)",
+      "       ExpressionList (children 2)",
+      "        Identifier units",
+      "        Literal UInt64_2",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier external_order_id",
+    ].map((explain) => ({ explain }));
+
+    const cube = {
+      name: "line_items",
+      sql: "SELECT * FROM agg_test.sales",
+      dimensions: [{ name: "timestamp", sql: "{CUBE}.timestamp", type: "time" }],
+      measures: [
+        { name: "units", sql: "{CUBE}.units", type: "sum" },
+        { name: "orders", sql: "{CUBE}.external_order_id", type: "count_distinct_approx", title: "Unique Orders" },
+        {
+          name: "store0_orders",
+          sql: "{CUBE}.external_order_id",
+          type: "count_distinct_approx",
+          filters: [{ sql: "{CUBE}.sold_location = 'store0'" }],
+        },
+        { name: "transactions", sql: "{CUBE}.checkout_id", type: "count_distinct_approx" },
+        { name: "units_per_order", sql: "{units} / nullIf({orders}, 0)", type: "number" },
+        { name: "customers", sql: "{CUBE}.customer_id", type: "count_distinct_approx" },
+        { name: "approx_units", sql: "{CUBE}.units", type: "count_distinct_approx" },
+        {
+          name: "big_orders",
+          sql: "{CUBE}.external_order_id",
+          type: "count_distinct_approx",
+          filters: [{ sql: "{CUBE}.units > 2" }],
+        },
+      ],
+    };
+    const classify = (expressions, columns) => classifyBatch(async () => sketchAst(), expressions, columns);
+    const derived = await deriveCube(cube, withSketches, classify, "sv1");
+    const parsed = YAML.parse(derived.files[0].content).cubes[0];
+    const m = (name) => parsed.measures.find((entry) => entry.name === name);
+
+    assert.deepEqual(m("orders"), {
+      name: "orders",
+      sql: "uniqMerge({CUBE}.external_order_id__uniq)",
+      type: "number",
+      title: "Unique Orders",
+    });
+    assert.deepEqual(m("store0_orders"), {
+      name: "store0_orders",
+      sql: "uniqMergeIf({CUBE}.external_order_id__uniq, ({CUBE}.sold_location = 'store0'))",
+      type: "number",
+    });
+    assert.deepEqual(m("transactions"), {
+      name: "transactions",
+      sql: "uniqMerge({CUBE}.checkout_id__uniq)",
+      type: "number",
+    });
+    assert.deepEqual(m("units_per_order"), {
+      name: "units_per_order",
+      sql: "{units} / nullIf({orders}, 0)",
+      type: "number",
+    });
+    assert.equal(derived.leftOut.get("line_items.customers"), "column_not_in_aggregate");
+    assert.equal(derived.leftOut.get("line_items.approx_units"), "not_grouping_column");
+    assert.equal(derived.leftOut.get("line_items.big_orders"), "not_grouping_column");
+
+    // When the cube rewrites a column in REPLACE, do not use the pre-REPLACE sketch.
+    const replacedAst = () => [
+      "SelectWithUnionQuery (children 1)",
+      " ExpressionList (children 1)",
+      "  SelectQuery (children 1)",
+      "   ExpressionList (children 3)",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function nullIf (children 1)",
+      "       ExpressionList (children 2)",
+      "        Identifier checkout_id",
+      "        Literal ''",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier timestamp",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier checkout_id",
+    ].map((explain) => ({ explain }));
+    const replacedCube = {
+      name: "line_items",
+      sql: "SELECT * REPLACE (nullIf(checkout_id, '') AS checkout_id) FROM agg_test.sales",
+      dimensions: [{ name: "timestamp", sql: "{CUBE}.timestamp", type: "time" }],
+      measures: [{ name: "transactions", sql: "{CUBE}.checkout_id", type: "count_distinct_approx" }],
+    };
+    const replacedDerived = await deriveCube(
+      replacedCube,
+      withSketches,
+      (expressions, columns) => classifyBatch(async () => replacedAst(), expressions, columns),
+      "sv1",
+    );
+    assert.equal(replacedDerived.leftOut.get("line_items.transactions"), "column_not_in_aggregate");
   });
 });

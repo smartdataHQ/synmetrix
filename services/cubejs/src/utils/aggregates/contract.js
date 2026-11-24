@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 
-export const SUFFIX = Object.freeze({ count: "__count", min: "__min", max: "__max" });
+export const SUFFIX = Object.freeze({ count: "__count", min: "__min", max: "__max", uniq: "__uniq" });
 export const ROWS_COLUMN = "_rows";
 
 export const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -86,6 +86,7 @@ export function parseBinding(comment) {
 }
 
 const SIMPLE_AGGREGATE = /^SimpleAggregateFunction\((\w+),\s*(.*)\)$/s;
+const UNIQ_AGGREGATE = /^AggregateFunction\(uniq,\s*(.+)\)$/s;
 const AGGREGATE_STATE = /^(Simple)?AggregateFunction\(/;
 const DATE_TIME = /^DateTime(64)?(\(.*\))?$/;
 const NUMERIC = /^(U?Int(8|16|32|64|128|256)|Float(32|64)|Decimal.*)$/;
@@ -119,7 +120,12 @@ export function classifyColumns(columns, binding) {
     if (name === binding.timeColumn) {
       if (inKey && DATE_TIME.test(type)) role = "time";
     } else if (!aggregate) {
-      if (inKey && !AGGREGATE_STATE.test(type)) role = "group";
+      if (UNIQ_AGGREGATE.test(type) && name.length > SUFFIX.uniq.length && name.endsWith(SUFFIX.uniq)) {
+        role = "uniq";
+        of = name.slice(0, -SUFFIX.uniq.length);
+      } else if (inKey && !AGGREGATE_STATE.test(type)) {
+        role = "group";
+      }
     } else if (name === ROWS_COLUMN) {
       if (aggregate.fn === "sum" && aggregate.inner === "UInt64") role = "rows";
     } else if (suffixOf(name)) {
@@ -198,6 +204,7 @@ export function fillSelect(structure, partitionId, { final = false, whereExtra =
     else if (role === "min") expression = `min(${source})`;
     else if (role === "max") expression = `max(${source})`;
     else if (role === "sumMap") expression = `sumMap(${source})`;
+    else if (role === "uniq") expression = `uniqState(${source})`;
     else if (role === "rows") expression = "count()";
     else continue;
     select.push(`${expression} AS ${quote(name)}`);

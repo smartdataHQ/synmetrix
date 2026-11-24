@@ -42,7 +42,7 @@ const withoutLowCardinality = (type) => type.replace(/^LowCardinality\((.*)\)$/s
  */
 export async function generate(queryFn, options) {
   const decline = (reason) => ({ declined: reason });
-  const { source, timeColumn, groupBy, exclude, cluster } = options;
+  const { source, timeColumn, groupBy, exclude, uniq, cluster } = options;
 
   const sourceName = typeof source === "string" && /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(source);
   if (!sourceName) return decline("--source must be <database>.<table>");
@@ -57,6 +57,9 @@ export async function generate(queryFn, options) {
   }
   if (hasExclude && (!Array.isArray(exclude) || exclude.some((name) => typeof name !== "string" || !IDENTIFIER.test(name)))) {
     return decline("--exclude must be a list of plain column names");
+  }
+  if (uniq !== undefined && (!Array.isArray(uniq) || uniq.some((name) => typeof name !== "string" || !IDENTIFIER.test(name)))) {
+    return decline("--uniq must be a list of plain column names");
   }
   if (cluster !== undefined && !(typeof cluster === "string" && IDENTIFIER.test(cluster))) return decline("--cluster must be a plain name");
   const grain = parseGrain(options.grain);
@@ -81,7 +84,8 @@ export async function generate(queryFn, options) {
       `WHERE database = '${database}' AND table = '${table}' ORDER BY position`,
   );
   const byName = new Map(columns.map((column) => [column.name, column]));
-  for (const name of [timeColumn, ...(groupBy || []), ...(exclude || [])]) {
+  const uniqList = [...new Set(uniq || [])];
+  for (const name of [timeColumn, ...(groupBy || []), ...(exclude || []), ...uniqList]) {
     if (!byName.has(name)) return decline(`the source has no column ${quote(name)}`);
   }
 
@@ -108,6 +112,20 @@ export async function generate(queryFn, options) {
   }
 
   const excludeSet = new Set(exclude || []);
+  const uniqSet = new Set(uniqList);
+  for (const name of uniqList) {
+    if (name === timeColumn) return decline(`${quote(name)} is the time column and cannot also be in --uniq`);
+    const col = byName.get(name);
+    if (Number(col.is_in_partition_key) === 1) {
+      return decline(`the source's partition expression reads ${quote(name)}, which cannot be in --uniq`);
+    }
+    if (hasGroupBy && groupBy.includes(name)) {
+      return decline(`${quote(name)} is already in --group-by and does not need --uniq`);
+    }
+    if (NOT_A_KEY.test(unwrapped(col.type))) {
+      return decline(`${quote(name)} (${col.type}) cannot be summarised with --uniq`);
+    }
+  }
   if (hasExclude) {
     if (excludeSet.has(timeColumn)) return decline(`${quote(timeColumn)} is the time column and cannot be excluded`);
     for (const column of columns) {
@@ -124,7 +142,7 @@ export async function generate(queryFn, options) {
       kind === "ALIAS" &&
       name !== timeColumn &&
       !/Nullable\(/.test(type) &&
-      (hasExclude ? !excludeSet.has(name) : groupBy.includes(name) || NUMERIC.test(unwrapped(type))),
+      (uniqSet.has(name) || (hasExclude ? !excludeSet.has(name) : groupBy.includes(name) || NUMERIC.test(unwrapped(type)))),
   );
   const canFail = new Map();
   if (derived.length) {
@@ -161,7 +179,7 @@ export async function generate(queryFn, options) {
     effectiveGroupBy.push(...groupBy);
 
     for (const { name, type, default_kind: kind, is_in_sorting_key: inKey } of columns) {
-      if (name === timeColumn || groupBy.includes(name)) continue;
+      if (name === timeColumn || groupBy.includes(name) || uniqSet.has(name)) continue;
       const inner = unwrapped(type);
       const mapValue = NUMERIC_MAP.exec(type);
       const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
@@ -175,9 +193,9 @@ export async function generate(queryFn, options) {
       else leftOut.push({ name, reason: "not numeric and not in --group-by" });
     }
   } else {
-    // Opt-out mode: keep every non-numeric groupable column unless listed in --exclude.
+    // Opt-out mode: keep every non-numeric groupable column unless listed in --exclude or --uniq.
     for (const { name, type, default_kind: kind, is_in_sorting_key: inKey } of columns) {
-      if (name === timeColumn) continue;
+      if (name === timeColumn || uniqSet.has(name)) continue;
       const inner = unwrapped(type);
       const mapValue = NUMERIC_MAP.exec(type);
       const reserved = name === ROWS_COLUMN || Object.values(SUFFIX).some((suffix) => name.endsWith(suffix));
@@ -192,6 +210,9 @@ export async function generate(queryFn, options) {
       else effectiveGroupBy.push(name);
     }
   }
+  for (const name of uniqList) {
+    if (canFail.has(name)) return decline(`${quote(name)} is ${canFail.get(name)}`);
+  }
 
   // The partition expression's own columns first, then the time bucket, then the rest.
   const partitionColumns = columns.filter((column) => Number(column.is_in_partition_key) === 1 && column.name !== timeColumn).map((column) => column.name);
@@ -204,6 +225,7 @@ export async function generate(queryFn, options) {
     for (const kind of ["count", "min", "max"]) roles.set(`${name}${SUFFIX[kind]}`, { role: kind, of: name });
   }
   for (const name of maps) roles.set(name, { role: "sumMap" });
+  for (const name of uniqList) roles.set(`${name}${SUFFIX.uniq}`, { role: "uniq", of: name });
   roles.set(ROWS_COLUMN, { role: "rows" });
 
   // Exact types come from ClickHouse's own description of the fill statement.
@@ -212,6 +234,7 @@ export async function generate(queryFn, options) {
   const typeOf = (name, { role }) => {
     if (role === "group" || role === "time") return byName.get(name).type;
     if (role === "count" || role === "rows") return "SimpleAggregateFunction(sum, UInt64)";
+    if (role === "uniq") return described.get(name);
     const type = withoutLowCardinality(described.get(name));
     if (role === "sumMap") return `SimpleAggregateFunction(sumMap, ${type.replace(/^Map\(LowCardinality\(String\)/, "Map(String")})`;
     return `SimpleAggregateFunction(${role}, ${type})`;
