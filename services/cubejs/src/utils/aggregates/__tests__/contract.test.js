@@ -122,12 +122,15 @@ describe("classifyColumns", () => {
         col("units", saf("sum", "Float64")),
         col("units__count", saf("sum", "UInt64")),
         col("checkout_id__uniq", "AggregateFunction(uniq, String)"),
+        col("external_order_id__uniq", "AggregateFunction(1, uniq, String)"),
         col("customer_id__uniq", "AggregateFunction(uniq, Nullable(String))"),
       ],
       binding,
     );
     assert.equal(columns.get("units__count").of, "units");
     assert.equal(columns.get("checkout_id__uniq").of, "checkout_id");
+    assert.equal(columns.get("external_order_id__uniq").role, "uniq");
+    assert.equal(columns.get("external_order_id__uniq").of, "external_order_id");
     assert.equal(columns.get("customer_id__uniq").of, "customer_id");
   });
 

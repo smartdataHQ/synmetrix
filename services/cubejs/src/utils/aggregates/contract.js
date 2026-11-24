@@ -86,7 +86,7 @@ export function parseBinding(comment) {
 }
 
 const SIMPLE_AGGREGATE = /^SimpleAggregateFunction\((\w+),\s*(.*)\)$/s;
-const UNIQ_AGGREGATE = /^AggregateFunction\(uniq,\s*(.+)\)$/s;
+const UNIQ_AGGREGATE = /^AggregateFunction\((?:\d+,\s*)?uniq,\s*(.+)\)$/s;
 const AGGREGATE_STATE = /^(Simple)?AggregateFunction\(/;
 const DATE_TIME = /^DateTime(64)?(\(.*\))?$/;
 const NUMERIC = /^(U?Int(8|16|32|64|128|256)|Float(32|64)|Decimal.*)$/;
