@@ -283,6 +283,29 @@ describe("classify", () => {
     );
     assert.equal(classify(symmetric, COLUMNS, DAY_GRAIN).cls, "S");
     assert.equal(classify(symmetric, COLUMNS, MONTH_GRAIN).cls, "S");
+
+    // parseDateTime64BestEffort(..., 3) (and optional 'UTC') is accepted like toDateTime64
+    const dt64Day = fn(
+      "multiIf",
+      fn(
+        "and",
+        fn("greaterOrEquals", identifier("timestamp"), fn("parseDateTime64BestEffort", lit("'2026-11-01T00:00:00.000Z'"), lit("UInt64_3"))),
+        fn("less", identifier("timestamp"), fn("parseDateTime64BestEffort", lit("'2026-12-01T00:00:00.000Z'"), lit("UInt64_3"), lit("'UTC'"))),
+      ),
+      identifier("units"),
+      lit("NULL"),
+    );
+    assert.equal(classify(dt64Day, COLUMNS, DAY_GRAIN).cls, "S");
+    assert.equal(classify(dt64Day, COLUMNS, MONTH_GRAIN).cls, "S");
+
+    // Non-UTC timezone on parseDateTime64BestEffort is still rejected
+    const dt64NonUtc = fn(
+      "multiIf",
+      fn("greaterOrEquals", identifier("timestamp"), fn("parseDateTime64BestEffort", lit("'2026-11-01T00:00:00.000Z'"), lit("UInt64_3"), lit("'America/New_York'"))),
+      identifier("units"),
+      lit("NULL"),
+    );
+    assert.deepEqual(classify(dt64NonUtc, COLUMNS, DAY_GRAIN), { cls: "X", detail: "reads_time_column" });
   });
 
   it("rejects intra-day, non-UTC, and boundary-splitting time predicates", () => {

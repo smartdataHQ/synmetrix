@@ -11,6 +11,7 @@ import { validateFormat } from "../utils/formatValidator.js";
 import {
   patchBigQueryDownloadSource,
   patchBigQueryDriverSource,
+  patchClickHouseQuerySource,
   patchPreAggregationLoaderSource,
   patchCompilerSource,
   patchDatabricksClassPathSource,
@@ -528,6 +529,67 @@ y`);
     );
     assert.deepEqual(driver.config.connection.auth, { client_id: "svc", client_secret: "s" });
     assert.equal(driver.config.connection.account, "a");
+  });
+
+  it("preserves millisecond upper bounds on ClickHouse dateRange queries via parseDateTime64BestEffort", async () => {
+    const sample = [
+      "        return `parseDateTimeBestEffort(${value})`;",
+      "        return `SELECT parseDateTimeBestEffort(arrayJoin(['${datesFrom.join('\\',\\'')}'])) as date_from, parseDateTimeBestEffort(arrayJoin(['${datesTo.join('\\',\\'')}'])) as date_to`;",
+      "        templates.expressions.timestamp_literal = 'parseDateTimeBestEffort(\\'{{ value }}\\')';",
+      "        templates.statements.time_series_select = 'SELECT parseDateTimeBestEffort(dates.f) date_from, parseDateTimeBestEffort(dates.t) date_to \\n' +",
+    ].join("\n");
+    const first = patchClickHouseQuerySource(sample);
+    assert.equal(first.changed, true);
+    assert.doesNotMatch(first.source, /parseDateTimeBestEffort\(/);
+    assert.deepEqual(patchClickHouseQuerySource(first.source), { source: first.source, changed: false });
+    assert.throws(
+      () => patchClickHouseQuerySource("unexpected clickhouse query source"),
+      /expected source anchor was not found exactly once/,
+    );
+
+    const { ClickHouseQuery } = require(
+      "@cubejs-backend/schema-compiler/dist/src/adapter/ClickHouseQuery.js",
+    );
+    const content = `cubes:
+  - name: sales_lines
+    sql_table: sales_lines
+    dimensions:
+      - name: ts
+        sql: timestamp
+        type: time
+    measures:
+      - name: qty
+        sql: quantity
+        type: sum
+`;
+    const compilers = prepareCompiler(
+      { dataSchemaFiles: async () => [{ fileName: "sales_lines.yml", content }] },
+      { adapter: "clickhouse" },
+    );
+    await compilers.compiler.compile();
+    const [sql, params] = new ClickHouseQuery(compilers, {
+      measures: ["sales_lines.qty"],
+      timeDimensions: [{
+        dimension: "sales_lines.ts",
+        dateRange: ["2026-11-24T15:37:00.000Z", "2026-11-24T15:56:59.999Z"],
+      }],
+      timezone: "UTC",
+    }).buildSqlAndParams();
+    assert.match(sql, /parseDateTime64BestEffort\(\?, 3\)/);
+    assert.doesNotMatch(sql, /parseDateTimeBestEffort\(/);
+    assert.deepEqual(params, ["2026-11-24T15:37:00.000Z", "2026-11-24T15:56:59.999Z"]);
+
+    const [nativeSql] = new ClickHouseQuery(compilers, {
+      measures: ["sales_lines.qty"],
+      timeDimensions: [{
+        dimension: "sales_lines.ts",
+        dateRange: ["2026-11-24T15:37:00.000Z", "2026-11-24T15:56:59.999Z"],
+      }],
+      timezone: "UTC",
+      useNativeSqlPlanner: true,
+    }).buildSqlAndParams();
+    assert.match(nativeSql, /parseDateTime64BestEffort\(/);
+    assert.doesNotMatch(nativeSql, /parseDateTimeBestEffort\(/);
   });
 
   it("does not embed a comparison result in the test source", async () => {
