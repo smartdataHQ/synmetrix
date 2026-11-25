@@ -230,15 +230,35 @@ export async function deriveCube(cube, structure, classifyBatch, schemaVersion, 
   }
   for (const { member } of waiting) leave(member, "depends_on_unavailable_member"); // they only read each other
 
-  // A measure names the members a drill-down shows; all of them must exist in the derived cube.
+  // A measure names the members a drill-down shows, and a calculated measure
+  // reads other measures; pruning any measure whose drill_members are missing
+  // must cascade to measures whose calculations or drill_members reference it,
+  // otherwise the derived cube will fail to compile.
   const dimensionNames = new Set(out.dimensions.map((dimension) => dimension.name));
   const local = (reference) => String(reference).replace(new RegExp(`^(CUBE|${cube.name})\\.`), "");
+  const calcRefs = new Map(calculations.map(({ member, references }) => [member.name, references]));
+  const measuresByName = new Map((cube.measures || []).map((member) => [member.name, member]));
+  let pruned = true;
+  while (pruned) {
+    pruned = false;
+    for (const name of [...measureDefinitions.keys()]) {
+      const member = measuresByName.get(name);
+      const drill = Array.isArray(member?.drill_members) ? member.drill_members : [];
+      const missingDrill = drill.some(
+        (reference) => !dimensionNames.has(local(reference)) && !measureDefinitions.has(local(reference)),
+      );
+      const refs = calcRefs.get(name);
+      const missingRef = refs ? refs.some((ref) => !measureDefinitions.has(ref)) : false;
+      if (missingDrill || missingRef) {
+        measureDefinitions.delete(name);
+        if (member) leave(member, "depends_on_unavailable_member");
+        pruned = true;
+      }
+    }
+  }
   for (const member of cube.measures || []) {
     if (!measureDefinitions.has(member.name)) continue;
-    const drill = Array.isArray(member.drill_members) ? member.drill_members : [];
-    if (drill.some((reference) => !dimensionNames.has(local(reference)) && !measureDefinitions.has(local(reference)))) {
-      leave(member, "depends_on_unavailable_member");
-    } else keep("measures", member, measureDefinitions.get(member.name));
+    keep("measures", member, measureDefinitions.get(member.name));
   }
 
   const definition = { name: cube.name };

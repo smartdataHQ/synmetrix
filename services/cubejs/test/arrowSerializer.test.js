@@ -191,6 +191,35 @@ describe("arrowSerializer", () => {
       ]
     );
   });
+
+  it("preserves nulls in numeric columns when falling back from typed Float64Array", async () => {
+    const writable = new MockBinaryWritable();
+
+    await writeRowStreamAsArrow(
+      writable,
+      createRowStream([
+        { city: "A", revenue: 12.5, qty: 1 },
+        { city: "B", revenue: null, qty: 2 },
+        { city: "C", revenue: "3.25", qty: 3 },
+      ]),
+      {
+        columns: ["city", "revenue", "qty"],
+        annotation: {
+          dimensions: { city: { type: "string" } },
+          measures: {
+            revenue: { type: "sum" },
+            qty: { type: "sum" },
+          },
+        },
+      }
+    );
+
+    const table = tableFromIPC(writable.output);
+    assert.deepStrictEqual(Array.from(table.getChild("revenue")), [12.5, null, 3.25]);
+    assert.deepStrictEqual(Array.from(table.getChild("qty")), [1, 2, 3]);
+    assert.equal(table.getChild("qty").nullCount, 0);
+    assert.equal(table.getChild("revenue").nullCount, 1);
+  });
 });
 
 async function* createRowStream(rows) {

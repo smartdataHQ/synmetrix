@@ -486,6 +486,7 @@ async function executeNativeClickHouseArrow(
     query: `${removeTrailingSemicolon(sqlstring.format(query, values || []))}\nFORMAT ArrowStream`,
     clickhouse_settings: nativeExportSettings(driver, {
       output_format_arrow_compression_method: "none",
+      output_format_arrow_low_cardinality_as_dictionary: 1,
       ...settings,
     }),
     abort_signal: signal,
