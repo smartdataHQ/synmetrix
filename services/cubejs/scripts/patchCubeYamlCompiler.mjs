@@ -367,6 +367,31 @@ const FIREBOLT_ORIGINAL = `        const username = (0, shared_1.getEnv)('dbUser
 
 const FIREBOLT_PATCHED = `        const username = (0, shared_1.getEnv)('dbUser', { dataSource, preAggregations }) || '';`;
 
+// Cube compiles inclusive dateRange upper bounds with '.999' milliseconds
+// (e.g. '2026-11-24T15:56:59.999Z'). ClickHouse's parseDateTimeBestEffort()
+// returns 1-second DateTime and silently truncates .999, dropping every row in
+// (:59.000, :59.999] on DateTime64(3) columns and breaking exact agreement with
+// bucketed GROUP BY queries. parseDateTime64BestEffort(..., 3) preserves
+// millisecond bounds (matching the timezone branch's toDateTime64(..., 3, tz))
+// while keeping full partition and primary-key index pruning.
+const CLICKHOUSE_DATETIME_CAST_ORIGINAL = `        return \`parseDateTimeBestEffort(\${value})\`;`;
+const CLICKHOUSE_DATETIME_CAST_PATCHED = `        return \`parseDateTime64BestEffort(\${value}, 3)\`;`;
+
+const CLICKHOUSE_SERIES_SQL_ORIGINAL =
+  "        return `SELECT parseDateTimeBestEffort(arrayJoin(['${datesFrom.join('\\',\\'')}'])) as date_from, parseDateTimeBestEffort(arrayJoin(['${datesTo.join('\\',\\'')}'])) as date_to`;";
+const CLICKHOUSE_SERIES_SQL_PATCHED =
+  "        return `SELECT parseDateTime64BestEffort(arrayJoin(['${datesFrom.join('\\',\\'')}']), 3) as date_from, parseDateTime64BestEffort(arrayJoin(['${datesTo.join('\\',\\'')}']), 3) as date_to`;";
+
+const CLICKHOUSE_TIMESTAMP_LITERAL_ORIGINAL =
+  "        templates.expressions.timestamp_literal = 'parseDateTimeBestEffort(\\'{{ value }}\\')';";
+const CLICKHOUSE_TIMESTAMP_LITERAL_PATCHED =
+  "        templates.expressions.timestamp_literal = 'parseDateTime64BestEffort(\\'{{ value }}\\', 3)';";
+
+const CLICKHOUSE_TIME_SERIES_SELECT_ORIGINAL =
+  "        templates.statements.time_series_select = 'SELECT parseDateTimeBestEffort(dates.f) date_from, parseDateTimeBestEffort(dates.t) date_to \\n' +";
+const CLICKHOUSE_TIME_SERIES_SELECT_PATCHED =
+  "        templates.statements.time_series_select = 'SELECT parseDateTime64BestEffort(dates.f, 3) date_from, parseDateTime64BestEffort(dates.t, 3) date_to \\n' +";
+
 const occurrences = (source, value) => source.split(value).length - 1;
 
 function applyPatch(source, original, patched, label, expected = 1) {
@@ -427,6 +452,15 @@ export function patchFireboltDriverSource(source) {
   return applyPatch(source, FIREBOLT_ORIGINAL, FIREBOLT_PATCHED, "Firebolt driver env login");
 }
 
+export function patchClickHouseQuerySource(source) {
+  return applyPatches(source, [
+    [CLICKHOUSE_DATETIME_CAST_ORIGINAL, CLICKHOUSE_DATETIME_CAST_PATCHED, "ClickHouse dateTimeCast millisecond precision"],
+    [CLICKHOUSE_SERIES_SQL_ORIGINAL, CLICKHOUSE_SERIES_SQL_PATCHED, "ClickHouse seriesSql millisecond precision"],
+    [CLICKHOUSE_TIMESTAMP_LITERAL_ORIGINAL, CLICKHOUSE_TIMESTAMP_LITERAL_PATCHED, "ClickHouse timestamp_literal millisecond precision"],
+    [CLICKHOUSE_TIME_SERIES_SELECT_ORIGINAL, CLICKHOUSE_TIME_SERIES_SELECT_PATCHED, "ClickHouse time_series_select millisecond precision"],
+  ]);
+}
+
 export function patchPreAggregationLoaderSource(source) {
   return applyPatch(source, LOADER_ORIGINAL, LOADER_PATCHED, "pre-aggregation loader", 2);
 }
@@ -453,6 +487,8 @@ export async function patchInstalledCompiler() {
   const root = await supportedPackageRoot(COMPILER_PACKAGE);
   const compilerPath = resolve(root, "dist/src/compiler/YamlCompiler.js");
   const yamlChanged = await patchFile(compilerPath, patchCompilerSource);
+  const clickHouseQueryPath = resolve(root, "dist/src/adapter/ClickHouseQuery.js");
+  const clickHouseChanged = await patchFile(clickHouseQueryPath, patchClickHouseQuerySource);
   const bigQueryPath = resolve(
     await supportedPackageRoot(BIGQUERY_PACKAGE),
     "dist/src/BigQueryDriver.js",
@@ -489,13 +525,14 @@ export async function patchInstalledCompiler() {
   const fireboltChanged = await patchFile(fireboltPath, patchFireboltDriverSource);
   return {
     compilerPath,
+    clickHouseQueryPath,
     bigQueryPath,
     loaderPath,
     duckDbPath,
     sqlitePath,
     databricksPath,
     fireboltPath,
-    changed: yamlChanged || bigQueryChanged || loaderChanged || duckDbChanged || sqliteChanged || databricksChanged || fireboltChanged,
+    changed: yamlChanged || clickHouseChanged || bigQueryChanged || loaderChanged || duckDbChanged || sqliteChanged || databricksChanged || fireboltChanged,
   };
 }
 
@@ -506,7 +543,7 @@ if (
   const result = await patchInstalledCompiler();
   console.log(
     result.changed
-      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + stream error forwarding + BigQuery read-only types + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login`
-      : `Cube ${SUPPORTED_VERSION} YAML metadata + stream error forwarding + BigQuery read-only type + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login patches already applied`,
+      ? `Patched Cube ${SUPPORTED_VERSION} YAML metadata handling + ClickHouse DateTime64 millisecond bounds + stream error forwarding + BigQuery read-only types + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login`
+      : `Cube ${SUPPORTED_VERSION} YAML metadata + ClickHouse DateTime64 millisecond bounds + stream error forwarding + BigQuery read-only type + DuckDB lockdown + SQLite attach limit + JDBC class path + Firebolt env login patches already applied`,
   );
 }

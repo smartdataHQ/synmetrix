@@ -62,7 +62,8 @@ const MONTH_SHIFT_FUNCTIONS = new Set([
 const DAY_SHIFT_FUNCTIONS = new Set(["subtractWeeks", "addWeeks", "subtractDays", "addDays", ...MONTH_SHIFT_FUNCTIONS]);
 const MONTH_INTERVAL_FUNCTIONS = new Set(["toIntervalYear", "toIntervalQuarter", "toIntervalMonth"]);
 const DAY_INTERVAL_FUNCTIONS = new Set(["toIntervalWeek", "toIntervalDay", ...MONTH_INTERVAL_FUNCTIONS]);
-const DATETIME_CAST_FUNCTIONS = new Set(["toDateTime", "toDateTime64", "parseDateTimeBestEffort"]);
+const DATETIME_CAST_FUNCTIONS = new Set(["toDateTime", "toDateTime64", "parseDateTimeBestEffort", "parseDateTime64BestEffort"]);
+const DATETIME64_CAST_FUNCTIONS = new Set(["toDateTime64", "parseDateTime64BestEffort"]);
 
 function functionArgs(node) {
   if (node?.type !== "Function") return null;
@@ -109,7 +110,7 @@ function isConstantTimeExpr(node) {
     return args.length === 1 && isIntegerLiteral(args[0]);
   }
   if (DATETIME_CAST_FUNCTIONS.has(node.name)) {
-    if (node.name === "toDateTime64") {
+    if (DATETIME64_CAST_FUNCTIONS.has(node.name)) {
       if (args.length === 3 && !UTC_LITERAL.test(String(args[2]?.name ?? ""))) return false;
       return (args.length === 2 || args.length === 3) && isConstantTimeExpr(args[0]) && isIntegerLiteral(args[1]);
     }
@@ -153,7 +154,7 @@ function isAlignedTimeBound(node, grain) {
     return isDayOrFiner ? isConstantTimeExpr(args[0]) : isAlignedTimeBound(args[0], grain);
   }
   if (DATETIME_CAST_FUNCTIONS.has(node.name)) {
-    if (node.name === "toDateTime64") {
+    if (DATETIME64_CAST_FUNCTIONS.has(node.name)) {
       if (args.length === 3 && !UTC_LITERAL.test(String(args[2]?.name ?? ""))) return false;
       return (args.length === 2 || args.length === 3) && isAlignedTimeBound(args[0], grain) && isIntegerLiteral(args[1]);
     }
