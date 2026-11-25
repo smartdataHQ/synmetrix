@@ -82,6 +82,18 @@ describe("decide: requests that qualify", () => {
     for (const granularity of ["hour", "day", "month"]) {
       assert.equal(routed(decideWith([over(granularity, "2026-01-01", "2026-03-31")], [halfHour()])), "30minute", granularity);
     }
+    assert.equal(routed(decideWith([over("min_30", "2026-01-01", "2026-03-31")], [halfHour()])), "30minute");
+    assert.equal(routed(decideWith([over("hour_2", "2026-01-01", "2026-03-31")], [halfHour()])), "30minute");
+    const fiveMin = aggregate({ table: "cst.sales_lines__agg_5minute", grainSeconds: 300, totalRows: 100000 });
+    for (const granularity of ["min_5", "min_10", "min_15", "min_20", "min_30", "hour", "hour_6"]) {
+      assert.equal(routed(decideWith([over(granularity, "2026-01-01", "2026-03-31")], [fiveMin])), "5minute", granularity);
+    }
+  });
+
+  it("accepts UTC timezone aliases", () => {
+    for (const timezone of ["UTC", "Etc/UTC", "GMT", "Etc/GMT"]) {
+      assert.equal(routed(decideWith([over("day", "2026-01-01", "2026-01-31", { timezone })])), "1day", timezone);
+    }
   });
 
   it("accepts dimensions, segments, filters and ordering on available members", () => {
@@ -161,6 +173,9 @@ describe("decide: requests that stay on the source", () => {
     assert.equal(reason([over("hour", "2026-01-01", "2026-01-31")]), "granularity");
     assert.equal(reason([over("minute", "2026-01-01", "2026-01-31")], [halfHour()]), "granularity");
     assert.equal(reason([over("hour", "2026-01-01", "2026-01-31")], [halfHour({ grainSeconds: 2700 })]), "granularity");
+    assert.equal(reason([over("min_15", "2026-01-01", "2026-01-31")], [halfHour()]), "granularity");
+    assert.equal(reason([over("min_7", "2026-01-01", "2026-01-31")], [halfHour({ grainSeconds: 60 })]), "granularity");
+    assert.equal(reason([over("hour_5", "2026-01-01", "2026-01-31")], [halfHour()]), "granularity");
     assert.equal(reason([over("fiscal_week", "2026-01-01", "2026-01-31")]), "granularity");
   });
 

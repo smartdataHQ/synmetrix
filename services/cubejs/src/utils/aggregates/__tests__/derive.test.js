@@ -290,6 +290,65 @@ describe("deriveCube: members that stay on the source", () => {
     assert.equal(left.derived.leftOut.get("line_items.m"), "depends_on_unavailable_member");
   });
 
+  it("cascades drill_members pruning to calculated measures and dependent drill_members", async () => {
+    const cube = {
+      name: "line_items",
+      sql: "SELECT * FROM agg_test.sales",
+      dimensions: [
+        { name: "timestamp", sql: "{CUBE}.timestamp", type: "time" },
+        { name: "uom", sql: "{CUBE}.uom", type: "string" },
+        { name: "checkout_id", sql: "{CUBE}.checkout_id", type: "string" },
+      ],
+      measures: [
+        // Listed BEFORE base to ensure fixed-point cascade is order-independent.
+        { name: "calc", sql: "{base} / NULLIF({count}, 0)", type: "number" },
+        { name: "driller", sql: "{CUBE}.units", type: "sum", drill_members: ["base"] },
+        { name: "base", sql: "{CUBE}.units", type: "sum", drill_members: ["uom", "checkout_id"] },
+        { name: "count", type: "count" },
+      ],
+    };
+    const astLines = [
+      "SelectWithUnionQuery (children 1)",
+      " ExpressionList (children 1)",
+      "  SelectQuery (children 1)",
+      "   ExpressionList (children 6)",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier timestamp",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier uom",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier checkout_id",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Function divide (children 1)",
+      "       ExpressionList (children 2)",
+      "        Literal UInt64_1",
+      "        Function nullIf (children 1)",
+      "         ExpressionList (children 2)",
+      "          Literal UInt64_1",
+      "          Literal UInt64_0",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier units",
+      "    Function tuple (children 1)",
+      "     ExpressionList (children 1)",
+      "      Identifier units",
+    ].map((explain) => ({ explain }));
+    const classify = (expressions, columns) => classifyBatch(async () => astLines, expressions, columns);
+    const derived = await deriveCube(cube, structure(), classify, "sv1");
+    const parsed = YAML.parse(derived.files[0].content).cubes[0];
+    assert.equal(derived.leftOut.get("line_items.base"), "depends_on_unavailable_member");
+    assert.equal(derived.leftOut.get("line_items.calc"), "depends_on_unavailable_member");
+    assert.equal(derived.leftOut.get("line_items.driller"), "depends_on_unavailable_member");
+    assert.deepEqual(
+      parsed.measures.map((m) => m.name),
+      ["count"],
+    );
+  });
+
   it("needs the stored row count for counts and map averages", async () => {
     const { derived } = await derive(CUBE, structure(COLUMNS.filter((column) => column.name !== "_rows")));
     assert.equal(derived.leftOut.get("line_items.count"), "no_stored_field");

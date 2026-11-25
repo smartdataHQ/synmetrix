@@ -4,8 +4,20 @@
  * cubes, the catalog) is already in memory.
  */
 const SUB_DAY_SECONDS = { second: 1, minute: 60, hour: 3600 };
+const CUSTOM_SUB_DAY = /^(min|hour)_(\d+)$/;
+const UTC_TIMEZONES = new Set(["UTC", "Etc/UTC", "GMT", "Etc/GMT"]);
 const WHOLE_DAYS = new Set(["day", "week", "month", "quarter", "year"]); // unions of whole UTC days
 const WHOLE_MONTHS = new Set(["month", "quarter", "year"]); // unions of whole UTC months (weeks excluded)
+
+function subDayGranularitySeconds(granularity) {
+  if (Object.hasOwn(SUB_DAY_SECONDS, granularity)) return SUB_DAY_SECONDS[granularity];
+  const match = typeof granularity === "string" && CUSTOM_SUB_DAY.exec(granularity);
+  if (!match) return null;
+  const n = Number(match[2]);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  if (match[1] === "min") return n < 60 && 60 % n === 0 ? n * 60 : null;
+  return n < 24 && 24 % n === 0 ? n * 3600 : null;
+}
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/;
 const START_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -105,7 +117,7 @@ function qualify(query, members, derived, structure, now) {
       return `member_unavailable:${member}:${derived.leftOut.get(member) || "unsupported_member"}`;
     }
   }
-  if (query.timezone && query.timezone !== "UTC") return "timezone";
+  if (query.timezone && !UTC_TIMEZONES.has(query.timezone)) return "timezone";
 
   const isMonthGrain = structure.grainKind === "month" || structure.grain === "1 month";
   const grain = structure.grainSeconds;
@@ -124,7 +136,7 @@ function qualify(query, members, derived, structure, now) {
       if (isMonthGrain) {
         if (!WHOLE_MONTHS.has(granularity)) return "granularity";
       } else if (!WHOLE_DAYS.has(granularity)) {
-        const seconds = SUB_DAY_SECONDS[granularity];
+        const seconds = subDayGranularitySeconds(granularity);
         if (!seconds || seconds % grain !== 0) return "granularity";
       }
     }

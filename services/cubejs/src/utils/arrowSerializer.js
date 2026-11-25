@@ -246,12 +246,33 @@ function deriveArrowColumnSpecs(columns, annotation = {}, sampleRows = []) {
 
 function createArrowRecordBatch(rows, columnSpecs) {
   const vectors = Object.create(null);
+  const rowCount = rows.length;
 
   for (let c = 0; c < columnSpecs.length; c++) {
     const spec = columnSpecs[c];
-    const values = new Array(rows.length);
+    if (spec.kind === "number" && rowCount > 0) {
+      const f64 = new Float64Array(rowCount);
+      let boxed = null;
+      for (let r = 0; r < rowCount; r++) {
+        const coerced = coerceArrowValue(rows[r]?.[spec.name], "number");
+        if (coerced === null) {
+          if (!boxed) {
+            boxed = new Array(rowCount);
+            for (let j = 0; j < r; j++) boxed[j] = f64[j];
+          }
+          boxed[r] = null;
+        } else if (boxed) {
+          boxed[r] = coerced;
+        } else {
+          f64[r] = coerced;
+        }
+      }
+      vectors[spec.name] = vectorFromArray(boxed ?? f64, spec.arrowType);
+      continue;
+    }
 
-    for (let r = 0; r < rows.length; r++) {
+    const values = new Array(rowCount);
+    for (let r = 0; r < rowCount; r++) {
       values[r] = coerceArrowValue(rows[r]?.[spec.name], spec.kind);
     }
 

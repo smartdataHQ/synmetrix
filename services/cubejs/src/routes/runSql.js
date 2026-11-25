@@ -296,6 +296,7 @@ export default async (req, res, cubejs) => {
         clickhouse_settings: {
           ...driver.config?.clickhouseSettings,
           output_format_arrow_compression_method: "none",
+          output_format_arrow_low_cardinality_as_dictionary: 1,
           result_overflow_mode: "throw",
         },
         abort_signal: abortController.signal,

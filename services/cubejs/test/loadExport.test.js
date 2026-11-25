@@ -658,6 +658,7 @@ function createClickHouseDriver({ csvLines = [], arrowChunks = [] }) {
         assert.equal(options.clickhouse_settings.result_overflow_mode, "throw");
         assert.equal(options.clickhouse_settings.max_result_rows, 100);
         assert.equal(options.clickhouse_settings.output_format_arrow_compression_method, "none");
+        assert.equal(options.clickhouse_settings.output_format_arrow_low_cardinality_as_dictionary, 1);
         return {
           async *stream() {
             for (const chunk of arrowChunks) {
