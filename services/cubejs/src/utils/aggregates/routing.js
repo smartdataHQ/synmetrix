@@ -276,6 +276,10 @@ export function installAggregateRouting(cubejs, deps = {}) {
     unmark(context);
     const result = await original(inputQuery, context, ...rest);
 
+    if (context?.securityContext?.audvitadSql) {
+      return result;
+    }
+
     const useAggregates = typeof context?.useAggregates === "boolean" ? context.useAggregates : defaultEnabled;
     if (!useAggregates) {
       const reason = context?.useAggregates === false ? "disabled_by_request" : "opt_in_required";

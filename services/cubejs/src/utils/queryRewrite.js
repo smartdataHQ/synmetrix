@@ -4,6 +4,7 @@ import { fetchGraphQL } from "./graphql.js";
 import { findDataSchemasByIds } from "./dataSourceHelpers.js";
 import { parseCubesFromJs } from "./smart-generation/diffModels.js";
 import { assertNoLegacyEnrichmentQuery } from "./legacyEnrichmentGuard.js";
+import { authorizeAudvitadQuery } from "./audvitadSqlAuth.js";
 
 const getColumnsArray = (cube) => [
   ...(cube?.dimensions || []),
@@ -484,6 +485,14 @@ const queryRewrite = async (query, { securityContext, resolveMemberPath }) => {
   // Retired managed enrichment cubes remain unavailable even if an old
   // historical tenant version is restored.
   assertNoLegacyEnrichmentQuery(query);
+
+  // Auðvitað / QuickLookup SQL sessions enforce live revocation, tier and
+  // monthly quota on every query through quicklookup-web, and serve only
+  // curated public/licensed cubes (no Hasura row rules).
+  if (securityContext?.audvitadSql) {
+    await authorizeAudvitadQuery(securityContext, query);
+    return query;
+  }
 
   const { userScope } = securityContext;
   const {
