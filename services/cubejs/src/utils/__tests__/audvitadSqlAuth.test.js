@@ -99,6 +99,17 @@ describe("audvitadSqlAuth", () => {
     assert.equal(res.securityContext.userScope.dataSource.dbType, "clickhouse");
     assert.equal(res.securityContext.userScope.dataSource.dbParams.username, "synmetrix_query");
     assert.equal(res.securityContext.userScope.dataSource.dbParams.password, "ch-query-password");
+
+    const dedicated = await authenticateAudvitadSql("ql_01j9x", "sk_live_secret", {
+      fetchImpl,
+      env: {
+        ...ENV,
+        AUDVITAD_CLICKHOUSE_USER: "audvitad_sql_query",
+        AUDVITAD_CLICKHOUSE_PASSWORD: "dedicated-sql-password",
+      },
+    });
+    assert.equal(dedicated.securityContext.userScope.dataSource.dbParams.username, "audvitad_sql_query");
+    assert.equal(dedicated.securityContext.userScope.dataSource.dbParams.password, "dedicated-sql-password");
   });
 
   it("selects enterprise schema variant when premium is true", async () => {

@@ -60,7 +60,7 @@ function buildAudvitadClickHouseParams(env = process.env) {
   const host = env.AUDVITAD_CLICKHOUSE_HOST || "clickhouse-fraios-clickhouse.clickhouse";
   const port = Number(env.AUDVITAD_CLICKHOUSE_PORT || 8123);
   const user = env.AUDVITAD_CLICKHOUSE_USER || "synmetrix_query";
-  const password = env.CLICKHOUSE_QUERY_PASSWORD || env.AUDVITAD_CLICKHOUSE_PASSWORD;
+  const password = env.AUDVITAD_CLICKHOUSE_PASSWORD || env.CLICKHOUSE_QUERY_PASSWORD;
   const database = env.AUDVITAD_CLICKHOUSE_DATABASE || "cst";
   if (!password) {
     throw new Error("SQL ClickHouse read credential is not configured");
