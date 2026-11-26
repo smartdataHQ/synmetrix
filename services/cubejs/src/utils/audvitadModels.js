@@ -104,7 +104,9 @@ const trafficIntervalCube = ({ name, title, description, seriesGid }) => ({
       concat(
         toString(dp.entity_gid), ':',
         toString(dp.timestamp), ':',
+        dp.dimensions['traffic_station_id'], ':',
         dp.dimensions['traffic_direction_id'], ':',
+        dp.dimensions['traffic_direction_role'], ':',
         dp.dimensions['traffic_size_class']
       ) AS row_id,
       dp.timestamp AS timestamp,
@@ -112,8 +114,10 @@ const trafficIntervalCube = ({ name, title, description, seriesGid }) => ({
       dp.dimensions['traffic_station_name'] AS station_name,
       coalesce(sp.region, '') AS region,
       coalesce(sp.municipality, '') AS municipality,
+      coalesce(sp.postal_code, '') AS postal_code,
       coalesce(sp.road_name, '') AS road_name,
       coalesce(sp.road_number, '') AS road_number,
+      coalesce(sp.road_type, '') AS road_type,
       dp.dimensions['traffic_direction_id'] AS direction_id,
       dp.dimensions['traffic_direction_role'] AS direction_role,
       dp.dimensions['traffic_direction_text'] AS direction_text,
@@ -137,7 +141,7 @@ const trafficIntervalCube = ({ name, title, description, seriesGid }) => ({
         dimensions['traffic_size_class']
     ) AS dp
     LEFT JOIN (
-      SELECT station_id, region, municipality, road_name, road_number
+      SELECT station_id, region, municipality, postal_code, road_name, road_number, road_type
       FROM cst.traffic_station_places
       WHERE partition = '_open_'
     ) AS sp ON sp.station_id = dp.dimensions['traffic_station_id']
@@ -149,8 +153,10 @@ const trafficIntervalCube = ({ name, title, description, seriesGid }) => ({
     { name: "station_name", sql: "station_name", type: "string" },
     { name: "region", sql: "region", type: "string" },
     { name: "municipality", sql: "municipality", type: "string" },
+    { name: "postal_code", sql: "postal_code", type: "string" },
     { name: "road_name", sql: "road_name", type: "string" },
     { name: "road_number", sql: "road_number", type: "string" },
+    { name: "road_type", sql: "road_type", type: "string" },
     { name: "direction_id", sql: "direction_id", type: "string" },
     { name: "direction_role", sql: "direction_role", type: "string" },
     { name: "direction_text", sql: "direction_text", type: "string" },
@@ -178,7 +184,9 @@ const CORE_CUBES = [
         concat(
           toString(dp.entity_gid), ':',
           toString(dp.timestamp), ':',
+          dp.dimensions['traffic_station_id'], ':',
           dp.dimensions['traffic_direction_id'], ':',
+          dp.dimensions['traffic_direction_role'], ':',
           dp.dimensions['traffic_size_class']
         ) AS row_id,
         dp.timestamp AS timestamp,
@@ -186,8 +194,10 @@ const CORE_CUBES = [
         dp.dimensions['traffic_station_name'] AS station_name,
         coalesce(sp.region, '') AS region,
         coalesce(sp.municipality, '') AS municipality,
+        coalesce(sp.postal_code, '') AS postal_code,
         coalesce(sp.road_name, '') AS road_name,
         coalesce(sp.road_number, '') AS road_number,
+        coalesce(sp.road_type, '') AS road_type,
         dp.dimensions['traffic_direction_id'] AS direction_id,
         dp.dimensions['traffic_direction_role'] AS direction_role,
         dp.dimensions['traffic_direction_text'] AS direction_text,
@@ -219,7 +229,7 @@ const CORE_CUBES = [
           dimensions['traffic_size_class']
       ) AS dp
       LEFT JOIN (
-        SELECT station_id, region, municipality, road_name, road_number
+        SELECT station_id, region, municipality, postal_code, road_name, road_number, road_type
         FROM cst.traffic_station_places
         WHERE partition = '_open_'
       ) AS sp ON sp.station_id = dp.dimensions['traffic_station_id']
@@ -231,8 +241,10 @@ const CORE_CUBES = [
       { name: "station_name", sql: "station_name", type: "string" },
       { name: "region", sql: "region", type: "string" },
       { name: "municipality", sql: "municipality", type: "string" },
+      { name: "postal_code", sql: "postal_code", type: "string" },
       { name: "road_name", sql: "road_name", type: "string" },
       { name: "road_number", sql: "road_number", type: "string" },
+      { name: "road_type", sql: "road_type", type: "string" },
       { name: "direction_id", sql: "direction_id", type: "string" },
       { name: "direction_role", sql: "direction_role", type: "string" },
       { name: "direction_text", sql: "direction_text", type: "string" },
