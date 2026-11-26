@@ -13,6 +13,10 @@ import {
 import buildSecurityContext from "./buildSecurityContext.js";
 import defineUserScope, { getDataSourceAccessList } from "./defineUserScope.js";
 import { emitQueryEvent } from "./eventEmitter.js";
+import {
+  authenticateAudvitadSql,
+  isAudvitadSqlLogin,
+} from "./audvitadSqlAuth.js";
 
 const buildSqlSecurityContext = (sqlCredentials) => {
   if (!sqlCredentials) {
@@ -80,6 +84,30 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
   const password =
     passwordArg ??
     (typeof userArg === "string" ? undefined : userArg?.password);
+
+  // Auðvitað / QuickLookup self-service SQL credentials (Fag & Fyrirtæki).
+  // Handled fail-closed before JWT or legacy sql_credentials paths so WorkOS
+  // API keys and `ql_*` usernames never fall through to Hasura lookups.
+  if (isAudvitadSqlLogin(username, password)) {
+    const auth = await authenticateAudvitadSql(username, password);
+    emitQueryEvent({
+      event: "SQL Session Opened",
+      accountId: auth.securityContext.tokenPayload?.accountId ?? null,
+      partition: auth.securityContext.tokenPayload?.partition ?? null,
+      userId: auth.securityContext.userId,
+      status: "ok",
+      dimensions: {
+        surface: "sql-api",
+        credential_source: "audvitad-sql",
+        plan_tier: auth.securityContext.audvitadSql.tier,
+      },
+      properties: {
+        organization_id: auth.securityContext.audvitadSql.organizationId,
+        key_id: auth.securityContext.audvitadSql.keyId,
+      },
+    });
+    return auth;
+  }
 
   // Detect if password looks like a JWT (WorkOS RS256 / FraiOS HS256)
   if (password && password.includes(".") && password.split(".").length === 3) {
