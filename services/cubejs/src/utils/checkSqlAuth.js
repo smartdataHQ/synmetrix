@@ -89,7 +89,9 @@ const checkSqlAuth = async (request, userArg, passwordArg) => {
   // Handled fail-closed before JWT or legacy sql_credentials paths so WorkOS
   // API keys and `ql_*` usernames never fall through to Hasura lookups.
   if (isAudvitadSqlLogin(username, password)) {
-    const auth = await authenticateAudvitadSql(username, password);
+    const auth = await authenticateAudvitadSql(username, password, {
+      protocol: request?.protocol || "postgres",
+    });
     emitQueryEvent({
       event: "SQL Session Opened",
       accountId: auth.securityContext.tokenPayload?.accountId ?? null,
