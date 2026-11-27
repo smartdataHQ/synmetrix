@@ -29,9 +29,9 @@ const DATA_SERVICE = {
 const numMetric = (col, key) =>
   `if(mapContains(${col}, '${key}'), ${col}['${key}'], CAST(NULL AS Nullable(Float64)))`;
 
-/** Case-insensitive boolean check for stringified Python/PG dimension booleans ('True'/'true'/'1'). */
+/** Case-insensitive boolean check returning ClickHouse Bool (not UInt8) so Cube SQL `= true`/`= false` works. */
 const boolDim = (col, key) =>
-  `lower(${col}['${key}']) IN ('true', '1', 'yes')`;
+  `toBool(lower(${col}['${key}']) IN ('true', '1', 'yes'))`;
 
 /** Guards Null Island (0.0, 0.0) unknown-location sentinel to SQL NULL. */
 const safeLat = (pt = "location_point") =>
@@ -114,10 +114,10 @@ const eventCube = ({
         date_from,
         date_to,
         toString(toDate(date_from)) AS day,
-        all_day,
+        toBool(all_day) AS all_day,
         toString(timezone) AS timezone,
         toString(status) AS status,
-        is_cancelled != 0 AS is_cancelled,
+        toBool(is_cancelled != 0) AS is_cancelled,
         toString(country_code) AS country_code,
         arrayStringConcat(region, ', ') AS region,
         if(notEmpty(\`location.locality\`), \`location.locality\`[1], '') AS locality,

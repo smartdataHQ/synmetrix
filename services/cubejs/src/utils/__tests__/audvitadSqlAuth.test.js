@@ -255,13 +255,15 @@ describe("audvitadSqlAuth", () => {
     }
 
     const dayArch = all.find((c) => c.name === "day_archetypes");
-    assert.ok(dayArch.sql.includes("lower(dimensions['is_workday'])"));
+    assert.ok(dayArch.sql.includes("toBool(lower(dimensions['is_workday'])"));
     assert.ok(dayArch.dimensions.some((d) => d.name === "country_code_alpha3"));
 
     const fuel = all.find((c) => c.name === "fuel_prices");
     assert.ok(fuel.sql.includes("mapContains(metrics, 'discount_price')"));
 
     const holidays = all.find((c) => c.name === "holidays");
+    assert.ok(holidays.sql.includes("toBool(is_cancelled != 0) AS is_cancelled"));
+    assert.ok(holidays.sql.includes("toBool(all_day) AS all_day"));
     const eventId = holidays.dimensions.find((d) => d.name === "event_id");
     assert.equal(eventId?.public, true);
 
