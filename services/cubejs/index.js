@@ -161,6 +161,20 @@ app.use(
   createQueryPreprocessor(),
 );
 
+let shuttingDown = false;
+let sqlServerReady = String(CUBEJS_SQL_API) !== "true";
+
+// Real readiness check mounted BEFORE cubejs.initApp(app) so Kubernetes does not
+// route PostgreSQL traffic to a pod before sqlServer.init() binds :15432 or while
+// the pod is draining on SIGTERM.
+app.get("/readyz", (_req, res) => {
+  if (shuttingDown || !sqlServerReady) {
+    res.status(503).json({ status: "not_ready", sqlServerReady, shuttingDown });
+    return;
+  }
+  res.status(200).json({ health: "HEALTH", sqlServerReady: true });
+});
+
 app.use(routes({ basePath, cubejs }));
 
 cubejs.initApp(app);
@@ -170,7 +184,15 @@ installAggregateRouting(cubejs);
 
 if (String(CUBEJS_SQL_API) === "true") {
   const sqlServer = cubejs.initSQLServer();
-  sqlServer.init(options);
+  sqlServer
+    .init(options)
+    .then(() => {
+      sqlServerReady = true;
+    })
+    .catch((err) => {
+      console.error("[cubejs] Fatal: SQL server failed to initialize:", err);
+      process.exit(1);
+    });
 }
 
 app.use((err, req, res, next) => {
@@ -185,7 +207,6 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(port);
 
-let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;

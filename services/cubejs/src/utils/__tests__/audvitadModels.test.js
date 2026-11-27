@@ -48,12 +48,15 @@ describe("audvitadModels", () => {
         assert.match(cube.sql, /is_deleted\s*=\s*0/);
         assert.match(cube.sql, /access\s*=\s*'Public'/);
       }
-      if (cube.name.startsWith("traffic_")) {
+      if (cube.name.startsWith("traffic_") && cube.name !== "traffic_stations") {
         assert.match(cube.sql, /dimensions\['traffic_station_id'\].*AS row_id/s);
         assert.match(cube.sql, /dimensions\['traffic_direction_role'\].*AS row_id/s);
         const dimNames = new Set(cube.dimensions.map((d) => d.name));
         assert.ok(dimNames.has("postal_code"), `${cube.name} must expose postal_code`);
         assert.ok(dimNames.has("road_type"), `${cube.name} must expose road_type`);
+      }
+      if (cube.name === "traffic_stations") {
+        assert.match(cube.sql, /partition\s*=\s*'_open_'/);
       }
     }
   });

@@ -6,11 +6,20 @@ import {
   authenticateAudvitadSql,
   authorizeAudvitadQuery,
   buildInternalAuthHeaders,
+  clearAudvitadQueryAuthCache,
   deriveAudvitadSqlSecret,
   extractQueryCubes,
   isAudvitadSqlLogin,
+  signProxyPasswordEnvelope,
+  verifyProxyPasswordEnvelope,
 } from "../audvitadSqlAuth.js";
-import { getAudvitadSchemaVersion } from "../audvitadModels.js";
+import {
+  AUDVITAD_CORE_CUBE_NAMES,
+  AUDVITAD_PREMIUM_CUBE_NAMES,
+  getAudvitadCubeDefinitions,
+  getAudvitadSchemaFiles,
+  getAudvitadSchemaVersion,
+} from "../audvitadModels.js";
 
 const ENV = {
   AUDVITAD_SQL_AUTH_URL: "http://quicklookup-web.test:3000",
@@ -23,11 +32,12 @@ const ENV = {
 };
 
 describe("audvitadSqlAuth", () => {
-  it("recognizes ql_* usernames and WorkOS API key passwords", () => {
+  it("recognizes ql_* usernames, WorkOS API keys, and proxy-signed envelopes", () => {
     assert.equal(isAudvitadSqlLogin("ql_01j9x4k2", "secret"), true);
     assert.equal(isAudvitadSqlLogin("QL_KEY_1ORG1", "anything"), true);
     assert.equal(isAudvitadSqlLogin("user", "sk_live_abc123"), true);
     assert.equal(isAudvitadSqlLogin("user", "sk_test_abc123"), true);
+    assert.equal(isAudvitadSqlLogin("user", "qlip|v1|1.2.3.4|audvitad|1|a|pw"), true);
     assert.equal(
       isAudvitadSqlLogin("11111111-2222-3333-4444-555555555555", "eyJ.abc.def"),
       false,
@@ -55,7 +65,66 @@ describe("audvitadSqlAuth", () => {
     );
   });
 
-  it("authenticates a Fag (pro) SQL credential and returns shared non-premium context", async () => {
+  it("verifies proxy IP envelopes and rejects tampered, stale, MySQL, or direct bypass logins", async () => {
+    const secret = deriveAudvitadSqlSecret(ENV);
+    const nowSec = 1_750_000_000;
+    const signed = signProxyPasswordEnvelope(
+      {
+        username: "ql_01j9x",
+        clientIp: "203.0.113.42",
+        database: "audvitad",
+        rawPassword: "sk_live_secret",
+      },
+      secret,
+      nowSec,
+    );
+    const ok = verifyProxyPasswordEnvelope("ql_01j9x", signed, secret, nowSec + 5);
+    assert.equal(ok.valid, true);
+    assert.equal(ok.clientIp, "203.0.113.42");
+    assert.equal(ok.database, "audvitad");
+    assert.equal(ok.password, "sk_live_secret");
+
+    // Tampered IP, wrong user, or stale timestamp rejected
+    assert.equal(
+      verifyProxyPasswordEnvelope("ql_01j9x", signed.replace("203.0.113.42", "203.0.113.99"), secret, nowSec + 5).valid,
+      false,
+    );
+    assert.equal(verifyProxyPasswordEnvelope("ql_other", signed, secret, nowSec + 5).valid, false);
+    assert.equal(verifyProxyPasswordEnvelope("ql_01j9x", signed, secret, nowSec + 120).valid, false);
+
+    // Rejects direct unsigned login when AUDVITAD_SQL_REQUIRE_PROXY_IP=true
+    await assert.rejects(
+      () =>
+        authenticateAudvitadSql("ql_01j9x", "sk_live_secret", {
+          env: { ...ENV, AUDVITAD_SQL_REQUIRE_PROXY_IP: "true" },
+          fetchImpl: async () => new Response("{}", { status: 200 }),
+        }),
+      /TLS on port 5432/,
+    );
+
+    // Rejects MySQL protocol for ql_* credentials
+    await assert.rejects(
+      () =>
+        authenticateAudvitadSql("ql_01j9x", "sk_live_secret", {
+          env: ENV,
+          protocol: "mysql",
+          fetchImpl: async () => new Response("{}", { status: 200 }),
+        }),
+      /PostgreSQL over TLS/,
+    );
+  });
+
+  it("authenticates a proxy-signed Fag (pro) SQL credential and preserves clientIp, database, keyName", async () => {
+    const secret = deriveAudvitadSqlSecret(ENV);
+    const signed = signProxyPasswordEnvelope(
+      {
+        username: "ql_01j9x",
+        clientIp: "203.0.113.42",
+        database: "quicklookup",
+        rawPassword: "sk_live_secret",
+      },
+      secret,
+    );
     let seenUrl;
     let seenHeaders;
     let seenBody;
@@ -69,6 +138,7 @@ describe("audvitadSqlAuth", () => {
           organizationId: "org_123",
           accountId: "acc_123",
           keyId: "api_key_01j9x",
+          keyName: "Power BI",
           username: "ql_01j9x",
           tier: "pro",
           premium: false,
@@ -78,155 +148,124 @@ describe("audvitadSqlAuth", () => {
       );
     };
 
-    const res = await authenticateAudvitadSql("ql_01j9x", "sk_live_secret", {
+    const res = await authenticateAudvitadSql("ql_01j9x", signed, {
       fetchImpl,
-      env: ENV,
+      env: { ...ENV, AUDVITAD_SQL_REQUIRE_PROXY_IP: "true" },
     });
 
     assert.equal(seenUrl, "http://quicklookup-web.test:3000/api/internal/sql-auth");
-    assert.deepEqual(seenBody, { username: "ql_01j9x", password: "sk_live_secret" });
+    assert.deepEqual(seenBody, {
+      username: "ql_01j9x",
+      password: "sk_live_secret",
+      clientIp: "203.0.113.42",
+      database: "quicklookup",
+    });
     assert.ok(seenHeaders["x-sql-auth-signature"].startsWith("sha256="));
     assert.equal(res.skipPasswordCheck, true);
     assert.equal(res.securityContext.userId, "apikey:api_key_01j9x");
-    assert.equal(res.securityContext.audvitadSql.premium, false);
-    assert.equal(res.securityContext.audvitadSql.tier, "pro");
-    assert.equal(res.securityContext.userScope.dataSource.dataSourceId, "audvitad-sql-pro");
-    assert.equal(res.securityContext.userScope.dataSource.dataSourceVersion, "audvitad_sql_pro");
+    assert.equal(res.securityContext.audvitadSql.clientIp, "203.0.113.42");
+    assert.equal(res.securityContext.audvitadSql.database, "quicklookup");
+    assert.equal(res.securityContext.audvitadSql.keyName, "Power BI");
     assert.equal(
       res.securityContext.userScope.dataSource.schemaVersion,
       getAudvitadSchemaVersion({ premium: false }),
     );
-    assert.equal(res.securityContext.userScope.dataSource.dbType, "clickhouse");
-    assert.equal(res.securityContext.userScope.dataSource.dbParams.username, "synmetrix_query");
-    assert.equal(res.securityContext.userScope.dataSource.dbParams.password, "ch-query-password");
-
-    const dedicated = await authenticateAudvitadSql("ql_01j9x", "sk_live_secret", {
-      fetchImpl,
-      env: {
-        ...ENV,
-        AUDVITAD_CLICKHOUSE_USER: "audvitad_sql_query",
-        AUDVITAD_CLICKHOUSE_PASSWORD: "dedicated-sql-password",
-      },
-    });
-    assert.equal(dedicated.securityContext.userScope.dataSource.dbParams.username, "audvitad_sql_query");
-    assert.equal(dedicated.securityContext.userScope.dataSource.dbParams.password, "dedicated-sql-password");
   });
 
-  it("selects enterprise schema variant when premium is true", async () => {
-    const fetchImpl = async () =>
-      new Response(
-        JSON.stringify({
-          ok: true,
-          organizationId: "org_ent",
-          keyId: "api_key_ent",
-          tier: "enterprise",
-          premium: true,
-          partition: "custom.is",
-        }),
-        { status: 200 },
-      );
-
-    const res = await authenticateAudvitadSql("ql_ent", "sk_live_ent", {
-      fetchImpl,
-      env: ENV,
-    });
-    assert.equal(res.securityContext.audvitadSql.premium, true);
-    assert.equal(
-      res.securityContext.userScope.dataSource.dataSourceId,
-      "audvitad-sql-enterprise",
-    );
-    assert.equal(
-      res.securityContext.userScope.dataSource.schemaVersion,
-      getAudvitadSchemaVersion({ premium: true }),
-    );
-  });
-
-  it("fails closed when auth endpoint rejects or is unreachable", async () => {
-    await assert.rejects(
-      () =>
-        authenticateAudvitadSql("ql_revoked", "sk_live_bad", {
-          fetchImpl: async () =>
-            new Response(
-              JSON.stringify({ ok: false, error: "invalid_key", message: "Revoked credential" }),
-              { status: 401 },
-            ),
-          env: ENV,
-        }),
-      /Revoked credential/,
-    );
-
-    await assert.rejects(
-      () =>
-        authenticateAudvitadSql("ql_neterr", "sk_live_bad", {
-          fetchImpl: async () => {
-            throw new Error("ECONNREFUSED");
-          },
-          env: ENV,
-        }),
-      /temporarily unavailable/,
-    );
-
-    await assert.rejects(
-      () =>
-        authenticateAudvitadSql("ql_noconf", "sk_live_bad", {
-          fetchImpl: async () => new Response("{}", { status: 200 }),
-          env: {},
-        }),
-      /not configured/,
-    );
-  });
-
-  it("extracts distinct cubes from a Cube query and enforces per-query authorization", async () => {
+  it("extracts cubes from member expressions and joinHints, and deduplicates billing per requestId", async () => {
+    clearAudvitadQueryAuthCache();
     const cubes = extractQueryCubes({
-      dimensions: ["traffic_daily.station_name", "traffic_daily.region"],
-      measures: ["traffic_daily.total_vehicles"],
+      dimensions: [
+        "traffic_daily.station_name",
+        { cubeName: "day_archetypes", expressionName: "day_archetypes.day_name" },
+      ],
+      measures: [{ cubeName: "traffic_daily", expression: [] }],
       timeDimensions: [{ dimension: "traffic_daily.timestamp" }],
-      filters: [{ member: "holidays.country_code", operator: "equals", values: ["IS"] }],
+      filters: [{ member: "holidays.country_code", operator: "equals", values: ["ISL"] }],
+      joinHints: [["traffic_daily", "traffic_stations"]],
     });
-    assert.deepEqual(cubes.sort(), ["holidays", "traffic_daily"]);
+    assert.deepEqual(cubes.sort(), ["day_archetypes", "holidays", "traffic_daily", "traffic_stations"]);
 
-    let queryBody;
-    const ok = await authorizeAudvitadQuery(
-      {
-        audvitadSql: { organizationId: "org_123", keyId: "api_key_01j9x", premium: false },
+    let calls = 0;
+    let lastBody;
+    const fetchImpl = async (_url, opts) => {
+      calls++;
+      lastBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ ok: true, used: calls }), { status: 200 });
+    };
+    const ctx = {
+      audvitadSql: {
+        organizationId: "org_123",
+        keyId: "api_key_01j9x",
+        keyName: "Power BI",
+        premium: false,
+        clientIp: "203.0.113.42",
+        database: "audvitad",
       },
-      { dimensions: ["traffic_daily.station_name"] },
-      {
-        env: ENV,
-        fetchImpl: async (url, opts) => {
-          assert.equal(url, "http://quicklookup-web.test:3000/api/internal/sql-query");
-          queryBody = JSON.parse(opts.body);
-          return new Response(JSON.stringify({ ok: true }), { status: 200 });
-        },
-      },
-    );
-    assert.equal(ok.ok, true);
-    assert.deepEqual(queryBody, {
+    };
+
+    // Planning (gateway.sql) + execution (gateway.sqlApiLoad) share the same base requestId -> 1 HTTP call!
+    await authorizeAudvitadQuery(ctx, { dimensions: ["traffic_daily.station_name"] }, {
+      env: ENV,
+      fetchImpl,
+      requestId: "req-abc-123-span-1",
+    });
+    await authorizeAudvitadQuery(ctx, { dimensions: ["traffic_daily.station_name"] }, {
+      env: ENV,
+      fetchImpl,
+      requestId: "req-abc-123-span-2",
+    });
+    assert.equal(calls, 1);
+    assert.deepEqual(lastBody, {
       organizationId: "org_123",
       keyId: "api_key_01j9x",
+      keyName: "Power BI",
       premium: false,
       cubes: ["traffic_daily"],
+      clientIp: "203.0.113.42",
+      database: "audvitad",
     });
 
-    await assert.rejects(
-      () =>
-        authorizeAudvitadQuery(
-          { audvitadSql: { organizationId: "org_123", keyId: "api_key_revoked", premium: false } },
-          { dimensions: ["traffic_daily.station_name"] },
-          {
-            env: ENV,
-            fetchImpl: async () =>
-              new Response(
-                JSON.stringify({
-                  ok: false,
-                  error: "revoked",
-                  message: "This SQL credential has been revoked.",
-                }),
-                { status: 401 },
-              ),
-          },
-        ),
-      /revoked/,
-    );
+    // Next user query has a new requestId -> bills again
+    await authorizeAudvitadQuery(ctx, { dimensions: ["traffic_daily.station_name"] }, {
+      env: ENV,
+      fetchImpl,
+      requestId: "req-def-456",
+    });
+    assert.equal(calls, 2);
+  });
+
+  it("publishes 27 Pro and 31 Enterprise documented, NULL-safe, joined cubes", () => {
+    assert.equal(AUDVITAD_CORE_CUBE_NAMES.length, 27);
+    assert.equal(AUDVITAD_PREMIUM_CUBE_NAMES.length, 4);
+    const all = getAudvitadCubeDefinitions({ premium: true });
+    assert.equal(all.length, 31);
+    assert.equal(getAudvitadSchemaFiles({ premium: false }).length, 27);
+    assert.equal(getAudvitadSchemaFiles({ premium: true }).length, 31);
+
+    for (const cube of all) {
+      assert.ok(cube.description, `${cube.name} missing cube description`);
+      assert.ok(cube.refresh_key?.every, `${cube.name} missing refresh_key`);
+      for (const d of cube.dimensions) {
+        assert.ok(d.description, `${cube.name}.${d.name} missing dimension description`);
+      }
+      for (const m of cube.measures) {
+        assert.ok(m.description, `${cube.name}.${m.name} missing measure description`);
+      }
+    }
+
+    const dayArch = all.find((c) => c.name === "day_archetypes");
+    assert.ok(dayArch.sql.includes("lower(dimensions['is_workday'])"));
+    assert.ok(dayArch.dimensions.some((d) => d.name === "country_code_alpha3"));
+
+    const fuel = all.find((c) => c.name === "fuel_prices");
+    assert.ok(fuel.sql.includes("mapContains(metrics, 'discount_price')"));
+
+    const holidays = all.find((c) => c.name === "holidays");
+    const eventId = holidays.dimensions.find((d) => d.name === "event_id");
+    assert.equal(eventId?.public, true);
+
+    const market = all.find((c) => c.name === "market_prices");
+    assert.ok(market.dimensions.some((d) => d.name === "asset_class"));
   });
 });

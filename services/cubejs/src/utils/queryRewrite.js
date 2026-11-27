@@ -481,16 +481,22 @@ export function queryInstances(query, cubeToTable, { resolve, strict = false } =
  *    Skipped for teams in CUBEJS_ROW_RULES_EXEMPT_PARTITIONS.
  * 2. Apply field-level access list check (non-owner/non-admin only)
  */
-const queryRewrite = async (query, { securityContext, resolveMemberPath }) => {
+const queryRewrite = async (query, { securityContext, resolveMemberPath, requestId }) => {
   // Retired managed enrichment cubes remain unavailable even if an old
   // historical tenant version is restored.
   assertNoLegacyEnrichmentQuery(query);
 
-  // Auðvitað / QuickLookup SQL sessions enforce live revocation, tier and
-  // monthly quota on every query through quicklookup-web, and serve only
-  // curated public/licensed cubes (no Hasura row rules).
+  // Auðvitað / QuickLookup SQL sessions enforce live revocation, mandatory IP
+  // allowlist, tier and monthly quota on every query through quicklookup-web,
+  // and serve only curated public/licensed cubes (no Hasura row rules).
   if (securityContext?.audvitadSql) {
-    await authorizeAudvitadQuery(securityContext, query);
+    await authorizeAudvitadQuery(securityContext, query, { requestId });
+    // Enforce per-tier result row cap (Pro/Fag: 50k, Enterprise: 250k) so
+    // unbounded SELECT * queries stay well below CUBEJS_DB_QUERY_LIMIT.
+    const maxRows = securityContext.audvitadSql.premium ? 250000 : 50000;
+    if (!Number.isFinite(query.limit) || query.limit > maxRows) {
+      query.limit = maxRows;
+    }
     return query;
   }
 
